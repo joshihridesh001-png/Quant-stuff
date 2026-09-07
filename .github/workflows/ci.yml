@@ -1,0 +1,55 @@
+name: Continuous Integration & Quantitative Verification
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-test:
+    name: Lint, Typecheck, and Test Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run Ruff Linting
+        run: |
+          ruff check .
+
+      - name: Run Ruff Formatting Check
+        run: |
+          ruff format --check .
+
+      - name: Run Mypy Strict Type Analysis
+        run: |
+          mypy src
+
+      - name: Execute Pytest Suite with Coverage Enforcement
+        run: |
+          pytest --cov=quant --cov-report=term-missing --cov-report=xml --cov-fail-under=85
+
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
