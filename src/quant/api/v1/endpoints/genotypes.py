@@ -10,6 +10,7 @@ from quant.api.v1.schemas import (
     GenotypeCreateRequest,
     GenotypeEvaluateRequest,
     GenotypeResponse,
+    ParetoRankedGenotypeResponse,
     PopulationSeedRequest,
 )
 from quant.domain.models import Genotype, GenotypeCohort
@@ -86,6 +87,28 @@ async def get_alpha_cohort(
     """Fetch top performing Alpha cohort members sorted by fitness."""
     alphas = await service.get_alpha_cohort(limit=limit)
     return [_to_response(g) for g in alphas]
+
+
+@router.get(
+    "/pareto",
+    response_model=list[ParetoRankedGenotypeResponse],
+    summary="Retrieve population sorted by NSGA-II Pareto dominance and crowding distance",
+)
+async def get_pareto_ranking(
+    generation: int = Query(0, ge=0, description="Generation epoch to rank"),
+    service: GenotypeService = Depends(get_genotype_service),
+) -> list[ParetoRankedGenotypeResponse]:
+    """Calculate and return NSGA-II non-dominated Pareto fronts for a given generation."""
+    population = await service.genotype_repo.get_generation(generation)
+    ranked = service.rank_population_pareto(population)
+    return [
+        ParetoRankedGenotypeResponse(
+            genotype=_to_response(g),
+            pareto_rank=rank,
+            crowding_distance=dist if dist != float("inf") else 1e9,
+        )
+        for g, rank, dist in ranked
+    ]
 
 
 @router.post(

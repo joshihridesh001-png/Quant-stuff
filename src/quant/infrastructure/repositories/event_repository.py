@@ -44,6 +44,37 @@ class SqlAlchemyEventRepository(IEventRepository):
         await self.session.flush()
         return event
 
+    async def add_batch(
+        self, batch: list[tuple[NewsEvent, list[EventCentrality]]]
+    ) -> list[NewsEvent]:
+        events: list[NewsEvent] = []
+        for event, centralities in batch:
+            db_event = DBEvent(
+                id=str(event.id),
+                timestamp=event.timestamp,
+                headline=event.headline,
+                raw_text=event.raw_text,
+                dense_embedding=event.dense_embedding,
+                sentiment_polarity=event.sentiment_polarity,
+                sentiment_subjectivity=event.sentiment_subjectivity,
+                sentiment_novelty=event.sentiment_novelty,
+                urgency=event.urgency,
+                source=event.source,
+                created_at=event.created_at,
+            )
+            self.session.add(db_event)
+            for c in centralities:
+                db_centrality = DBEventCentrality(
+                    event_id=str(c.event_id),
+                    asset_id=str(c.asset_id),
+                    centrality=c.centrality,
+                )
+                self.session.add(db_centrality)
+            events.append(event)
+
+        await self.session.flush()
+        return events
+
     async def get_by_id(self, event_id: UUID) -> NewsEvent | None:
         query = select(DBEvent).where(DBEvent.id == str(event_id))
         result = await self.session.execute(query)

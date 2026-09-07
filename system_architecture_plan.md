@@ -30,33 +30,36 @@ The system is organized into four core modular layers:
 
 ### 2.1 Component 1: News Ingestion Layer & Temporal Chaining
 
-#### Event Representation
-Incoming unstructured news items are converted into composite feature vectors:
+#### Event Representation & Projected Subspace Balancing
+Incoming unstructured news items are converted into composite feature vectors. To prevent high-dimensional dense embeddings ($d_e = 768$) from swamping low-dimensional scalar signals in downstream Euclidean or metric distances, dense embeddings are projected into an energy-normalized subspace $\mathbb{R}^{d_p}$ ($d_p = 16$) prior to fusion:
 
-$$\mathbf{e}_i = \Big[ \mathbf{v}_{\text{dense}} \;\|\; \mathbf{s}_{\text{sentiment}} \;\|\; \mathbf{u}_{\text{urgency}} \;\|\; \mathbf{c}_{\text{centrality}} \Big] \in \mathbb{R}^D$$
+$$\mathbf{e}_i = \Big[ \mathcal{P}(\mathbf{v}_{\text{dense}}) \;\|\; \mathbf{s}_{\text{sentiment}} \;\|\; \mathbf{u}_{\text{urgency}} \;\|\; \mathbf{c}_{\text{centrality}} \Big] \in \mathbb{R}^{d_p + 5}$$
 
-- $\mathbf{v}_{\text{dense}} \in \mathbb{R}^{d_e}$: Transformer embedding (domain-adapted FinBERT / LLM encoder).
+- $\mathcal{P}(\mathbf{v}_{\text{dense}}) \in \mathbb{R}^{d_p}$: Subspace-projected and $L_2$-normalized dense Transformer embedding (FinBERT).
 - $\mathbf{s}_{\text{sentiment}} \in [-1, 1]^3$: Tri-axial sentiment scores (polarity, subjectivity, novelty).
 - $\mathbf{u}_{\text{urgency}} \in [0, 1]$: Transmission velocity / event urgency prior.
 - $\mathbf{c}_{\text{centrality}} \in [0, 1]^K$: Relevance mapping across target asset universes and sectors.
 
-#### Temporal Chaining & Memory Kernel
-Events are stored in a Directed Acyclic Graph (DAG) representing causal event linkages. The active news state for asset $k$ at time $t$ is governed by a hybrid decay kernel:
+#### Temporal Chaining & Truncated Memory Kernel
+Events are stored in an append-only causal Directed Acyclic Graph (DAG). The active news state for asset $k$ at time $t$ is governed by a hybrid decay kernel with explicit numerical truncation tolerance ($\epsilon \le 10^{-4}$) and maximum lookback horizon ($T_{\text{max}} = 7\text{ days}$) to guarantee $O(T)$ bounded execution:
 
-$$\mathbf{S}_{\text{news}}^{(k)}(t) = \sum_{i \in \mathcal{V}_t} c_{i,k} \cdot \mathbf{e}_i \cdot \kappa(t - t_i, \mathbf{u}_i)$$
+$$\mathbf{S}_{\text{news}}^{(k)}(t) = \sum_{i \in \mathcal{V}_t, \Delta t_i \le T_{\text{max}}} c_{i,k} \cdot \mathbf{e}_i \cdot \kappa(t - t_i, \mathbf{u}_i)$$
 
-$$\kappa(\Delta t, u) = \alpha \exp\left(-\frac{\Delta t}{\tau_{\text{fast}} \cdot (1 - u)}\right) + (1 - \alpha)\left(1 + \frac{\Delta t}{\tau_{\text{slow}}}\right)^{-\beta}$$
+$$\kappa(\Delta t, u) = \begin{cases} 
+\alpha \exp\left(-\frac{\Delta t}{\tau_{\text{fast}} \cdot (1 - u)}\right) + (1 - \alpha)\left(1 + \frac{\Delta t}{\tau_{\text{slow}}}\right)^{-\beta}, & \text{if } \kappa \ge \epsilon \text{ and } \Delta t \le T_{\text{max}} \\
+0, & \text{otherwise}
+\end{cases}$$
 
 - **Fast decay ($\tau_{\text{fast}}$)**: Models rapid sentiment absorption and high-frequency noise dissipation.
 - **Slow decay ($\tau_{\text{slow}}$)**: Models long-term thematic trends and structural shifts.
 
-#### Interface Contract
+#### Interface Contract (Asynchronous & Batch-Capable)
 ```
 Interface: INewsIngestionEngine
     Methods:
-        - IngestDocument(doc: RawDocument) -> EventNode
-        - UpdateGraph(node: EventNode) -> Void
-        - GetStateVector(asset: AssetID, timestamp: Timestamp) -> Vector[Real]
+        - async IngestBatch(events: List[RawDocument]) -> List[EventNode]
+        - async IngestDocument(doc: RawDocument) -> EventNode
+        - async GetStateVectors(assets: List[AssetID], as_of: Timestamp) -> Map[AssetID, Vector[Real]]
 ```
 
 ---
@@ -108,12 +111,19 @@ $$\text{Corr}(\mathbf{e}_{\text{Alpha}}, \mathbf{e}_{\text{Aspirant}}) < \delta_
 
 This preserves elite alpha characteristics while mathematically guaranteeing genetic and behavioral diversity.
 
-#### Multi-Objective Fitness Metric
-$$\mathcal{F}(\mathcal{I}_i) = \text{DeflatedSharpe}(\mathcal{I}_i) \cdot \exp\left( -\psi \cdot \text{MaxDD}(\mathcal{I}_i) \right) + \omega_1 \cdot V_i(\text{Regret}) + \omega_2 \cdot \mathcal{H}_{\text{novelty}}(\mathcal{I}_i)$$
+#### Multi-Objective Optimization & Pareto Sorting (NSGA-II)
+Rather than collapsing competing objectives into an arbitrary scalar sum that collapses the trade-off frontier, the evolutionary population is evaluated across a 4-dimensional objective vector:
 
-- Penalizes non-normal returns and backtest overfitting bias (Deflated Sharpe).
-- Exponentially penalizes maximum peak-to-trough drawdowns ($\text{MaxDD}$).
-- Directly credits game-theoretic scenario robustness ($V_i$) and population diversity distance ($\mathcal{H}_{\text{novelty}}$).
+$$\mathbf{F}(\mathcal{I}_i) = \Big[ \text{DeflatedSharpe}(\mathcal{I}_i), \; -\text{MaxDD}(\mathcal{I}_i), \; V_i(\text{Regret}), \; \mathcal{H}_{\text{novelty}}(\mathcal{I}_i) \Big]^T$$
+
+- Individual $\mathcal{I}_a$ **Pareto-dominates** $\mathcal{I}_b$ ($\mathcal{I}_a \succ \mathcal{I}_b$) iff $\forall j, F_j(\mathcal{I}_a) \ge F_j(\mathcal{I}_b)$ and $\exists j, F_j(\mathcal{I}_a) > F_j(\mathcal{I}_b)$.
+- Non-dominated sorting partitions the population into Pareto fronts $\mathcal{F}_0, \mathcal{F}_1, \dots$, where $\mathcal{F}_0$ comprises the elite non-dominated trade-off frontier.
+- **Crowding Distance** metric is maintained within fronts to prioritize boundary and niche solutions, preserving diversity across the Pareto surface.
+- For backward-compatible scalar evaluation, the scalarized fitness index remains supported:
+  $$\mathcal{F}_{\text{scalar}}(\mathcal{I}_i) = \text{DeflatedSharpe}(\mathcal{I}_i) \cdot \exp\left( -\psi \cdot \text{MaxDD}(\mathcal{I}_i) \right) + \omega_1 \cdot V_i(\text{Regret}) + \omega_2 \cdot \mathcal{H}_{\text{novelty}}(\mathcal{I}_i)$$
+
+#### Novelty-Governed Aspirant Selection
+When an aspirant is rejected by an Alpha individual due to insufficient orthogonality ($\text{Corr} \ge \delta_{\text{ortho}}$), the fallback mechanism utilizes **Novelty Search** rather than random drift: the aspirant that maximizes behavioral parameter distance from the elite cohort is prioritized for exploratory crossover.
 
 #### Adaptive Mutation
 Mutation probability $\mu(t)$ scales dynamically with market regime volatility and news entropy:
@@ -136,48 +146,36 @@ If the predictive divergence among elite models exceeds an entropy limit $\theta
 
 ---
 
-## 3. Evolutionary Cycle (Pseudocode)
+## 3. Evolutionary Cycle: Asynchronous Steady-State Island Model
+
+To eliminate the stop-the-world latency spikes of synchronous generational epochs in 24/7 production, the engine implements an **Asynchronous Steady-State Island Model**:
 
 ```python
-Procedure RunEvolutionEpoch(Population P, MarketState M, NewsGraph G, Scenarios S):
-    # 1. Evaluate Fitness across adversarial scenarios
-    For individual I in P:
-        predictions = I.Predict(G)
-        payoffs = EvaluatePayoffs(predictions, S)
-        metrics = BacktestWindow(predictions, M)
-        I.fitness = ComputeMultiObjectiveFitness(metrics, payoffs, P)
+Procedure AsynchronousIslandWorker(IslandSubpopulation P_island, SharedParetoArchive Archive):
+    While Running:
+        # 1. Continuous Non-Dominated Sorting
+        Fronts = FastNonDominatedSort(P_island.objectives)
+        CrowdingDistances = CalculateCrowdingDistance(Fronts[0], P_island.objectives)
+        UpdateSharedArchive(Archive, Fronts[0])
 
-    # 2. Stratify Population
-    Sort(P, descending_by=fitness)
-    AlphaCohort = P[0 : int(N * rho)]
-    AspirantCohort = P[int(N * rho) : N]
+        # 2. Hypergamic Selection with Novelty-Governed Fallback
+        aspirant = SelectByCrowdingDistance(Fronts, P_island)
+        elite_target = SampleElite(Archive)
 
-    P_next = []
-    # Elitism: retain top absolute performers
-    P_next.AppendAll(Clone(AlphaCohort[0 : EliteCount]))
-
-    # 3. Hypergamous Mating Loop
-    While Length(P_next) < N:
-        aspirant = RouletteSelect(AspirantCohort, by=fitness)
-        elite_target = RouletteSelect(AlphaCohort, by=fitness)
-
-        # Gated Acceptance based on residual orthogonality
         If ResidualCorrelation(aspirant, elite_target) < DeltaOrtho:
-            child_1, child_2 = Crossover(aspirant.genotype, elite_target.genotype)
+            child = Crossover(aspirant.genotype, elite_target.genotype)
         Else:
-            # Fallback: exploratory breeding within aspirant tier
-            peer = RandomSelect(AspirantCohort)
-            child_1, child_2 = ExploratoryCrossover(aspirant.genotype, peer.genotype)
+            novel_aspirant = SelectAspirantByNovelty(P_island.aspirants, Archive.elites)
+            child = ExploratoryCrossover(aspirant.genotype, novel_aspirant.genotype)
 
-        # 4. Entropy-governed mutation
-        rate = ComputeAdaptiveMutationRate(M.entropy)
-        child_1 = Mutate(child_1, rate)
-        child_2 = Mutate(child_2, rate)
+        # 3. Dynamic Volatility Mutation & Validation
+        rate = ComputeAdaptiveMutationRate(MarketState.realized_volatility)
+        mutated_child = Mutate(child, rate)
 
-        If ValidateConstraints(child_1): P_next.Append(child_1)
-        If ValidateConstraints(child_2) and Length(P_next) < N: P_next.Append(child_2)
-
-    Return P_next
+        If ValidateRiskConstraints(mutated_child):
+            # Asynchronous steady-state replacement (replace worst dominated individual)
+            worst_individual = SelectWorstDominated(P_island)
+            P_island.Replace(worst_individual, mutated_child)
 ```
 
 ---

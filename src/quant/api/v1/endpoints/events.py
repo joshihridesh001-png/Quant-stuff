@@ -6,7 +6,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from quant.api.dependencies import get_event_service, require_api_key
-from quant.api.v1.schemas import ActiveStateResponse, EventIngestRequest, EventResponse
+from quant.api.v1.schemas import (
+    ActiveStateResponse,
+    BatchEventIngestRequest,
+    BatchEventIngestResponse,
+    EventIngestRequest,
+    EventResponse,
+)
 from quant.services.event_service import EventService
 
 router = APIRouter(prefix="/events", tags=["News Ingestion & State"])
@@ -49,6 +55,37 @@ async def ingest_event(
     )
 
 
+@router.post(
+    "/batch",
+    response_model=BatchEventIngestResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Ingest batch of news events atomically",
+)
+async def ingest_batch_events(
+    payload: BatchEventIngestRequest,
+    event_service: EventService = Depends(get_event_service),
+    _api_key: str = Depends(require_api_key),
+) -> BatchEventIngestResponse:
+    """Ingest a batch of news documents with asset centrality mappings atomically."""
+    events_data = [item.model_dump() for item in payload.events]
+    persisted = await event_service.ingest_batch(events_data)
+    responses = [
+        EventResponse(
+            id=ev.id,
+            headline=ev.headline,
+            timestamp=ev.timestamp,
+            sentiment_polarity=ev.sentiment_polarity,
+            sentiment_subjectivity=ev.sentiment_subjectivity,
+            sentiment_novelty=ev.sentiment_novelty,
+            urgency=ev.urgency,
+            source=ev.source,
+            created_at=ev.created_at,
+        )
+        for ev in persisted
+    ]
+    return BatchEventIngestResponse(ingested_count=len(responses), events=responses)
+
+
 @router.get(
     "/{event_id}",
     response_model=EventResponse,
@@ -89,6 +126,9 @@ async def get_active_news_state(
     alpha: float = Query(0.5, ge=0.0, le=1.0, description="Fast decay weighting factor"),
     tau_fast: float = Query(3600.0, gt=0.0, description="Fast decay timescale in seconds"),
     tau_slow: float = Query(86400.0, gt=0.0, description="Slow decay timescale in seconds"),
+    use_projected_subspace: bool = Query(
+        False, description="Balance dense embeddings with scalar signals using projected subspace"
+    ),
     event_service: EventService = Depends(get_event_service),
 ) -> ActiveStateResponse:
     """Compute active time-decayed state vector S_news^{(k)}(t) for asset k."""
@@ -99,10 +139,12 @@ async def get_active_news_state(
         alpha=alpha,
         tau_fast=tau_fast,
         tau_slow=tau_slow,
+        use_projected_subspace=use_projected_subspace,
     )
     return ActiveStateResponse(
         ticker=ticker.upper(),
         as_of_time=calc_time,
         state_vector=vector,
         event_count=count,
+        use_projected_subspace=use_projected_subspace,
     )

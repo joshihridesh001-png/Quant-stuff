@@ -74,7 +74,7 @@ pip install --upgrade pip
 pip install -e ".[dev]"
 ```
 
-### 2. Environment Configuration
+### 2. Environment Configuration & Database Parity
 
 Copy the sample environment variables:
 
@@ -82,7 +82,14 @@ Copy the sample environment variables:
 cp .env.example .env
 ```
 
-Defaults to an asynchronous SQLite database (`sqlite+aiosqlite:///./quant.db`) for development and local testing.
+**Development Database Options**:
+* **Option A: Containerized PostgreSQL with `pgvector` (Recommended for Dev/Prod Parity)**:
+  ```bash
+  docker compose up -d
+  ```
+  Uses the official `pgvector/pgvector:pg16` image providing PostgreSQL 16 with native vector index support.
+* **Option B: Local Embedded SQLite**:
+  Set `DATABASE_URL=sqlite+aiosqlite:///./quant.db` in `.env` for zero-dependency local experimentation.
 
 ### 3. Database Migrations
 
@@ -114,20 +121,23 @@ Once running:
 ## Primary API Endpoints
 
 ### 1. News Ingestion & Active State
-* `POST /api/v1/events/ingest`: Ingest unstructured news with continuous asset centrality weights ($c_{i,k}$). Protected by `X-API-Key` header.
+* `POST /api/v1/events/ingest`: Ingest a single unstructured news event with continuous asset centrality weights ($c_{i,k}$). (Protected by `X-API-Key`).
+* `POST /api/v1/events/batch`: High-throughput atomic ingestion of up to 500 news events per request. (Protected by `X-API-Key`).
 * `GET /api/v1/events/{id}`: Retrieve ingested event metadata and sentiment vectors.
-* `GET /api/v1/events/state/{ticker}`: Calculate the active time-decayed news state vector $\mathbf{S}_{\text{news}}^{(k)}(t)$ using the hybrid dual-decay kernel:
+* `GET /api/v1/events/state/{ticker}`: Calculate the active time-decayed news state vector $\mathbf{S}_{\text{news}}^{(k)}(t)$ using the hybrid dual-decay kernel with numerical truncation tolerance ($\epsilon \le 10^{-4}$):
   $$\kappa(\Delta t, u) = \alpha \exp\left(-\frac{\Delta t}{\tau_{\text{fast}} \cdot (1 - u)}\right) + (1 - \alpha)\left(1 + \frac{\Delta t}{\tau_{\text{slow}}}\right)^{-\beta}$$
+  *Pass `use_projected_subspace=true` to project dense embeddings into an energy-balanced subspace ($d_p=16$).*
 
 ### 2. Evolutionary Strategy Population
 * `POST /api/v1/genotypes`: Register candidate strategy chromosome $\mathbf{g}_k = \langle \mathbf{g}_{\text{repr}}, \mathbf{g}_{\text{game}}, \mathbf{g}_{\text{infer}}, \mathbf{g}_{\text{risk}} \rangle$.
 * `POST /api/v1/genotypes/seed`: Seed generation 0 population with stratified Alpha ($20\%$) and Aspirant ($80\%$) cohorts. (Requires `ADMIN` or `RESEARCHER` role).
 * `GET /api/v1/genotypes/alpha`: Query the elite Alpha cohort sorted by multi-objective fitness.
+* `GET /api/v1/genotypes/pareto`: Query the population ranked by **NSGA-II Non-Dominated Sorting** and crowding distance across performance, drawdown, regret, and novelty vectors.
 * `POST /api/v1/genotypes/{id}/evaluate`: Evaluate and record Deflated Sharpe Ratio (DSR), Max Drawdown, and composite multi-objective fitness:
   $$\mathcal{F}(\mathcal{I}_i) = \text{DeflatedSharpe} \cdot e^{-\psi \cdot \text{MaxDD}} + \omega_1 \cdot V_i(\text{Regret}) + \omega_2 \cdot \mathcal{H}_{\text{novelty}}$$
 
 ### 3. Authentication & RBAC
-* `POST /api/v1/auth/token`: Issue signed RFC 7519 HS256 JWT access tokens for researchers and administrators.
+* `POST /api/v1/auth/token`: Issue signed RFC 7519 JWT access tokens with constant-time verification for researchers and administrators.
 
 ---
 

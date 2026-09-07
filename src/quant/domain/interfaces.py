@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from quant.domain.models import Asset, EventCentrality, Genotype, NewsEvent
@@ -29,6 +30,12 @@ class IEventRepository(ABC):
     @abstractmethod
     async def add(self, event: NewsEvent, centralities: list[EventCentrality]) -> NewsEvent:
         """Persist event and its multi-asset centrality linkages."""
+
+    @abstractmethod
+    async def add_batch(
+        self, batch: list[tuple[NewsEvent, list[EventCentrality]]]
+    ) -> list[NewsEvent]:
+        """Persist a batch of events and their centrality linkages atomically."""
 
     @abstractmethod
     async def get_by_id(self, event_id: UUID) -> NewsEvent | None:
@@ -70,3 +77,22 @@ class IGenotypeRepository(ABC):
         regret_score: float,
     ) -> None:
         """Update fitness evaluation metrics after backtest/scenario execution."""
+
+
+class INewsIngestionEngine(ABC):
+    """Abstract interface for asynchronous high-throughput event ingestion and state query."""
+
+    @abstractmethod
+    async def ingest_batch(
+        self,
+        events_data: list[dict[str, Any]],
+    ) -> list[NewsEvent]:
+        """Asynchronously ingest and persist a batch of events with ticker weights."""
+
+    @abstractmethod
+    async def get_state_vectors(
+        self,
+        tickers: list[str],
+        as_of_time: datetime | None = None,
+    ) -> dict[str, tuple[list[float], int]]:
+        """Asynchronously compute active decayed news state vectors across multiple assets."""

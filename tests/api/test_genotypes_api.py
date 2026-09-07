@@ -72,3 +72,11 @@ async def test_seed_population_rbac_guards(
     assert len(alphas) >= 2
     for a in alphas:
         assert a["cohort"] == "ALPHA"
+
+    # 5. Check Pareto Ranking Endpoint
+    pareto_res = await client.get("/api/v1/genotypes/pareto?generation=0")
+    assert pareto_res.status_code == 200
+    ranked = pareto_res.json()
+    assert len(ranked) == 10
+    assert "pareto_rank" in ranked[0]
+    assert "crowding_distance" in ranked[0]

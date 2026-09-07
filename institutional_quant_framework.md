@@ -1,4 +1,4 @@
-﻿# Institutional Quantitative Research & Alpha Generation Framework
+# Institutional Quantitative Research & Alpha Generation Framework
 
 ## Overview & Foundational Philosophy
 
@@ -24,6 +24,7 @@ The standard machine learning instinct is to difference non-stationary series un
 * **The Formulation**: Apply a fractional differentiation operator $(1 - B)^d$ expanded via binomial series:
   $$(1 - B)^d = \sum_{k=0}^{\infty} (-1)^k \binom{d}{k} B^k = 1 - dB + \frac{d(d-1)}{2!}B^2 - \frac{d(d-1)(d-2)}{3!}B^3 + \dots$$
 * **The Implementation Heuristic**: Determine the minimum degree of differencing $d^* \in (0, 1)$ required to pass standard stationarity tests (e.g., Augmented Dickey-Fuller) while maximizing the correlation between the original and transformed series. This preserves the memory structure while satisfying stationarity requirements.
+* **Bounded Window Truncation Constraint**: In streaming production, infinite memory expansion causes $O(T^2)$ computational complexity and unbounded memory growth. Truncate the binomial weight series at lag length $l^*$ where weights fall below a numerical tolerance threshold $|\omega_k| < \epsilon$ (typically $\epsilon \le 10^{-4}$), bounding computation to $O(T)$ with bounded memory footprint.
 
 ### 1.2 Microstructural & Order Flow Features
 * **Volume-Synchronized Probability of Toxicity (VPIN)**: Estimate adverse selection risk by calculating volume-based imbalance metrics rather than wall-clock time metrics. Sample the market in constant volume buckets rather than arbitrary calendar intervals to match the underlying rate of information arrival.

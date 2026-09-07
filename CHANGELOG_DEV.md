@@ -111,3 +111,22 @@ This running log captures all code modifications, configuration updates, archite
 * **State After:** Configured GitHub Actions workflow triggering on push/PR to validate Ruff linting, Ruff formatting, Mypy strict type checks, and Pytest coverage enforcement ($> 85\%$).
 * **Engineering Rationale:** Automates quality gating to block regressions before code reaches the main branch.
 * **Verification Method:** Validated YAML schema and locally executed all CI verification commands (`ruff`, `mypy`, `pytest`).
+
+---
+
+### [Phase 11: Architectural Refactoring & Institutional Enhancement] - 2026-09-07
+* **Components / Files:**
+  - `src/quant/domain/interfaces.py`: Added `add_batch` to `IEventRepository` and defined `INewsIngestionEngine` with asynchronous batch signatures.
+  - `src/quant/infrastructure/repositories/event_repository.py`: Implemented `add_batch` for transactional multi-event persistence.
+  - `src/quant/services/event_service.py`: Added kernel truncation tolerance ($\epsilon \le 10^{-4}$) and maximum lookback cutoff ($T_{\text{max}}$); implemented `compute_projected_feature_vector` for multimodal subspace balancing; implemented `INewsIngestionEngine` methods (`ingest_batch`, `get_state_vectors`).
+  - `src/quant/services/genotype_service.py`: Implemented NSGA-II Fast Non-Dominated Sorting (`fast_non_dominated_sort`), Crowding Distance computation (`calculate_crowding_distance`), Pareto ranking orchestration (`rank_population_pareto`), and Novelty-governed aspirant selection (`select_aspirant_by_novelty`).
+  - `src/quant/core/security.py`: Upgraded password hashing architecture to support multi-algorithm identifiers (`pbkdf2_sha256`, `argon2id`) and enforced constant-time comparison across API key validation.
+  - `src/quant/api/v1/`: Added `BatchEventIngestRequest`, `BatchEventIngestResponse`, `ParetoRankedGenotypeResponse` DTOs; exposed `POST /api/v1/events/batch` and `GET /api/v1/genotypes/pareto`.
+  - `docker-compose.yml`: Created PostgreSQL 16 container with `pgvector` extension for full dev/prod parity.
+  - `system_architecture_plan.md`, `institutional_quant_framework.md`, `README.md`: Synchronized documentation with the enhanced asynchronous batch contracts, NSGA-II Pareto sorting, and truncation tolerances.
+* **Engineering Rationale:** Eliminates high-dimensional embedding dominance over scalar signals, eliminates synchronous single-item I/O bottlenecks on news ingestion, replaces arbitrary fitness scalarization with true Pareto trade-off optimization, and eliminates Twelve-Factor dev/prod database disparity.
+* **Verification Method:**
+  - Added 10 new unit and API tests in `tests/unit/test_batch_ingestion.py`, `tests/unit/test_multimodal_fusion.py`, `tests/unit/test_pareto_sorting.py`, and `tests/unit/test_decay_truncation.py`.
+  - Full test suite passing 30/30 tests with **87.18% coverage** (`pytest --cov=quant --cov-fail-under=85`).
+  - Static type checking: `mypy src` passed with zero errors across 28 files.
+  - Linting and formatting: `ruff check` and `ruff format --check` passed cleanly.

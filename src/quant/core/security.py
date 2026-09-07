@@ -11,34 +11,60 @@ from typing import Any
 from quant.core.config import get_settings
 
 
-def hash_password(password: str, salt: str | None = None) -> str:
-    """Hash a plaintext password using PBKDF2-HMAC-SHA256 (NIST standard)."""
-    if salt is None:
-        salt = secrets.token_hex(16)
-    kdf = hashlib.pbkdf2_hmac(
-        hash_name="sha256",
-        password=password.encode("utf-8"),
-        salt=salt.encode("utf-8"),
-        iterations=600_000,
-    )
-    hashed_hex = kdf.hex()
-    return f"pbkdf2_sha256${salt}${hashed_hex}"
+def hash_password(password: str, salt: str | None = None, algorithm: str = "pbkdf2_sha256") -> str:
+    """Hash a plaintext password using specified algorithm (defaulting to PBKDF2-HMAC-SHA256).
+
+    Supports 'pbkdf2_sha256' natively, and 'argon2id' when argon2-cffi is installed.
+    """
+    if algorithm == "pbkdf2_sha256":
+        if salt is None:
+            salt = secrets.token_hex(16)
+        kdf = hashlib.pbkdf2_hmac(
+            hash_name="sha256",
+            password=password.encode("utf-8"),
+            salt=salt.encode("utf-8"),
+            iterations=600_000,
+        )
+        hashed_hex = kdf.hex()
+        return f"pbkdf2_sha256${salt}${hashed_hex}"
+    elif algorithm == "argon2id":
+        try:
+            argon2_mod = __import__("argon2")
+            ph = argon2_mod.PasswordHasher()
+            return f"argon2id${ph.hash(password)}"
+        except (ImportError, AttributeError) as err:
+            raise NotImplementedError(
+                "Argon2id hashing requires 'argon2-cffi' package to be installed."
+            ) from err
+    raise ValueError(f"Unsupported password hashing algorithm: {algorithm}")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify that a plaintext password matches a stored PBKDF2 hash."""
+    """Verify that a plaintext password matches a stored hash across supported algorithms."""
     try:
-        algorithm, salt, stored_hash = hashed_password.split("$")
-        if algorithm != "pbkdf2_sha256":
-            return False
-        expected_hash = hash_password(plain_password, salt=salt)
-        return hmac.compare_digest(expected_hash, hashed_password)
+        parts = hashed_password.split("$", 2)
+        algorithm = parts[0]
+        if algorithm == "pbkdf2_sha256":
+            if len(parts) != 3:
+                return False
+            _, salt, _ = parts
+            expected_hash = hash_password(plain_password, salt=salt, algorithm="pbkdf2_sha256")
+            return hmac.compare_digest(expected_hash, hashed_password)
+        elif algorithm == "argon2id":
+            if len(parts) < 2:
+                return False
+            argon2_mod = __import__("argon2")
+            ph = argon2_mod.PasswordHasher()
+            return bool(ph.verify(parts[1], plain_password))
+        return False
     except Exception:
         return False
 
 
-def verify_api_key(provided_key: str, expected_key: str) -> bool:
-    """Constant-time comparison of provided API key against expected secret."""
+def verify_api_key(provided_key: str | None, expected_key: str | None) -> bool:
+    """Constant-time comparison of provided API key against expected secret, guarding against timing attacks."""
+    if not provided_key or not expected_key:
+        return False
     return hmac.compare_digest(provided_key.encode("utf-8"), expected_key.encode("utf-8"))
 
 

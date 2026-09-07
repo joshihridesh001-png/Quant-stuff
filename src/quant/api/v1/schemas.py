@@ -37,11 +37,23 @@ class EventResponse(BaseModel):
     created_at: datetime
 
 
+class BatchEventIngestRequest(BaseModel):
+    events: list[EventIngestRequest] = Field(
+        ..., min_length=1, max_length=500, description="Batch of news events to ingest atomically"
+    )
+
+
+class BatchEventIngestResponse(BaseModel):
+    ingested_count: int
+    events: list[EventResponse]
+
+
 class ActiveStateResponse(BaseModel):
     ticker: str
     as_of_time: datetime
     state_vector: list[float]
     event_count: int
+    use_projected_subspace: bool = False
 
 
 # Genotype Schemas
@@ -75,6 +87,12 @@ class GenotypeResponse(BaseModel):
     regret_score: float | None = None
     novelty_score: float | None = None
     created_at: datetime
+
+
+class ParetoRankedGenotypeResponse(BaseModel):
+    genotype: GenotypeResponse
+    pareto_rank: int
+    crowding_distance: float
 
 
 class PopulationSeedRequest(BaseModel):
