@@ -3,7 +3,7 @@
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![SQLAlchemy 2.0](https://img.shields.io/badge/SQLAlchemy-2.0+-D71F00?logo=sqlalchemy&logoColor=white)](https://www.sqlalchemy.org/)
-[![Coverage 89%](https://img.shields.io/badge/Coverage-89.4%25-brightgreen)](https://pytest.org/)
+[![Coverage 87%](https://img.shields.io/badge/Coverage-87.2%25-brightgreen)](https://pytest.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Mypy Strict](https://img.shields.io/badge/Mypy-Strict-blue)](https://mypy-lang.org/)
 
@@ -159,7 +159,7 @@ mypy src
 pytest --cov=quant --cov-report=term-missing --cov-fail-under=85
 ```
 
-All 20 unit, integration, and API tests execute against an isolated in-memory asynchronous SQLite engine with transactional rollback.
+All 30 unit, integration, and API tests execute against an isolated in-memory asynchronous SQLite engine with transactional rollback.
 
 ---
 
