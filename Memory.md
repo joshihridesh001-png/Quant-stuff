@@ -42,6 +42,18 @@ This register records all major architectural decisions, design patterns, and en
 * **Alternatives Evaluated:** Standard integer differencing $d=1$ (rejected: complete loss of memory); Grid search over $d \in [0, 1]$ (rejected: 20-30 expensive ADF calls); 2D strided toeplitz matrix multiplication (rejected: $O(N \cdot l^*)$ memory blowout).
 * **Trade-Offs:** Bisection search assumes monotonic stationarity with respect to $d$; zero-sum correction slightly perturbs filter response at low frequencies to guarantee 0 gain at DC.
 
+### ADR-006: Dynamic Volatility Triple-Barrier Labeling with Causal Range Volatility and Pessimistic Collision Priority
+* **Date:** 2026-09-09 | **Status:** Implemented (Sprint 2, Step 3)
+* **Context:** Fixed-horizon return labels ($R_{t, t+k}$) ignore intra-horizon stop-out reality. Sizing barriers with simple percentage returns induces geometric asymmetry under log-normal price diffusion, and naive volatility estimation introduces lookahead bias or zero-volatility collapse. Additionally, intra-bar High/Low dual touches introduce optimistic backtest distortion.
+* **Decision:**
+  1. Implement `DynamicTripleBarrierLabeler` in `src/quant/analytics/labeling.py` evaluating path-dependent boundaries (take-profit, stop-loss, vertical timeout).
+  2. Use Parkinson range volatility $\sigma_t \propto \sqrt{\sum (\ln(H/L))^2}$, strictly lagged by 1 bar to $t-1$ to prevent lookahead leakage, clamped to $[\sigma_{\text{floor}}, \sigma_{\text{cap}}]$.
+  3. Define barriers in natural log-price space $\ln(P_{\text{entry}}) \pm c \cdot \sigma_t$ for bilateral geometric symmetry across Long and Short positions.
+  4. Enforce conservative execution: dual intra-bar breaches default to stop-loss (`pessimistic_collision=True`), and opening gaps execute at actual open $O_k$ rather than the barrier line.
+  5. Deduct round-trip half-spread and transaction fees from realized payoffs.
+* **Alternatives Evaluated:** GARCH(1,1) (rejected: slow numerical convergence on millions of bars); Close-to-close rolling variance (rejected: blind to intra-bar wicks); Full tick replay for collisions (rejected: 1000x I/O bloat on standard bar workflows).
+* **Trade-Offs:** Pessimistic stop-loss priority may slightly underestimate live performance during sharp mean-reversions, but strictly guarantees that the backtest is harder to beat than reality.
+
 ---
 
 ## 2. Deterministic Diagnostic Failure Matrix (Zero-Execution Triage)
@@ -60,6 +72,9 @@ This register records all major architectural decisions, design patterns, and en
 | **`ERR-ECON-FRAC-001`** | `src/quant/analytics/fractional_diff.py`<br>`compute_fractional_weights`<br>Lines 46–53 | Validates $d \in [0.0, 1.0]$ and $\epsilon > 0.0$. | `ValueError: Differencing degree d must be in [0.0, 1.0]` or non-positive tolerance. | Client code passed invalid differentiation degree or zero/negative truncation threshold. | Check caller parameters for $d < 0$, $d > 1$, or $\epsilon \le 0$. | Restrict degree to unit interval; set default $\epsilon = 10^{-4}$. | Prevents runaway infinite binomial weight expansion. |
 | **`ERR-ECON-FRAC-002`** | `src/quant/analytics/fractional_diff.py`<br>`FractionalDifferentiator.transform`<br>Lines 207–218 | Transforms series using pre-fitted weights and checks $N > l^*$. | `RuntimeError: FractionalDifferentiator must be fitted before calling transform()`. | Transformation called on an unfitted transformer instance or series shorter than lookback. | Inspect call site to ensure `fit()` precedes `transform()`; verify $N > l^*$. | Invoke `fit()` on training partition before `transform()`; verify dataset length exceeds lookback window. | Pipeline crash; unaligned features in model inference. |
 | **`ERR-ECON-FRAC-003`** | `src/quant/analytics/fractional_diff.py`<br>`StreamingFracDiffBuffer.update`<br>Lines 452–456 | Ingests single bar price and returns instantaneous differenced value. | `RuntimeError: Cannot compute streaming fractional difference: buffer is unhydrated`. | `update()` invoked immediately after engine startup without priming historical window. | Inspect streaming buffer initialization code; check `is_hydrated` flag. | Invoke `hydrate(history)` or `await hydrate_from_repository(asset_id, repo)` during worker startup. | Cold-start inference drops; corrupted real-time signals. |
+| **`ERR-ECON-LABEL-001`** | `src/quant/analytics/labeling.py`<br>`TripleBarrierConfig.__post_init__`<br>Lines 88–110 | Validates barrier configuration invariants ($c_1, c_2 > 0$, $H \ge 1$, $W \ge 2$, friction $\ge 0$). | `ValueError: profit_multiplier must be strictly positive` or similar validation error. | Misconfigured hyperparameter submitted to `TripleBarrierConfig`. | Inspect configuration parameters against boundary conditions. | Enforce strictly positive multipliers and non-negative friction parameters. | Engine startup failure; uninitialized labeling pipeline. |
+| **`ERR-ECON-LABEL-002`** | `src/quant/analytics/labeling.py`<br>`DynamicTripleBarrierLabeler.label_arrays`<br>Lines 160–178 | Validates array dimensional alignment and minimum length ($N \ge W + H + \text{delay}$). | `ValueError: Input series length ... is too short` or dimension mismatch. | Ingested market data batch contains fewer bars than required for warm-up and horizon. | Check `batch.count` before calling `label_batch`; ensure $N \ge W + H + \text{delay}$. | Filter out historical partitions with insufficient bar counts prior to labeling. | Labeling pipeline crash on boundary data chunks. |
+| **`ERR-ECON-LABEL-003`** | `src/quant/analytics/labeling.py`<br>`compute_parkinson_volatility`<br>Lines 125–140 | Checks strictly positive prices and $High \ge Low$ before logarithm. | `ValueError: High and Low prices must be strictly positive for Parkinson volatility`. | Market data contains corrupt zero/negative prices or inverted High/Low wicks. | Inspect raw bars in DuckDB for zero quotes or crossed wicks. | Enforce `PriceBar` invariant verification at database ingestion gateway. | NaN propagation in volatility estimator; collapses downstream barriers. |
 
 ---
 
@@ -88,4 +103,12 @@ This register records all major architectural decisions, design patterns, and en
   - Implemented `FractionalDifferentiator` (Scikit-Learn API: `fit`, `transform`, `fit_transform`, `inverse_transform`) with automated bisection search for minimum stationary $d^*$ via ADF test, sample lookback cap $l^* \le 0.20 \cdot T$, and $O(T \log l^*)$ 1D FFT causal convolution.
   - Implemented `StreamingFracDiffBuffer` for sub-millisecond live bar updates with cold-start pre-warming (`hydrate` and `hydrate_from_repository`).
   - Added 20 new unit tests in `tests/unit/test_fractional_diff.py` (73 total) passing with **89.63% test coverage** and zero warnings.
+* **[Phase 14: Sprint 2 - Step 3: Dynamic Volatility Triple-Barrier Labeling] - 2026-09-09**:
+  - Created `src/quant/analytics/labeling.py` implementing `DynamicTripleBarrierLabeler`, `TripleBarrierConfig`, `BarrierLabel`, and `compute_parkinson_volatility`.
+  - Enforced causal Parkinson range volatility strictly lagged to $t-1$ to eliminate lookahead bias.
+  - Implemented bilateral log-price space barriers ($\ln(P_{\text{entry}}) \pm c \cdot \sigma$) for Long, Short, and Unsigned positions.
+  - Codified conservative execution: dual intra-bar candle breaches default to stop-loss (`pessimistic_collision=True`), and opening gaps execute at actual open price ($O_k$).
+  - Integrated round-trip transaction friction (spread and exchange fees) into net return calculations.
+  - Added 24 unit tests in `tests/unit/test_labeling.py` (97 total) passing with **90.20% overall test coverage** and zero warnings.
+
 

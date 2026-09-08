@@ -11,8 +11,8 @@ gantt
     section Phase 2: Econometrics
     Step 1: Market Data & Columnar Store    :done, s2_1, 2026-09-08, 1d
     Step 2: Fractional Differentiation       :done, s2_2, 2026-09-09, 1d
-    Step 3: Triple-Barrier Labeling         :active, s2_3, 2026-09-10, 2d
-    Step 4: Combinatorial Purged CV (CPCV)  :s2_4, after s2_3, 3d
+    Step 3: Triple-Barrier Labeling         :done, s2_3, 2026-09-10, 1d
+    Step 4: Combinatorial Purged CV (CPCV)  :active, s2_4, 2026-09-11, 2d
     Step 5: Two-Stage Meta-Labeling         :s2_5, after s2_4, 2d
     Step 6: Deflated Sharpe Ratio (DSR)     :s2_6, after s2_5, 2d
     section Phase 3: Game Theory
@@ -57,17 +57,21 @@ To eliminate cognitive overload and merge conflicts, Phase 2 is decomposed into 
   * Real-time `StreamingFracDiffBuffer` with DuckDB repository pre-warming (`hydrate_from_repository`) and sub-millisecond updates.
   * 20 unit tests (73 total) passing with **89.63% coverage** and zero warnings.
 
-#### Step 3: Dynamic Volatility Triple-Barrier Labeling [ACTIVE / UPCOMING]
-* **Scope:**
-  * Path-dependent upper horizontal (profit-taking), lower horizontal (stop-loss), and vertical (expiration) barrier evaluation.
-  * Dynamic horizontal threshold scaling parameterized by instantaneous realized volatility: $pt_t = c_1 \sigma_t$, $sl_t = c_2 \sigma_t$.
-  * Explicit classification of un-hit expiration windows.
-* **Acceptance Criteria:** Property tests ensuring timestamps obey $t_{\text{touch}} \le t_{\text{expiration}}$; zero lookahead leakage.
+#### Step 3: Dynamic Volatility Triple-Barrier Labeling [COMPLETE]
+* **Deliverables:**
+  * Causal Parkinson range volatility estimator ($\sigma_t$) lagged by 1 bar ($t-1$) with zero lookahead bias.
+  * Geometric log-price space horizontal barrier evaluation preserving bilateral random-walk symmetry.
+  * Asymmetrical Long, Short, and Unsigned barrier execution mapping.
+  * Defensive bounds ($\sigma_{\text{floor}}, \sigma_{\text{cap}}$) preventing zero-volatility collapse and runaway barrier blowout.
+  * Opening price gap fill honoring discontinuous auction open levels.
+  * Conservative stop-loss collision policy on dual intra-bar breaches (`pessimistic_collision=True`).
+  * Net return deduction of round-trip bid-ask spread and exchange fee friction.
+  * 24 unit tests (97 total) passing with **90.20% coverage** and zero warnings.
 
-#### Step 4: Combinatorial Purged Cross-Validation (CPCV) [PLANNED]
+#### Step 4: Combinatorial Purged Cross-Validation (CPCV) [ACTIVE / UPCOMING]
 * **Scope:**
   * Chronological partitioning into $N$ blocks generating $\binom{N}{k}$ combinatorial backtest splits.
-  * Temporal boundary purging to remove overlapping event information horizons.
+  * Temporal boundary purging to remove overlapping event information horizons $[t_{\text{entry}}, t_{\text{exit}}]$.
   * Post-test embargo periods to eliminate autoregressive serial correlation leakage.
 * **Acceptance Criteria:** Vectorized split generator producing empirical distributions of backtest paths; memory footprint bounded $< 2\text{GB}$.
 

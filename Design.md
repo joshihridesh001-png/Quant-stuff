@@ -61,10 +61,18 @@ $$\omega_0 = 1, \quad \omega_k = -\omega_{k-1} \frac{d - k + 1}{k}$$
 
 ### 3.2 Dynamic Volatility Triple-Barrier Method
 Defines path-dependent trade exit thresholds standardized across volatility regimes:
-* **Upper Barrier (Take Profit)**: $P_t \cdot (1 + c_1 \sigma_t)$
-* **Lower Barrier (Stop Loss)**: $P_t \cdot (1 - c_2 \sigma_t)$
-* **Vertical Barrier (Expiration)**: $t + \Delta t_{\text{horizon}}$
-* **Label**: $y_t \in \{1, -1, 0\}$ depending on which barrier is touched first.
+* **Causal Range Volatility (Parkinson)**:
+  $$\sigma_t = \sqrt{\frac{1}{4 \ln(2) \cdot W} \sum_{i=0}^{W-1} \left(\ln \frac{H_{t-1-i}}{L_{t-1-i}}\right)^2}$$
+  Strictly lagged to $t-1$ to prevent lookahead bias; clamped to $[\sigma_{\text{floor}}, \sigma_{\text{cap}}]$.
+* **Geometric Log-Price Space Barriers**:
+  $$\ln(\text{Upper}) = \ln(P_{\text{entry}}) + c_1 \sigma_t, \quad \ln(\text{Lower}) = \ln(P_{\text{entry}}) - c_2 \sigma_t$$
+  For Short positions, lower barrier is profit target and upper barrier is stop-loss.
+* **Vertical Barrier (Expiration)**: $t_{\text{entry}} + H$ trading bars.
+* **Discontinuous Opening Gap Fill**: When market opens beyond a barrier, exit price is the actual open ($O_k$) rather than the theoretical barrier line.
+* **Pessimistic Collision Policy**: If both High and Low penetrate barriers within the identical candle, stop-loss execution takes absolute priority.
+* **Net Realized Payoff**: Deducts round-trip friction:
+  $$R_t = \text{side} \cdot \frac{P_{\text{exit}} - P_{\text{entry}}}{P_{\text{entry}}} - 2 \cdot (\text{spread} + \text{fee})$$
+* **Categorical Label**: $y_t \in \{1, -1, 0\}$ depending on first barrier touched.
 
 ### 3.3 Two-Stage Meta-Labeling Architecture
 1. **Primary Model (Directional)**: Generates trade recommendation $\hat{y}_t \in \{-1, 1\}$ with high recall.
