@@ -52,8 +52,12 @@ Preserves long-horizon memory while achieving stationarity:
 $$(1 - B)^d = \sum_{k=0}^{\infty} (-1)^k \binom{d}{k} B^k = 1 - dB + \frac{d(d-1)}{2!}B^2 - \frac{d(d-1)(d-2)}{3!}B^3 + \dots$$
 Weights are generated recursively:
 $$\omega_0 = 1, \quad \omega_k = -\omega_{k-1} \frac{d - k + 1}{k}$$
-* **Memory Truncation**: Truncate weight expansion at lag $l^*$ where $|\omega_k| < \epsilon$ ($\epsilon = 10^{-4}$), bounding complexity to $O(T)$.
-* **Stationarity Search Heuristic**: Minimum degree $d^* \in (0, 1)$ satisfying Augmented Dickey-Fuller test ($p < 0.01$) while maximizing correlation with original series $P_t$.
+* **Memory Truncation**: Truncate weight expansion at lag $l^*$ where $|\omega_k| < \epsilon$ ($\epsilon = 10^{-4}$), bounding filter length to $l^* \le 0.20 \cdot T$.
+* **Zero-Sum DC-Offset Normalization**: Truncated expansions leave $\sum \omega_k > 0$, leaking secular price trends into differenced features. Re-centering $\omega_0^* = -\sum_{k=1}^{l^*} \omega_k$ guarantees zero gain at DC frequency ($\sum_{k=0}^{l^*} \omega_k = 0$).
+* **Automated Bisection Search**: Evaluates optimal minimum degree $d^* \in [0, 1]$ satisfying Augmented Dickey-Fuller stationarity ($p \le 0.01$) in $\le 7$ binary iterations.
+* **Vectorized 1D FFT Convolution**: Evaluates $\tilde{P}_t = \sum_{k=0}^{l^*} \omega_k P_{t-k}$ in $O(T \log l^*)$ time with $O(T)$ RAM using `scipy.signal.fftconvolve`.
+* **Analytical Price Reconstruction**: Inverses differenced values for order pricing and risk calculations:
+  $$P_t = \frac{\tilde{P}_t - \sum_{k=1}^{l^*} \omega_k P_{t-k}}{\omega_0}$$
 
 ### 3.2 Dynamic Volatility Triple-Barrier Method
 Defines path-dependent trade exit thresholds standardized across volatility regimes:

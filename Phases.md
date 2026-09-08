@@ -10,8 +10,8 @@ gantt
     Foundational Architecture & Quality Rig :done, p1, 2026-09-01, 2026-09-07
     section Phase 2: Econometrics
     Step 1: Market Data & Columnar Store    :done, s2_1, 2026-09-08, 1d
-    Step 2: Fractional Differentiation       :active, s2_2, 2026-09-09, 2d
-    Step 3: Triple-Barrier Labeling         :s2_3, after s2_2, 2d
+    Step 2: Fractional Differentiation       :done, s2_2, 2026-09-09, 1d
+    Step 3: Triple-Barrier Labeling         :active, s2_3, 2026-09-10, 2d
     Step 4: Combinatorial Purged CV (CPCV)  :s2_4, after s2_3, 3d
     Step 5: Two-Stage Meta-Labeling         :s2_5, after s2_4, 2d
     Step 6: Deflated Sharpe Ratio (DSR)     :s2_6, after s2_5, 2d
@@ -47,14 +47,17 @@ To eliminate cognitive overload and merge conflicts, Phase 2 is decomposed into 
 #### Step 1: Market Data Entity & Columnar Storage Subsystem [COMPLETE]
 * **Deliverables:** Immutable `PriceBar` value object with defensive boundary invariants; `MarketDataBatch` with zero-copy PyArrow table export; embedded DuckDB columnar storage (`DuckDBManager`, `DuckDBMarketDataRepository`); `MarketDataService` with rolling realized volatility ($\sigma_t$); `/api/v1/market-data` REST endpoints; 23 tests (53 total) passing with **88.79% coverage**.
 
-#### Step 2: Fractional Differentiation Engine [UPCOMING]
-* **Scope:**
-  * Memory-preserving differencing operator $(1 - B)^d$ expanded via binomial series.
-  * Bounded memory weight series truncation with tolerance parameter $|\omega_k| < \epsilon$ ($\epsilon \le 10^{-4}$).
-  * Automated optimal degree $d^*$ search using Augmented Dickey-Fuller (ADF) stationarity testing while maximizing correlation with the original price series.
-* **Acceptance Criteria:** Unit tests verifying $d=0$ identity, $d=1$ standard returns, bounded weight decay, and ADF stationarity convergence ($p < 0.01$).
+#### Step 2: Fractional Differentiation Engine [COMPLETE]
+* **Deliverables:**
+  * Fixed-Width Window Fractional Differentiation (FFD) engine via recursive binomial expansion $(1 - B)^d$.
+  * Bounded memory weight series truncation ($|\omega_k| < \epsilon = 10^{-4}$) with zero-sum DC-offset correction ($\sum \omega = 0$).
+  * Automated optimal degree $d^*$ bisection search minimizing ADF test evaluations while preserving historical memory.
+  * $O(T \log l^*)$ 1D FFT causal convolution via `scipy.signal.fftconvolve` with $O(T)$ bounded memory.
+  * Analytical recursive reconstruction operator (`inverse_transform`) for price recovery.
+  * Real-time `StreamingFracDiffBuffer` with DuckDB repository pre-warming (`hydrate_from_repository`) and sub-millisecond updates.
+  * 20 unit tests (73 total) passing with **89.63% coverage** and zero warnings.
 
-#### Step 3: Dynamic Volatility Triple-Barrier Labeling [PLANNED]
+#### Step 3: Dynamic Volatility Triple-Barrier Labeling [ACTIVE / UPCOMING]
 * **Scope:**
   * Path-dependent upper horizontal (profit-taking), lower horizontal (stop-loss), and vertical (expiration) barrier evaluation.
   * Dynamic horizontal threshold scaling parameterized by instantaneous realized volatility: $pt_t = c_1 \sigma_t$, $sl_t = c_2 \sigma_t$.

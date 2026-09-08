@@ -29,6 +29,19 @@ This register records all major architectural decisions, design patterns, and en
 * **Decision:** Implement `DuckDBManager.run_sync` wrapping operations in `threading.Lock` and delegating to `asyncio.to_thread`.
 * **Trade-Offs:** Queries execute sequentially through the lock; completely prevents ASGI event loop starvation.
 
+### ADR-005: Fixed-Width Window Fractional Differentiation Engine with Bisection Search and Zero-Sum Normalization
+* **Date:** 2026-09-08 | **Status:** Implemented (Sprint 2, Step 2)
+* **Context:** Standard price series $P_t$ are non-stationary (violating Gauss-Markov assumptions), but integer first-differencing $d=1$ ($\Delta P_t$) completely destroys multi-period memory. Standard fractional differentiation suffers from 9 critical vulnerabilities: data-snooping in $d^*$ search, DC offset / price-level leakage, sample size destruction, 2D matrix RAM blowout, cold-start buffer starvation, and lack of analytical price reconstruction.
+* **Decision:** Implement Fixed-Width Window Fractional Differentiation (FFD) using recursive binomial expansion $(1 - B)^d$ with:
+  1. Automated stationarity search using bisection over $d \in [0, 1]$ with ADF test ($p \le 0.01$), reducing evaluations from 20 linear steps to at most 7 binary iterations.
+  2. Strict sample lookback cap $l^* \le 0.20 \cdot T$ to prevent destroying validation sample sizes.
+  3. Zero-sum weight correction ($\omega_0^* = -\sum_{k=1}^{l^*} \omega_k$) to eliminate secular price drift and DC-offset leakage.
+  4. 1D FFT causal convolution (`scipy.signal.fftconvolve`) achieving $O(T \log l^*)$ time complexity and bounded $O(T)$ memory footprint instead of allocating $O(T \cdot l^*)$ 2D strided matrices.
+  5. Analytical recursive inversion operator (`inverse_transform`) to recover nominal price paths for order routing and risk metrics.
+  6. Real-time `StreamingFracDiffBuffer` with cold-start pre-warming (`hydrate` and `hydrate_from_repository`) to guarantee sub-millisecond single-bar updates.
+* **Alternatives Evaluated:** Standard integer differencing $d=1$ (rejected: complete loss of memory); Grid search over $d \in [0, 1]$ (rejected: 20-30 expensive ADF calls); 2D strided toeplitz matrix multiplication (rejected: $O(N \cdot l^*)$ memory blowout).
+* **Trade-Offs:** Bisection search assumes monotonic stationarity with respect to $d$; zero-sum correction slightly perturbs filter response at low frequencies to guarantee 0 gain at DC.
+
 ---
 
 ## 2. Deterministic Diagnostic Failure Matrix (Zero-Execution Triage)
@@ -44,6 +57,9 @@ This register records all major architectural decisions, design patterns, and en
 | **`ERR-MKT-SVC-001`** | `src/quant/services/market_data_service.py`<br>`get_historical_bars`<br>Lines 95–110 | Validates $start\_time \le end\_time$ before initiating database scan. | HTTP 400 Bad Request; `ValueError: start_time cannot be strictly greater than end_time`. | Client provided inverted timestamp query parameters. | Inspect request query parameters in access logs: verify `start_time <= end_time`. | Invert parameters in client query or swap parameters defensively in presentation layer. | Wastes database I/O scanning empty index ranges. |
 | **`ERR-MKT-SVC-002`** | `src/quant/services/market_data_service.py`<br>`compute_realized_volatility`<br>Lines 130–165 | Returns array where warm-up window indices $< W$ are $0.0$ and subsequent are std dev. | Array containing `NaN` or `inf`; downstream models fail. | Constant price stretches over entire window producing zero variance divisor. | Inspect `batch.closes` for constant price stretches. | Add numerical epsilon ($\epsilon = 10^{-8}$) to variance divisor. | Corrupts Triple-Barrier dynamic thresholds; causes immediate false barrier hits. |
 | **`ERR-MKT-API-001`** | `src/quant/api/v1/endpoints/market_data.py`<br>`ingest_bars_batch`<br>Lines 45–56 | Validates string resolution parameter against `Resolution` StrEnum. | HTTP 422 Unprocessable Content; Detail: `"Invalid resolution '...'."`. | Client submitted non-standard resolution string (e.g., `"1min"` instead of `"1m"`). | Check request payload `resolution` field in client POST body. | Map client timeframe notation to standardized `Resolution` enum values prior to API submission. | Ingestion rejected at gateway. |
+| **`ERR-ECON-FRAC-001`** | `src/quant/analytics/fractional_diff.py`<br>`compute_fractional_weights`<br>Lines 46–53 | Validates $d \in [0.0, 1.0]$ and $\epsilon > 0.0$. | `ValueError: Differencing degree d must be in [0.0, 1.0]` or non-positive tolerance. | Client code passed invalid differentiation degree or zero/negative truncation threshold. | Check caller parameters for $d < 0$, $d > 1$, or $\epsilon \le 0$. | Restrict degree to unit interval; set default $\epsilon = 10^{-4}$. | Prevents runaway infinite binomial weight expansion. |
+| **`ERR-ECON-FRAC-002`** | `src/quant/analytics/fractional_diff.py`<br>`FractionalDifferentiator.transform`<br>Lines 207–218 | Transforms series using pre-fitted weights and checks $N > l^*$. | `RuntimeError: FractionalDifferentiator must be fitted before calling transform()`. | Transformation called on an unfitted transformer instance or series shorter than lookback. | Inspect call site to ensure `fit()` precedes `transform()`; verify $N > l^*$. | Invoke `fit()` on training partition before `transform()`; verify dataset length exceeds lookback window. | Pipeline crash; unaligned features in model inference. |
+| **`ERR-ECON-FRAC-003`** | `src/quant/analytics/fractional_diff.py`<br>`StreamingFracDiffBuffer.update`<br>Lines 452–456 | Ingests single bar price and returns instantaneous differenced value. | `RuntimeError: Cannot compute streaming fractional difference: buffer is unhydrated`. | `update()` invoked immediately after engine startup without priming historical window. | Inspect streaming buffer initialization code; check `is_hydrated` flag. | Invoke `hydrate(history)` or `await hydrate_from_repository(asset_id, repo)` during worker startup. | Cold-start inference drops; corrupted real-time signals. |
 
 ---
 
@@ -65,3 +81,11 @@ This register records all major architectural decisions, design patterns, and en
   - Built `MarketDataService` with rolling realized volatility ($\sigma_t$).
   - Added REST endpoints (`POST /api/v1/market-data/bars/batch`, `GET /api/v1/market-data/bars`, `GET /api/v1/market-data/bars/latest`).
   - Added 23 new tests (53 total) passing with **88.79% overall test coverage**.
+* **[Phase 13: Sprint 2 - Step 2: Fractional Differentiation Engine] - 2026-09-08**:
+  - Added `statsmodels>=0.14.0` dependency to `pyproject.toml`.
+  - Created `src/quant/analytics/__init__.py` and `src/quant/analytics/fractional_diff.py`.
+  - Implemented `compute_fractional_weights` with recursive binomial expansion and zero-sum DC-offset correction ($\sum \omega = 0$).
+  - Implemented `FractionalDifferentiator` (Scikit-Learn API: `fit`, `transform`, `fit_transform`, `inverse_transform`) with automated bisection search for minimum stationary $d^*$ via ADF test, sample lookback cap $l^* \le 0.20 \cdot T$, and $O(T \log l^*)$ 1D FFT causal convolution.
+  - Implemented `StreamingFracDiffBuffer` for sub-millisecond live bar updates with cold-start pre-warming (`hydrate` and `hydrate_from_repository`).
+  - Added 20 new unit tests in `tests/unit/test_fractional_diff.py` (73 total) passing with **89.63% test coverage** and zero warnings.
+
