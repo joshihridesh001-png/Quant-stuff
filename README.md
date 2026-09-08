@@ -11,15 +11,16 @@ An institutional-grade, multi-algorithmic market prediction and alpha generation
 
 ---
 
-## Architectural Documentation
+## Canonical Documentation Suite
 
-* **[system_architecture_plan.md](./system_architecture_plan.md)**: Architectural blueprint detailing the 4 core modular layers:
-  1. *News Ingestion Layer & Temporal Chaining*: Continuous vectorization, semantic parsing, and dual-decay memory kernels ($\tau_{\text{fast}}$ and $\tau_{\text{slow}}$).
-  2. *Game-Theoretic Scenario Generator*: Multi-scenario adversarial simulation (Immediate Reversal, Momentum Cascade, Liquidity Squeeze) and Minimax Regret evaluation.
-  3. *Evolutionary Population Manager*: Chromosomal encoding, dynamic adaptive mutation, and **hypergamic mate selection** gated by residual error orthogonality ($\text{Corr}(\mathbf{e}_{\text{Alpha}}, \mathbf{e}_{\text{Aspirant}}) < \delta_{\text{ortho}}$).
-  4. *Ensemble Prediction Aggregator*: Regime-weighted Bayesian aggregation and disagreement entropy circuit breakers.
-* **[institutional_quant_framework.md](./institutional_quant_framework.md)**: Foundational principles for quantitative research, feature engineering (fractional differentiation, microstructural order flow), statistical significance (Deflated Sharpe Ratio, Multiple Testing Adjustments), Combinatorial Purged Cross-Validation (CPCV), execution optimization (Square-Root Law, Almgren-Chriss), and portfolio allocation (Hierarchical Risk Parity, CVaR risk budgeting).
-* **[CHANGELOG_DEV.md](./CHANGELOG_DEV.md)**: Real-time running developer audit trail recording code modifications, configuration changes, architectural adjustments, and trade-offs.
+The system's operational and architectural standards are codified across 6 canonical documents:
+
+1. **[`PRD.md`](./PRD.md)**: Product Requirements Document — product vision, market inefficiencies, user personas, and feature matrices.
+2. **[`Architecture.md`](./Architecture.md)**: System Architecture & Component Topology — layered domain design, hybrid storage (DuckDB + PostgreSQL), module maps, and data flow pipelines.
+3. **[`Rules.md`](./Rules.md)**: The Three Fundamental Engineering Rules — micro-level code transparency, zero-execution diagnostics, and strict CI quality gates.
+4. **[`Phases.md`](./Phases.md)**: Implementation Roadmap & Delivery Phases — granular phase-by-phase delivery schedule (Sprint 1 through Sprint 5).
+5. **[`Design.md`](./Design.md)**: Quantitative & Technical Design Specification — mathematical formulations for decay kernels, fractional diff, triple-barrier labeling, CPCV, DSR, and hypergamic mating.
+6. **[`Memory.md`](./Memory.md)**: Project Memory — Autonomous Decision Register (ADR-001 through ADR-004), Deterministic Diagnostic Failure Matrix, and complete engineering audit trail.
 
 ---
 
@@ -168,7 +169,12 @@ All 30 unit, integration, and API tests execute against an isolated in-memory as
 | Phase | Milestone | Focus Areas | Status |
 | :--- | :--- | :--- | :--- |
 | **Sprint 1** | **Foundational Architecture & Quality Rig** | `src/` layout, async SQLAlchemy ORM, Alembic migrations, FastAPI routing, RBAC, decay kernel, multi-objective fitness, 89% test coverage, GitHub Actions CI. | **Complete** |
-| **Sprint 2** | **Econometric Rig & Feature Engineering** | Fractional differentiation $(1-B)^d$, dynamic volatility Triple-Barrier labeling, Meta-Labeling, Combinatorial Purged Cross-Validation (CPCV), Deflated Sharpe Ratio (DSR). | *Upcoming* |
+| **Sprint 2: Step 1** | **Market Data Entity & Columnar Storage** | Immutable `PriceBar` with defensive invariants, contiguous `MarketDataBatch`, embedded DuckDB engine, PyArrow zero-copy bulk ingestion, rolling realized volatility ($\sigma_t$). | **Complete** |
+| **Sprint 2: Step 2** | **Fractional Differentiation Engine** | Memory-preserving differentiation $(1-B)^d$, binomial weight series with tolerance truncation ($\epsilon \le 10^{-4}$), automated stationarity search via ADF test. | *Upcoming* |
+| **Sprint 2: Step 3** | **Dynamic Volatility Triple-Barrier Labeling** | Path-dependent horizontal/vertical barrier detection, realized volatility dynamic threshold scaling, un-hit expiration classification. | *Planned* |
+| **Sprint 2: Step 4** | **Combinatorial Purged Cross-Validation (CPCV)** | Non-IID combinatorial partition generator $\binom{N}{k}$, temporal event purging, post-test embargo windows. | *Planned* |
+| **Sprint 2: Step 5** | **Two-Stage Meta-Labeling Architecture** | Primary directional model decoupling, secondary probability-calibrated betting classifier ($z_t \in \{0, 1\}$), capacity-aware sizing. | *Planned* |
+| **Sprint 2: Step 6** | **Deflated Sharpe Ratio (DSR) & Statistical Testing** | Adjustment for non-normality (skewness, kurtosis), sample length $T$, trial count $K$, and variance of trials $V[\{SR\}]$. | *Planned* |
 | **Sprint 3** | **Scenario Matrix & Game Theory Engine** | Adversarial market regimes ($\mathbf{s}_1, \mathbf{s}_2, \mathbf{s}_3$), square-root market impact modeling, Minimax Regret evaluator. | *Planned* |
 | **Sprint 4** | **Evolutionary Population & Hypergamy** | Orthogonality mating gate ($\text{Corr}(\mathbf{e}_{\text{Alpha}}, \mathbf{e}_{\text{Aspirant}}) < \delta$), adaptive volatility mutation, Pareto elite tracking. | *Planned* |
 | **Sprint 5** | **Ensemble Aggregation & Risk Overlays** | Regime-conditioned Bayesian weighting, disagreement entropy circuit breakers, CUSUM kill switches, HRP portfolio allocation. | *Planned* |

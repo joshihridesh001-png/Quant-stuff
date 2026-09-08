@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from quant.api.middleware import CorrelationAndTimingMiddleware, register_exception_handlers
-from quant.api.v1.endpoints import auth, events, genotypes
+from quant.api.v1.endpoints import auth, events, genotypes, market_data
 from quant.core.config import get_settings
 from quant.infrastructure.database.session import engine
 
@@ -50,6 +50,7 @@ def create_application() -> FastAPI:
     app.include_router(events.router, prefix=settings.API_V1_PREFIX)
     app.include_router(genotypes.router, prefix=settings.API_V1_PREFIX)
     app.include_router(auth.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(market_data.router, prefix=settings.API_V1_PREFIX)
 
     # 4. System Health Check Endpoint
     @app.get("/healthz", tags=["System Health"], summary="Liveness & Readiness Probe")

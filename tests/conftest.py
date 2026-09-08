@@ -62,10 +62,18 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient]:
 
     app.dependency_overrides[get_db] = override_get_db
 
+    # Provide isolated in-memory DuckDB instance per test client session
+    from quant.api.dependencies import get_duckdb_manager
+    from quant.infrastructure.database.duckdb_session import DuckDBManager
+
+    test_duckdb = DuckDBManager(":memory:")
+    app.dependency_overrides[get_duckdb_manager] = lambda: test_duckdb
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
         yield ac
 
+    test_duckdb.close()
     app.dependency_overrides.clear()
 
 

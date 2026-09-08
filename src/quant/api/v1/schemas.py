@@ -103,3 +103,47 @@ class PopulationSeedRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+# Market Data Schemas
+class PriceBarDTO(BaseModel):
+    """Data transfer object for a single discrete price bar."""
+
+    asset_id: str = Field(..., min_length=1, max_length=30, description="Asset ticker symbol")
+    timestamp: int = Field(..., gt=0, description="Unix epoch nanoseconds timestamp")
+    open: float = Field(..., gt=0.0, description="Opening price")
+    high: float = Field(..., gt=0.0, description="Highest price in interval")
+    low: float = Field(..., gt=0.0, description="Lowest price in interval")
+    close: float = Field(..., gt=0.0, description="Closing price")
+    volume: float = Field(..., ge=0.0, description="Traded volume")
+    vwap: float = Field(..., ge=0.0, description="Volume-Weighted Average Price")
+    resolution: str = Field("1m", description="Bar sampling resolution (e.g. 1m, 5m, 1h, 1d)")
+
+
+class BatchPriceBarIngestRequest(BaseModel):
+    """Batch ingestion request for high-throughput price bars."""
+
+    resolution: str = Field("1m", description="Resolution applied to incoming batch")
+    bars: list[PriceBarDTO] = Field(
+        ..., min_length=1, max_length=10000, description="Chronological list of price bars"
+    )
+
+
+class BatchPriceBarIngestResponse(BaseModel):
+    """Batch ingestion response reporting processed and persisted bar counts."""
+
+    processed_count: int
+    persisted_count: int
+    resolution: str
+
+
+class MarketDataBatchSummaryResponse(BaseModel):
+    """Summary response for historical bar range queries."""
+
+    asset_id: str
+    resolution: str
+    count: int
+    start_time: int | None
+    end_time: int | None
+    latest_close: float | None
+    realized_volatility_latest: float | None

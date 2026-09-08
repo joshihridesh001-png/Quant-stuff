@@ -9,16 +9,37 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from quant.core.config import get_settings
 from quant.core.security import decode_access_token, verify_api_key
-from quant.domain.interfaces import IAssetRepository, IEventRepository, IGenotypeRepository
+from quant.domain.interfaces import (
+    IAssetRepository,
+    IEventRepository,
+    IGenotypeRepository,
+    IMarketDataRepository,
+)
+from quant.infrastructure.database.duckdb_session import DuckDBManager
 from quant.infrastructure.database.session import get_db
 from quant.infrastructure.repositories.asset_repository import SqlAlchemyAssetRepository
+from quant.infrastructure.repositories.duckdb_market_data_repository import (
+    DuckDBMarketDataRepository,
+)
 from quant.infrastructure.repositories.event_repository import SqlAlchemyEventRepository
 from quant.infrastructure.repositories.genotype_repository import SqlAlchemyGenotypeRepository
 from quant.services.event_service import EventService
 from quant.services.genotype_service import GenotypeService
+from quant.services.market_data_service import MarketDataService
 
 settings = get_settings()
 bearer_scheme = HTTPBearer(auto_error=False)
+
+# Module-level singleton handle for embedded DuckDB
+_duckdb_manager: DuckDBManager | None = None
+
+
+def get_duckdb_manager() -> DuckDBManager:
+    """Return singleton instance of embedded DuckDB session manager."""
+    global _duckdb_manager
+    if _duckdb_manager is None:
+        _duckdb_manager = DuckDBManager()
+    return _duckdb_manager
 
 
 # Repository & Service Dependencies
@@ -45,6 +66,21 @@ def get_genotype_service(
     genotype_repo: IGenotypeRepository = Depends(get_genotype_repo),
 ) -> GenotypeService:
     return GenotypeService(genotype_repo)
+
+
+def get_market_data_repo(
+    manager: DuckDBManager = Depends(get_duckdb_manager),
+) -> IMarketDataRepository:
+    """Provide DuckDB market data persistence adapter."""
+    return DuckDBMarketDataRepository(manager)
+
+
+def get_market_data_service(
+    market_repo: IMarketDataRepository = Depends(get_market_data_repo),
+    asset_repo: IAssetRepository = Depends(get_asset_repo),
+) -> MarketDataService:
+    """Provide market data application service."""
+    return MarketDataService(market_repo, asset_repo)
 
 
 # Security & Role Dependencies

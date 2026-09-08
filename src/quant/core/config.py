@@ -20,9 +20,15 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "News-Driven Quantitative Prediction Engine"
     API_V1_PREFIX: str = "/api/v1"
 
-    # Database
+    # Relational Database (Transactional Metadata: Assets, News, Genotypes, Auth)
     DATABASE_URL: str = "sqlite+aiosqlite:///./quant.db"
     DATABASE_ECHO: bool = False
+
+    # Embedded Columnar Storage (High-Throughput Time-Series Market Data)
+    # Purpose: Designates the local filesystem path for the embedded DuckDB database file
+    # Dependencies: Used by DuckDBMarketDataRepository for ultra-low latency bar queries
+    # Invariant: Must point to a writable directory or ':memory:' for transient test execution
+    DUCKDB_PATH: str = "data/market_data.duckdb"
 
     # Security & Authentication
     API_KEY_SECRET: str = "dev-secret-api-key-992384918237192837"

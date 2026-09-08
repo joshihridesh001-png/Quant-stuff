@@ -1,11 +1,20 @@
 """Abstract repository and service interfaces enforcing Dependency Inversion."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from quant.domain.models import Asset, EventCentrality, Genotype, NewsEvent
+from quant.domain.models import (
+    Asset,
+    EventCentrality,
+    Genotype,
+    MarketDataBatch,
+    NewsEvent,
+    PriceBar,
+    Resolution,
+)
 
 
 class IAssetRepository(ABC):
@@ -96,3 +105,53 @@ class INewsIngestionEngine(ABC):
         as_of_time: datetime | None = None,
     ) -> dict[str, tuple[list[float], int]]:
         """Asynchronously compute active decayed news state vectors across multiple assets."""
+
+
+class IMarketDataRepository(ABC):
+    """Abstract persistence interface for high-throughput columnar market price bars.
+
+    Purpose: Isolates downstream econometric feature generators from underlying storage mechanics.
+    Dependencies: PriceBar, MarketDataBatch, Resolution.
+    Relationship: Implemented by DuckDBMarketDataRepository; consumed by MarketDataService and feature generators.
+    """
+
+    @abstractmethod
+    async def add_bars_batch(self, bars: Sequence[PriceBar]) -> int:
+        """Persist a batch of price bars with upsert semantics.
+
+        Purpose: Bulk loads price bars into high-performance columnar storage.
+        Dependencies: Sequence[PriceBar] containing validated observations.
+        Post-conditions: Records written to storage; returns total count of inserted/replaced rows.
+        """
+
+    @abstractmethod
+    async def get_bars_range(
+        self, asset_id: str, start_time: int, end_time: int, resolution: Resolution
+    ) -> MarketDataBatch:
+        """Retrieve contiguous columnar market bars within timestamp range [start_time, end_time].
+
+        Purpose: Supplies chronological price/volume arrays for backtesting and feature calculation.
+        Dependencies: Nanosecond epoch start and end bounds.
+        Post-conditions: Returns MarketDataBatch sorted strictly in ascending chronological order.
+        """
+
+    @abstractmethod
+    async def get_latest_bars(
+        self, asset_id: str, count: int, resolution: Resolution
+    ) -> MarketDataBatch:
+        """Retrieve the most recent N contiguous columnar market bars in ascending order.
+
+        Purpose: Feeds rolling econometric windows (e.g., rolling realized volatility) for live inference.
+        Dependencies: count > 0.
+        Post-conditions: Returns MarketDataBatch containing up to N bars ordered chronologically ascending.
+        """
+
+    @abstractmethod
+    async def get_available_range(
+        self, asset_id: str, resolution: Resolution
+    ) -> tuple[int, int] | None:
+        """Retrieve the earliest and latest available timestamps for an asset.
+
+        Purpose: Enables discovery of available historical depth before executing large query sweeps.
+        Post-conditions: Returns (min_timestamp, max_timestamp) in nanoseconds, or None if no bars exist.
+        """
