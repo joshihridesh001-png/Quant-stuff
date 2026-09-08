@@ -1,8 +1,8 @@
 # Software Requirements Specification (SRS)
 ## News-Driven Quantitative Prediction Engine & Alpha Platform
 
-**Document Identifier:** SRS-QUANT-2026-V1  
-**Version:** 1.0.0  
+**Document Identifier:** SRS-QUANT-2026-V1.1  
+**Version:** 1.1.0 (Hardened & Audited)  
 **Status:** Approved / Baseline  
 **Standards Compliance:** IEEE Std 830-1998 / ISO/IEC/IEEE 29148:2018  
 **System Classification:** Institutional Algorithmic Prediction & Research Engine  
@@ -28,6 +28,7 @@ The system is an institutional-grade, multi-algorithmic quantitative prediction 
 * **ADF**: Augmented Dickey-Fuller unit-root test for time series stationarity.
 * **Alpha Cohort**: The top $\rho = 20\%$ tier of strategy genotypes ranked by multi-objective fitness.
 * **Aspirant Cohort**: The remaining $80\%$ tier of candidate genotypes seeking crossover with Alpha models.
+* **Availability Timestamp**: The exact microsecond point-in-time when an information item became public.
 * **CPCV**: Combinatorial Purged Cross-Validation.
 * **CUSUM**: Cumulative Sum control chart used for detecting alpha degradation.
 * **DAG**: Directed Acyclic Graph representing causal event relationships.
@@ -95,7 +96,8 @@ flowchart TD
     Auth --> Services
     Services <--> Repo
     Repo <--> DB
-    EnsembleSvc -->|Distributional Forecast & Allocations| ExecutionGateway[Downstream Execution / Broker]
+    EnsembleSvc -->|Signed Distributional Forecasts & Sizing| AirGap[Execution Air-Gap Boundary]
+    AirGap --> ExecutionGateway[Downstream Broker / Execution Venue]
 ```
 
 ### 2.2 Product Functions (High-Level Summary)
@@ -118,6 +120,7 @@ flowchart TD
 * **CON-2 Architecture**: Strict **Layered Domain-Driven Design (DDD)**. Domain entities and mathematical algorithms must remain pure functions with zero framework dependencies on FastAPI or SQLAlchemy.
 * **CON-3 Zero Data Leakage**: Backtest splitting algorithms must mathematically guarantee zero temporal overlap between training feature horizons and test labels.
 * **CON-4 Decoupled LLM Boundary**: No Large Language Model or autonomous agent shall execute inside the deterministic mathematical engine. All LLM operations remain out-of-process external clients communicating via REST.
+* **CON-5 Execution Air-Gap Invariant**: The engine operates strictly in an advisory and analytical capacity. It generates signed alpha distributions and target weights, but maintains zero direct network connection to live broker FIX protocols or order entry gateways. Downstream execution requires an isolated external gateway.
 
 ---
 
@@ -129,6 +132,7 @@ flowchart TD
 * **Engine**: PostgreSQL 15+ (Production) / SQLite via `aiosqlite` (Local Development & Testing).
 * **Connection Management**: Asynchronous connection pooling via SQLAlchemy 2.0 (`AsyncSession`).
 * **Schema Evolution**: Version-controlled migrations managed via Alembic.
+* **3.1.1.1 Causal DAG Topological Schema**: The persistence tier shall support an `event_causal_edges` junction table linking `parent_event_id` to `child_event_id` with continuous `causal_weight` $\in [0, 1]$ to allow topological causal chain traversals.
 
 #### 3.1.2 External Ingestion Agent (Hermes AI Agent)
 * **Protocol**: HTTPS / REST.
@@ -154,11 +158,15 @@ Captures unstructured market intelligence, transforms text into dense and axial 
 * **FR-1.1 Composite Vector Generation**: For every incoming event, the system shall construct feature vector $\mathbf{e}_i \in \mathbb{R}^D$:
   $$\mathbf{e}_i = \Big[ \mathbf{v}_{\text{dense}} \;\|\; \mathbf{s}_{\text{sentiment}} \;\|\; \mathbf{u}_{\text{urgency}} \;\|\; \mathbf{c}_{\text{centrality}} \Big]$$
   where $\mathbf{v}_{\text{dense}} \in \mathbb{R}^{d_e}$ is a dense Transformer embedding, $\mathbf{s}_{\text{sentiment}} \in [-1, 1]^3$ (polarity, subjectivity, novelty), $\mathbf{u}_{\text{urgency}} \in [0, 1]$, and $\mathbf{c}_{\text{centrality}} \in [0, 1]^K$.
+* **FR-1.1.1 Availability Timestamp Invariant**: The primary timestamp of an event shall strictly record its **Availability Timestamp** ($t_{\text{available}}$)—the exact microsecond the data was public. An optional `reference_period` may record accounting quarters, but shall never be used for temporal alignment or decay initiation.
 * **FR-1.2 Centrality Linkage**: Events shall support multi-asset mapping where relevance weight $c_{i,k} \in [0, 1]$ represents continuous sensitivity for asset $k$.
 * **FR-1.3 Hybrid Memory Kernel**: The active state $\mathbf{S}_{\text{news}}^{(k)}(t)$ for asset $k$ at time $t$ shall be evaluated as:
   $$\mathbf{S}_{\text{news}}^{(k)}(t) = \sum_{i \in \mathcal{V}_t} c_{i,k} \cdot \mathbf{e}_i \cdot \kappa(t - t_i, \mathbf{u}_i)$$
   $$\kappa(\Delta t, u) = \alpha \exp\left(-\frac{\Delta t}{\tau_{\text{fast}} \cdot (1 - u)}\right) + (1 - \alpha)\left(1 + \frac{\Delta t}{\tau_{\text{slow}}}\right)^{-\beta}$$
   with $\tau_{\text{fast}}$ governing fast sentiment dissipation and $\tau_{\text{slow}}$ governing long-term structural trends.
+* **FR-1.3.1 Active SQL Memory Horizon Cutoff**: To maintain query performance within the 50ms SLA, the database query retrieving $\mathcal{V}_t$ shall enforce an indexed lookback cutoff:
+  $$t_i \ge t - T_{\text{cutoff}}, \quad \text{where } T_{\text{cutoff}} = 5 \times \tau_{\text{slow}}$$
+  Events older than $T_{\text{cutoff}}$ (where decay weight $\kappa < 10^{-4}$) shall be excluded at the SQL index level.
 * **FR-1.4 Boundary Safety**: $\Delta t < 0$ shall yield $\kappa = 0.0$. In the fast decay denominator, $u \ge 1.0$ shall be clamped to $0.999$ to prevent division by zero.
 
 ---
@@ -251,6 +259,7 @@ Enforces strict out-of-sample integrity, prevents backtest overfitting, and pena
   $$DSR = \Phi\left( \frac{(\widehat{SR} - E[\max_K \{SR_k\}]) \sqrt{T-1}}{\sqrt{1 - \hat{\gamma}_3 \widehat{SR} + \frac{\hat{\gamma}_4 - 1}{4} \widehat{SR}^2}} \right)$$
   $$E\left[\max_K \{SR_k\}\right] \approx (1-\gamma) Z^{-1}\left(1 - \frac{1}{K}\right) + \gamma Z^{-1}\left(1 - \frac{1}{K e}\right)$$
   The system shall reject any strategy where $DSR < 0.95$.
+* **FR-6.4.1 Cumulative Strategy Trial Audit Logging**: The persistence tier shall immutably record every evaluated strategy trial (including failed, discarded, and negative Sharpe candidates). Search space dimensionality $K$ and variance $V[\{SR_k\}]$ must be deterministically calculated from this audit log to ensure the DSR penalty is mathematically uncompromised.
 * **FR-6.5 Multiple Testing Corrections**: Implement Holm-Bonferroni (Family-Wise Error Rate) and Benjamini-Hochberg (False Discovery Rate) p-value adjustments.
 
 ---
@@ -298,13 +307,16 @@ Combines predictions from elite Alpha models conditional on market regime and en
 
 | Requirement ID | Verification Method | Acceptance Criteria |
 | :--- | :--- | :--- |
+| **FR-1.1.1** (Timestamp Rule) | Automated Unit Test | Assert rejected if availability timestamp in future. All time series joins use $t_{\text{available}}$. |
 | **FR-1.3** (Decay Kernel) | Automated Unit Test | At $\Delta t = 0$, $\kappa(0, u) = 1.0 \pm 10^{-6}$. Monotonically decreasing for $\Delta t > 0$. |
+| **FR-1.3.1** (SQL Horizon) | Integration Test | Query execution plan confirms `timestamp >= now - T_cutoff` uses index; latency $< 50\text{ms}$. |
 | **FR-2.4** (FracDiff $d^*$) | Automated Unit Test | Transformed random walk series passes ADF test ($p < 0.05$) while correlation with raw series $\ge 0.85$. |
 | **FR-3.3** (Triple Barrier) | Automated Unit Test | Verified path exits on simulated price ramps: ramp up $\rightarrow +1$, ramp down $\rightarrow -1$, flat $\rightarrow 0$. |
 | **FR-4.3** (Minimax Regret) | Automated Unit Test | Regret value $V_i \le 0.0$. Payoff correctly penalizes variance and crowding. |
 | **FR-5.3** (Hypergamic Gate) | Automated Unit Test | Aspirant crossover rejected if $\text{Corr}(\mathbf{e}_{\text{Alpha}}, \mathbf{e}_{\text{Aspirant}}) \ge \delta_{\text{ortho}}$. |
 | **FR-6.3** (CPCV Splitting) | Automated Unit Test | $\binom{N}{k}$ combinations generated. Zero overlapping indices between purged train and test sets. |
 | **FR-6.4** (Deflated Sharpe) | Automated Unit Test | Increasing trial count $K$ strictly reduces $DSR$. Skewness and kurtosis penalties validated against analytical values. |
+| **FR-6.4.1** (Trial Logging) | Integration Test | All evaluated strategy runs recorded in database. Verify calculated $K$ equals row count. |
 | **FR-7.2** (Entropy Breaker) | Automated Unit Test | Disagreement entropy $> \theta$ automatically halves exposure and flags regime shift alert. |
 | **NFR-4.1** (Test Coverage) | Automated CI Pipeline | Pytest coverage runs in GitHub Actions and fails build if coverage $< 85\%$. |
 
@@ -315,3 +327,4 @@ Combines predictions from elite Alpha models conditional on market regime and en
 | Version | Date | Author / Role | Description of Changes |
 | :---: | :---: | :--- | :--- |
 | **1.0.0** | 2026-09-08 | Technical Lead & Quant Architect | Initial baseline SRS incorporating Sprint 1 foundation, Sprint 2 econometrics, evolutionary hypergamy, and Hermes AI Agent ingestion interface. |
+| **1.1.0** | 2026-09-08 | Technical Lead & Quant Architect | Hardened specification with 5 architectural safeguards: availability timestamps (`FR-1.1.1`), active SQL horizon cutoff (`FR-1.3.1`), causal DAG junction table (`3.1.1.1`), cumulative trial logging for DSR (`FR-6.4.1`), and execution air-gap boundary (`CON-5`). |
