@@ -100,12 +100,37 @@ Defines path-dependent trade exit thresholds standardized across volatility regi
 * **Continuous Backtest Path Reconstruction**: Folds are stitched into $\phi = \binom{N-1}{k-1}$ continuous out-of-sample backtest paths using greedy positional fold assignment: for each block $g$, its $p$-th test fold occurrence fills path $p$.
 * **Empirical Sharpe Variance Vector**: Evaluates empirical Sharpe distribution $\{SR_p\}_{p=1}^\phi$ and its variance $V[\{SR\}] = \frac{1}{\phi - 1} \sum_{p=1}^\phi (SR_p - \overline{SR})^2$, which is supplied directly as the variance parameter to Step 6 (Deflated Sharpe Ratio).
 
-### 4.2 Deflated Sharpe Ratio (DSR)
-Evaluates backtested Sharpe Ratio ($\widehat{SR}$) conditional on skewness $\hat{\gamma}_3$, kurtosis $\hat{\gamma}_4$, sample length $T$, trial count $K$, and variance of trials $V[\{\widehat{SR}_k\}]$:
+### 4.2 Deflated Sharpe Ratio (DSR) & Statistical Significance
+Evaluates backtested Sharpe Ratio ($\widehat{SR}$) conditional on skewness $\hat{\gamma}_3$, Pearson kurtosis $\hat{\gamma}_4$, sample length $T$, effective independent trial count $K_{\text{eff}}$, and cross-trial variance $V[\{\widehat{SR}_k\}]$:
 
-$$E\left[\max_k \{SR_k\}\right] \approx (1-\gamma) Z^{-1}\left(1 - \frac{1}{K}\right) + \gamma Z^{-1}\left(1 - \frac{1}{K e}\right)$$
-$$DSR = \Phi\left( \frac{(\widehat{SR} - E[\max \{SR_k\}]) \sqrt{T-1}}{\sqrt{1 - \hat{\gamma}_3 \widehat{SR} + \frac{\hat{\gamma}_4 - 1}{4} \widehat{SR}^2}} \right)$$
-* **Rejection Rule**: Reject any strategy with $DSR < 0.95$.
+1. **Robust Moment Estimation & Pearson Clamping**:
+   Two-sided winsorization suppresses outlier wicks. Kurtosis is mathematically bounded to prevent negative standard error radicals:
+   $$\hat{\gamma}_4 \ge 1 + \hat{\gamma}_3^2$$
+
+2. **Probabilistic Sharpe Ratio (PSR)**:
+   $$\hat{\sigma}_{SR} = \sqrt{\frac{\max\left(10^{-8}, \; 1 - \hat{\gamma}_3 \widehat{SR} + \frac{\hat{\gamma}_4 - 1}{4} \widehat{SR}^2\right)}{T - 1}}$$
+   $$\text{PSR}(SR^*) = \Phi\left( \frac{\widehat{SR} - SR^*}{\hat{\sigma}_{SR}} \right)$$
+
+3. **Effective Independent Trials via Spectral Decomposition**:
+   Constructs correlation matrix $\mathbf{C} \in \mathbb{R}^{K \times K}$ across candidate models and calculates effective rank:
+   $$K_{\text{eff}} = \frac{(\text{tr}(\mathbf{C}))^2}{\text{tr}(\mathbf{C}^2)} = \frac{K^2}{\sum_{i=1}^K \sum_{j=1}^K C_{ij}^2}$$
+
+4. **Expected Maximum Sharpe Ratio Hurdle**:
+   $$E\left[\max_{k=1\dots K_{\text{eff}}} \{SR_k\}\right] \approx \overline{SR} + \sqrt{V[\{SR\}]} \cdot \left( (1-\gamma) \Phi^{-1}\left(1 - \frac{1}{K_{\text{eff}}}\right) + \gamma \Phi^{-1}\left(1 - \frac{1}{K_{\text{eff}} e}\right) \right)$$
+   where $\gamma \approx 0.5772156649$ is the Euler-Mascheroni constant. Collapses to $\overline{SR}$ when $K_{\text{eff}} \le 1$ or $V \le 0$.
+
+5. **Piecewise Minimum Backtest Length (MinBTL)**:
+   $$\text{MinBTL} = \begin{cases}
+     1 + \left(1 - \hat{\gamma}_3 \widehat{SR} + \frac{\hat{\gamma}_4 - 1}{4} \widehat{SR}^2\right) \left( \frac{\Phi^{-1}(0.95)}{\widehat{SR} - E[\max \{SR\}]} \right)^2 & \text{if } \widehat{SR} > E[\max \{SR\}] \\
+     +\infty & \text{if } \widehat{SR} \le E[\max \{SR\}]
+   \end{cases}$$
+
+6. **Dual Institutional Gate**:
+   $$\text{Certify Strategy} \iff (\text{DSR} \ge 0.95) \land (T \ge \text{MinBTL})$$
+
+7. **Cohort False Discovery Rate (FDR) Controls**:
+   Applies Benjamini-Hochberg (BH) or Benjamini-Yekutieli (BY) stepdown procedures across multi-model genetic populations to guarantee:
+   $$\text{FDR} \le Q^* = 0.05$$
 
 ---
 

@@ -10,6 +10,17 @@ from quant.analytics.cross_validation import (
     CPCVConfig,
     PurgedSplit,
 )
+from quant.analytics.deflated_sharpe import (
+    DSRConfig,
+    DSRResult,
+    DeflatedSharpeEngine,
+    adjust_p_values_fdr,
+    compute_effective_trials,
+    compute_expected_max_sharpe,
+    compute_min_backtest_length,
+    compute_moments,
+    compute_probabilistic_sharpe_ratio,
+)
 from quant.analytics.fractional_diff import (
     FractionalDifferentiator,
     StreamingFracDiffBuffer,
@@ -37,6 +48,9 @@ __all__ = [
     "CPCVConfig",
     "CombinatorialPurgedCV",
     "ContinuousKellySizer",
+    "DSRConfig",
+    "DSRResult",
+    "DeflatedSharpeEngine",
     "DynamicTripleBarrierLabeler",
     "FractionalDifferentiator",
     "MetaLabel",
@@ -47,6 +61,12 @@ __all__ = [
     "StreamingFracDiffBuffer",
     "TripleBarrierConfig",
     "TwoStageMetaLabeler",
+    "adjust_p_values_fdr",
+    "compute_effective_trials",
+    "compute_expected_max_sharpe",
     "compute_fractional_weights",
+    "compute_min_backtest_length",
+    "compute_moments",
     "compute_parkinson_volatility",
+    "compute_probabilistic_sharpe_ratio",
 ]

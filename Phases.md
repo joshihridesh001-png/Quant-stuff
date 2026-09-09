@@ -12,11 +12,11 @@ gantt
     Step 1: Market Data & Columnar Store    :done, s2_1, 2026-09-08, 1d
     Step 2: Fractional Differentiation       :done, s2_2, 2026-09-09, 1d
     Step 3: Triple-Barrier Labeling         :done, s2_3, 2026-09-10, 1d
-    Step 4: Combinatorial Purged CV (CPCV)  :active, s2_4, 2026-09-11, 2d
-    Step 5: Two-Stage Meta-Labeling         :s2_5, after s2_4, 2d
-    Step 6: Deflated Sharpe Ratio (DSR)     :s2_6, after s2_5, 2d
+    Step 4: Combinatorial Purged CV (CPCV)  :done, s2_4, 2026-09-11, 2d
+    Step 5: Two-Stage Meta-Labeling         :done, s2_5, 2026-09-12, 2d
+    Step 6: Deflated Sharpe Ratio (DSR)     :done, s2_6, 2026-09-13, 2d
     section Phase 3: Game Theory
-    Scenario Matrix & Adversarial Payoffs   :p3, 2026-09-22, 5d
+    Scenario Matrix & Adversarial Payoffs   :active, p3, 2026-09-22, 5d
     section Phase 4: Evolution
     Hypergamic Selection & Population Engine :p4, 2026-09-29, 5d
     section Phase 5: Productionization
@@ -40,7 +40,7 @@ gantt
 
 ---
 
-### Phase 2: Econometric Rig & Feature Engineering [IN PROGRESS]
+### Phase 2: Econometric Rig & Feature Engineering [COMPLETE]
 
 To eliminate cognitive overload and merge conflicts, Phase 2 is decomposed into 6 sequential micro-steps:
 
@@ -90,16 +90,21 @@ To eliminate cognitive overload and merge conflicts, Phase 2 is decomposed into 
   * Portfolio-level concurrency throttling ($c_t$) normalizing overlapping trade allocations to enforce an aggregate $100\%$ leverage limit ($L_{\text{max}} = 1.0$).
   * 8 unit tests (118 total) passing with **91.40% coverage** and zero warnings.
 
-#### Step 6: Deflated Sharpe Ratio (DSR) & Statistical Significance [ACTIVE / UPCOMING]
-* **Scope:**
-  * Adjustment of empirical Sharpe ratio for skewness $\hat{\gamma}_3$, kurtosis $\hat{\gamma}_4$, sample length $T$, trial count $K$, and variance of trials $V[\{SR_k\}]$.
-  * Calculation of Expected Maximum Sharpe Ratio.
-  * Hard strategy rejection threshold ($DSR < 0.95$).
-* **Acceptance Criteria:** Verified against published benchmark datasets; integration with CPCV trial outputs.
+#### Step 6: Deflated Sharpe Ratio (DSR) & Statistical Significance [COMPLETE]
+* **Deliverables:**
+  * Robust higher-moment estimation (`compute_moments`) with two-sided winsorization and Pearson bound clamp $\hat{\gamma}_4 \ge 1 + \hat{\gamma}_3^2$.
+  * Probabilistic Sharpe Ratio (`compute_probabilistic_sharpe_ratio`) adjusting for skewness and excess kurtosis.
+  * Extreme Value Theory selection bias hurdle (`compute_expected_max_sharpe`) with $K=1$ probit singularity guard and Euler-Mascheroni approximation.
+  * Piecewise Minimum Backtest Length (`compute_min_backtest_length`) strictly evaluating to $+\infty$ for losing strategies.
+  * Spectral Frobenius trace participation ratio (`compute_effective_trials`) calculating effective independent trials $K_{\text{eff}} \le K$.
+  * False Discovery Rate controls (`adjust_p_values_fdr`) with Benjamini-Hochberg and Benjamini-Yekutieli algorithms.
+  * Master `DeflatedSharpeEngine` with dual institutional gate: $(\text{DSR} \ge 0.95) \land (T \ge \text{MinBTL})$.
+  * Direct integration with Step 4 CPCV paths (`evaluate_cpcv_results`) and population cohort screening (`evaluate_cohort`).
+  * 10 unit tests (128 total) passing with **91.75% overall coverage** (95% on `deflated_sharpe.py`) and zero warnings.
 
 ---
 
-### Phase 3: Scenario Matrix & Game Theory Engine [PLANNED]
+### Phase 3: Scenario Matrix & Game Theory Engine [ACTIVE / UPCOMING]
 * **Scope:**
   * Bayesian game formulation of market price formation against Nature/Counterparties.
   * Adversarial market response regimes:
