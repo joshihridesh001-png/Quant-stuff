@@ -124,11 +124,13 @@ Decomposed into 4 sequential micro-steps implementing the Entropic Distributiona
   * State-space bounded order book depletion buffer with hyperbolic tangent saturation ($\mathbf{B}_t \le B_{\max}$).
   * 19 unit tests (168 total) passing with **92.40% overall coverage** (93% on `market_impact.py`) and zero warnings.
 
-#### Step 3: Stackelberg Leader-Follower Trajectory [UPCOMING]
-* **Scope:**
-  * Discrete Monotone Hyperbolic Propagator scheduling multi-period execution slices ($\sum_{k=1}^H \alpha_k = 1, \alpha_k > 0$).
-  * Continuous quadratic-bilinear Stackelberg payoff functional accounting for market maker quote shading.
-  * Friction-consistent institutional benchmark universe (Equal Weight, Risk Parity, Inverse Volatility, Cash).
+#### Step 3: Stackelberg Leader-Follower Trajectory [COMPLETE]
+* **Deliverables:**
+  * Discrete Monotone Hyperbolic Propagator (`DiscreteHyperbolicPropagator`) scheduling multi-period execution slices with exact partition of unity ($\sum_{k=1}^H \alpha_k = 1.0$) and overflow-free exponential formulation for all $\kappa \in (0, \infty)$ and $H \ge 1$.
+  * Continuous quadratic-bilinear Stackelberg payoff functional (`StackelbergPayoffEngine`) incorporating market maker predatory quote shading ($\mathbf{M}_{\text{pred}} = \theta_{\text{pred}} \mathbf{\Sigma}_j$), exact analytical gradient $\nabla_{\mathbf{a}} U$, and certified negative-definite Hessian $\mathbf{H}_{\mathbf{a}} U \prec 0$.
+  * Institutional Benchmark Universe (`InstitutionalBenchmarkUniverse`) providing Equal Weight, Risk Parity, Inverse Volatility, and Cash benchmarks with single-asset concentration caps ($b_i \le w_{\max}$) and Friction Parity.
+  * Payoff Tensor and Non-Negative Regret Matrix Constructor (`StackelbergPayoffTensorConstructor`) producing non-negative regret $R_{i, j} \ge 0$ across market regimes.
+  * 70 unit tests (238 total) passing with **93.03% overall coverage** (99% on `payoff_matrix.py`) and zero warnings.
 
 #### Step 4: Closed-Form Boltzmann Dual & Entropic Minimax Regret Solver [UPCOMING]
 * **Scope:**

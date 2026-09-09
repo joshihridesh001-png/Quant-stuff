@@ -117,6 +117,20 @@ This register records all major architectural decisions, design patterns, and en
   5. Track order book depletion via state-space hyperbolic tangent saturation $\mathbf{B}_t \in [0, B_{\max}]$.
 * **Trade-Offs:** Requires spectral square root of OAS covariance; mitigated by $O(N)$ diagonal square root evaluation on pre-computed spectral factors from Step 1.
 
+### ADR-012: Stackelberg Leader-Follower Trajectory, Hyperbolic Propagator & Friction Parity
+* **Date:** 2026-09-09 | **Status:** Implemented (Sprint 3, Step 3)
+* **Context:** Multi-period rebalancing schedules must slice portfolio flow across time without floating-point overflow or heuristic normalization gaps. Market maker quote shading against large flow creates an adverse selection penalty that standard models ignore. Benchmark utilities must reflect realistic institutional friction to prevent artificial regret inflation.
+* **Decision:**
+  1. Implement `DiscreteHyperbolicPropagator` in `src/quant/analytics/payoff_matrix.py` using the exact overflow-free exponential formulation:
+     $$\alpha_k = (1 - e^{-\kappa}) \cdot \frac{e^{-\kappa (k - 1)} + e^{-\kappa (2H - k)}}{1 - e^{-2 \kappa H}}$$
+     guaranteeing exact partition of unity ($\sum_{k=1}^H \alpha_k = 1.0$), strict positivity ($\alpha_k > 0$), and monotonic front-loading ($\alpha_1 > \alpha_2 > \dots > \alpha_H > 0$) for all $\kappa \in (0, \infty)$ and $H \ge 1$.
+  2. Implement continuous quadratic Stackelberg utility:
+     $$U(\mathbf{a}, \mathbf{s}_j) = \mathbf{a}^T \hat{\boldsymbol{\mu}}_j + a_{\text{cash}} r_f - \frac{\gamma + 2\theta_{\text{pred}}}{2} \mathbf{a}^T \mathbf{\Sigma}_j \mathbf{a} - \mathcal{C}(\mathbf{a} - \mathbf{a}_0, \mathbf{s}_j)$$
+     with exact analytical gradient $\nabla_{\mathbf{a}} U$ and strictly negative-definite Hessian $\mathbf{H}_{\mathbf{a}} U \prec 0$ (global concavity).
+  3. Implement `InstitutionalBenchmarkUniverse` (Equal Weight, Risk Parity, Inverse Volatility, Cash) with single-asset concentration caps ($b_i \le w_{\max}$) and Friction Parity: benchmark returns deduct the exact rebalancing friction incurred from initial state $\mathbf{a}_0$.
+  4. Build `StackelbergPayoffTensorConstructor` producing non-negative regret $R_{i, j} = \max(0, U_{\text{bench}}^*(\mathbf{s}_j) - U_{i, j}) \ge 0$.
+* **Trade-Offs:** Evaluating benchmark friction adds $\sim 1\text{ms}$ per regime, but guarantees that regret metrics are economically grounded in executable trading reality.
+
 ---
 
 ## 2. Deterministic Diagnostic Failure Matrix (Zero-Execution Triage)
@@ -191,6 +205,10 @@ This register records all major architectural decisions, design patterns, and en
 | **`ERR-GAME-IMPACT-001`** | `src/quant/analytics/market_impact.py`<br>`MarketImpactConfig.__post_init__`<br>Lines 90–135 | Validates configuration invariants ($\lambda_{\text{fee}} > 0, \delta > 0, \rho \in (0, 1), W_0 > 0, \tau_{\text{bar}} \in (0, 1]$). | `ValueError: ERR-GAME-IMPACT-PARAM: ...` validation error. | Misconfigured hyperparameter passed to `MarketImpactConfig`. | Inspect parameters passed to `MarketImpactConfig`. | Ensure $\lambda_{\text{fee}} > 0$, $\delta > 0$, $\rho \in (0, 1)$, $W_0 > 0$, $\tau_{\text{bar}} \in (0, 1]$. | Engine initialization fails. |
 | **`ERR-GAME-IMPACT-002`** | `src/quant/analytics/market_impact.py`<br>`HubermanStanzlCrossImpact.build_matrix`<br>Lines 250–305 | Constructs symmetric sandwich matrix $\mathbf{\Lambda}_{\text{cross}} = \mathbf{\Lambda}_{\text{cross}}^T \succ 0$. | Matrix asymmetry, negative eigenvalues, or dynamic price manipulation arbitrage. | Non-symmetric multiplication or singular covariance inputs. | Verify symmetry ($\mathbf{\Lambda} = \mathbf{\Lambda}^T$) and check eigenvalues $\ge \lambda_{\text{fee}}$. | Apply symmetric sandwich transformation $\mathbf{Z}^{1/2} \mathbf{D}^{-1/2} \mathbf{\Sigma}^{1/2} \mathbf{D}^{-1/2} \mathbf{Z}^{1/2}$. | Price manipulation arbitrage; non-convex Newton solver divergence. |
 | **`ERR-GAME-IMPACT-003`** | `src/quant/analytics/market_impact.py`<br>`MultiAssetMarketImpactEngine.evaluate_impact`<br>Lines 390–420 | Enforces dimensional alignment between $\Delta \mathbf{a}$, $\mathbf{\Sigma}$, $\text{ADV}$, and $\boldsymbol{\sigma}$. | `ValueError: ERR-GAME-IMPACT-DIM: Array lengths do not match ...`. | Dimensionality mismatch between target portfolio weights and market universe. | Check `len(delta_allocations) == len(daily_dollar_volumes) == len(asset_volatilities)`. | Align input vector dimensions to current active portfolio universe. | Solver crashes during execution evaluation. |
+| **`ERR-GAME-STACK-001`** | `src/quant/analytics/payoff_matrix.py`<br>`StackelbergConfig.__post_init__`<br>Lines 50–90 | Validates configuration invariants ($H \ge 1, \kappa \ge 0, \gamma > 0, \theta_{\text{pred}} \ge 0, w_{\max} \in (0, 1], L_{\max} \in (0, 1]$). | `ValueError: ERR-GAME-STACK-PARAM: ...` validation error. | Misconfigured hyperparameter passed to `StackelbergConfig`. | Inspect parameters passed to `StackelbergConfig`. | Ensure $H \ge 1$, $\kappa \ge 0$, $\gamma > 0$, $\theta_{\text{pred}} \ge 0$, $w_{\max} \le L_{\max}$. | Payoff engine initialization fails. |
+| **`ERR-GAME-STACK-002`** | `src/quant/analytics/payoff_matrix.py`<br>`DiscreteHyperbolicPropagator.compute_schedule_weights`<br>Lines 160–185 | Computes stable multi-bar slice schedule with exact partition of unity ($\sum \alpha_k = 1.0$). | `ValueError: ERR-GAME-STACK-PROPAGATOR: Execution horizon must be >= 1`. | Horizon $H < 1$ or negative decay rate $\kappa < 0$ passed to propagator. | Check horizon $H \ge 1$ and non-negative finite $\kappa \ge 0$. | Ensure $H \ge 1$ and non-negative $\kappa$. | Invalid execution slice decomposition in trade order generation. |
+| **`ERR-GAME-STACK-003`** | `src/quant/analytics/payoff_matrix.py`<br>`StackelbergPayoffEngine.evaluate_utility`<br>Lines 340–375 | Enforces dimensional alignment across $\mathbf{a}, \mathbf{a}_0, \hat{\boldsymbol{\mu}}, \mathbf{\Sigma}, \text{ADV}$. | `ValueError: ERR-GAME-STACK-DIM: Dimensional mismatch: ...`. | Incompatible array lengths between portfolio weights and covariance/return matrices. | Check `len(a) == len(a_0) == len(mu) == sigma.shape[0] == sigma.shape[1]`. | Align allocation candidate vectors to active regime asset universe. | Solver crashes during utility / regret matrix construction. |
+| **`ERR-GAME-STACK-004`** | `src/quant/analytics/payoff_matrix.py`<br>`InstitutionalBenchmarkUniverse.generate_*`<br>Lines 540–585 | Generates constrained benchmark allocations ($0 \le b_i \le w_{\max}$, $\sum b_i \le 1.0$). | `ValueError: ERR-GAME-STACK-BENCHMARK: ...`. | Empty asset list, non-square covariance, or degenerate volatility vector. | Check `n_assets >= 1`, covariance is square $N \times N$, and volatilities non-empty. | Provide valid market data dimensions to benchmark generator. | Benchmark ceiling calculation fails; unconstrained regret evaluation. |
 
 ---
 
@@ -266,5 +284,15 @@ This register records all major architectural decisions, design patterns, and en
   - Tracked transient order book depletion via state-space hyperbolic tangent saturation $\mathbf{B}_t \in [0, B_{\max}]$.
   - Exported all Step 2 components in `src/quant/analytics/__init__.py`.
   - Added 19 unit tests in `tests/unit/test_market_impact.py` (168 total project tests) passing with **92.40% overall coverage** (93% on `market_impact.py`).
+* **[Phase 20: Sprint 3 - Step 3: Stackelberg Leader-Follower Trajectory & Payoff Tensor] - 2026-09-09**:
+  - Created `src/quant/analytics/payoff_matrix.py` implementing `DiscreteHyperbolicPropagator`, `StackelbergPayoffEngine`, `InstitutionalBenchmarkUniverse`, `StackelbergPayoffTensorConstructor`, `StackelbergConfig`, `BenchmarkEvaluationResult`, and `PayoffTensorResult`.
+  - Engineered stable exponential hyperbolic execution schedule with exact partition of unity ($\sum \alpha_k = 1.0$), eliminating overflow and guaranteeing strictly positive monotonic decay for all $\kappa \in (0, \infty)$ and $H \ge 1$.
+  - Formulated continuous quadratic Stackelberg utility functional $U(\mathbf{a}, \mathbf{s}_j)$ with follower predatory quote shading ($\mathbf{M}_{\text{pred}} = \theta_{\text{pred}} \mathbf{\Sigma}_j$) and exact analytical gradient $\nabla_{\mathbf{a}} U$.
+  - Derived and validated strictly negative-definite utility Hessian ($\mathbf{H}_{\mathbf{a}} U \prec 0$), guaranteeing strict global concavity without local minima.
+  - Implemented `InstitutionalBenchmarkUniverse` with single-asset concentration caps and Friction Parity, evaluating benchmark ceilings under realistic rebalancing market friction from $\mathbf{a}_0$.
+  - Built `StackelbergPayoffTensorConstructor` producing non-negative regret matrices $R_{i, j} \ge 0$ for downstream entropic minimax optimization.
+  - Exported all Step 3 components in `src/quant/analytics/__init__.py`.
+  - Added 70 unit tests in `tests/unit/test_payoff_matrix.py` (238 total project tests) passing with **93.03% overall coverage** (99% on `payoff_matrix.py`).
+
 
 
