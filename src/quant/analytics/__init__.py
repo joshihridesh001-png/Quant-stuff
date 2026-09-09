@@ -11,9 +11,9 @@ from quant.analytics.cross_validation import (
     PurgedSplit,
 )
 from quant.analytics.deflated_sharpe import (
+    DeflatedSharpeEngine,
     DSRConfig,
     DSRResult,
-    DeflatedSharpeEngine,
     adjust_p_values_fdr,
     compute_effective_trials,
     compute_expected_max_sharpe,

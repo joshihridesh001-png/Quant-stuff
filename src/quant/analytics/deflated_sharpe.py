@@ -78,9 +78,7 @@ class DSRConfig:
                 f"annualization_factor must be strictly positive, got {self.annualization_factor}"
             )
         if self.min_sample_length < 3:
-            raise ValueError(
-                f"min_sample_length must be at least 3, got {self.min_sample_length}"
-            )
+            raise ValueError(f"min_sample_length must be at least 3, got {self.min_sample_length}")
         if not (0.0 <= self.winsorize_quantile < 0.50):
             raise ValueError(
                 f"winsorize_quantile must be in [0.0, 0.50), got {self.winsorize_quantile}"
@@ -274,9 +272,7 @@ def compute_min_backtest_length(
         - Returned value is strictly >= 1.0.
     """
     if not (0.50 < significance_level < 1.0):
-        raise ValueError(
-            f"significance_level must be in (0.50, 1.0), got {significance_level}"
-        )
+        raise ValueError(f"significance_level must be in (0.50, 1.0), got {significance_level}")
 
     # If the strategy fails to beat the benchmark, no finite sample length can make it significant
     if sharpe_ratio <= benchmark_sharpe:
@@ -424,9 +420,7 @@ class DeflatedSharpeEngine:
 
         # Baseline hurdle: custom override or config default
         sr_hurdle = (
-            benchmark_sharpe
-            if benchmark_sharpe is not None
-            else self._config.benchmark_sharpe
+            benchmark_sharpe if benchmark_sharpe is not None else self._config.benchmark_sharpe
         )
 
         # Flatline / zero variance guard
@@ -490,9 +484,7 @@ class DeflatedSharpeEngine:
         )
 
         # Dual Institutional Gate
-        is_significant = (dsr >= self._config.significance_level) and (
-            sample_len >= min_btl
-        )
+        is_significant = (dsr >= self._config.significance_level) and (sample_len >= min_btl)
 
         if is_significant:
             status = "CERTIFIED_SIGNIFICANT"
@@ -545,9 +537,7 @@ class DeflatedSharpeEngine:
 
         if de_correlate_variance and cpcv_n_splits > 1:
             # Theoretical average pairwise overlap between CPCV combinatorial paths: rho ~= (k - 1) / (N - 1)
-            rho_cpcv = min(
-                0.90, max(0.0, float(cpcv_k_split - 1) / float(cpcv_n_splits - 1))
-            )
+            rho_cpcv = min(0.90, max(0.0, float(cpcv_k_split - 1) / float(cpcv_n_splits - 1)))
             # De-correlate variance: V* = V / (1 - rho)
             var_path_sr = var_path_sr / max(0.10, 1.0 - rho_cpcv)
 
@@ -612,21 +602,18 @@ class DeflatedSharpeEngine:
             m_i, s_i, _, _ = compute_moments(
                 mat[:, i], winsorize_quantile=self._config.winsorize_quantile
             )
-            sr_i = (
-                (m_i / s_i) * np.sqrt(self._config.annualization_factor)
-                if s_i > 1e-12
-                else 0.0
-            )
+            sr_i = (m_i / s_i) * np.sqrt(self._config.annualization_factor) if s_i > 1e-12 else 0.0
             candidate_sharpes.append(sr_i)
 
         var_sharpes = float(np.var(candidate_sharpes, ddof=1)) if k_len > 1 else 0.0
-        mean_sharpes = float(np.mean(candidate_sharpes))
 
         # Evaluate each strategy with K_eff and cross-sectional variance
         initial_results: list[DSRResult] = []
         p_values: list[float] = []
 
-        null_mean = benchmark_sharpe if benchmark_sharpe is not None else self._config.benchmark_sharpe
+        null_mean = (
+            benchmark_sharpe if benchmark_sharpe is not None else self._config.benchmark_sharpe
+        )
 
         for i in range(k_len):
             res = self.evaluate_strategy(
@@ -655,11 +642,7 @@ class DeflatedSharpeEngine:
             cohort_status = (
                 "COHORT_FDR_CERTIFIED"
                 if cohort_significant
-                else (
-                    "FDR_REJECTED"
-                    if res.is_statistically_significant
-                    else res.status
-                )
+                else ("FDR_REJECTED" if res.is_statistically_significant else res.status)
             )
             updated_res = DSRResult(
                 sharpe_ratio=res.sharpe_ratio,
