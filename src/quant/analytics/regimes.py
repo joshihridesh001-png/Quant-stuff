@@ -270,7 +270,7 @@ class OASCovarianceEstimator:
         # Spectral projection ensuring all eigenvalues >= shrinkage_floor
         shrunk_cov = (shrunk_cov + shrunk_cov.T) / 2.0
         eigenvalues, eigenvectors = scipy.linalg.eigh(shrunk_cov)
-        clamped_eigenvalues = np.maximum(eigenvalues, self.shrinkage_floor)
+        clamped_eigenvalues = np.maximum(eigenvalues, self.shrinkage_floor * (1.0 + 1e-8))
         projected_cov = np.dot(eigenvectors, np.dot(np.diag(clamped_eigenvalues), eigenvectors.T))
 
         return np.asarray((projected_cov + projected_cov.T) / 2.0, dtype=np.float64)

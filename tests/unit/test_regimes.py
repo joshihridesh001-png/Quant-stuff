@@ -170,9 +170,9 @@ class TestOASCovarianceEstimator:
         # Symmetry check
         np.testing.assert_allclose(cov, cov.T, atol=1e-12)
 
-        # Eigenvalue check
+        # Eigenvalue check with numerical tolerance
         eigenvalues = scipy.linalg.eigvalsh(cov)
-        assert np.all(eigenvalues >= 1e-5)
+        assert np.all(eigenvalues >= 1e-5 - 1e-9)
 
     def test_collinear_degenerate_data(self) -> None:
         """Verify perfectly collinear data is regularized above eigenvalue floor."""
@@ -183,7 +183,7 @@ class TestOASCovarianceEstimator:
         cov = estimator.fit_covariance(returns)
 
         eigenvalues = scipy.linalg.eigvalsh(cov)
-        assert np.all(eigenvalues >= 1e-4)
+        assert np.all(eigenvalues >= 1e-4 - 1e-8)
         assert np.all(np.isfinite(cov))
 
     def test_small_sample_fallback(self) -> None:
@@ -229,7 +229,7 @@ class TestCausalBayesianRegimeFilter:
             # Covariance positive definiteness
             for cov in res.regime_covariances:
                 eigs = scipy.linalg.eigvalsh(cov)
-                assert np.all(eigs >= config.shrinkage_floor)
+                assert np.all(eigs >= config.shrinkage_floor - 1e-9)
 
             # Temperature bounds check
             assert config.min_temp <= res.temperature <= config.max_temp
