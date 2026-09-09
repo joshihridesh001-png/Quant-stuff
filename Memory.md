@@ -54,6 +54,20 @@ This register records all major architectural decisions, design patterns, and en
 * **Alternatives Evaluated:** GARCH(1,1) (rejected: slow numerical convergence on millions of bars); Close-to-close rolling variance (rejected: blind to intra-bar wicks); Full tick replay for collisions (rejected: 1000x I/O bloat on standard bar workflows).
 * **Trade-Offs:** Pessimistic stop-loss priority may slightly underestimate live performance during sharp mean-reversions, but strictly guarantees that the backtest is harder to beat than reality.
 
+### ADR-007: Combinatorial Purged Cross-Validation with Interval Purging, Autoregressive Embargoing, and Continuous Path Reconstruction
+* **Date:** 2026-09-09 | **Status:** Implemented (Sprint 2, Step 4)
+* **Context:** Standard $k$-fold cross-validation is fundamentally invalid for financial time series because overlapping holding periods leak future outcomes into training sets, and post-test serial correlation leaks autoregressive residuals. Furthermore, naive single-fold backtests yield a single overfitted equity curve, hiding the true variance of strategy performance.
+* **Decision:**
+  1. Implement `CombinatorialPurgedCV` in `src/quant/analytics/cross_validation.py` partitioning $T$ observations into $N$ contiguous chronological blocks and generating $\binom{N}{k}$ folds.
+  2. Implement exact interval intersection purging: eliminate any candidate training observation $i$ whose lifespan $[t_{i, \text{entry}}, t_{i, \text{exit}}]$ intersects any test block interval $[T_{\text{test, start}}, T_{\text{test, end}}]$.
+  3. Implement adaptive post-test embargoing ($h_{\text{embargo}} = \lceil T \cdot \text{embargo\_pct} \rceil$ or explicit bars) dropping training samples immediately following test intervals to eliminate residual autocorrelation memory.
+  4. Cap computational combinatorial explosion via deterministic budget bounding (`max_splits`, default 50).
+  5. Codify defensive starvation protection (`min_train_ratio`, default 0.20) to reject over-purged folds.
+  6. Support optional forward-chaining mode strictly enforcing past-to-future causal splits.
+  7. Reconstruct $\phi = \binom{N-1}{k-1}$ continuous out-of-sample backtest paths using greedy positional fold assignment (group $g$'s $p$-th test occurrence -> path $p$), generating empirical Sharpe ratio distributions $\{SR_p\}$ and variance $V[\{SR\}]$ directly consumed by Step 6 (Deflated Sharpe Ratio).
+* **Alternatives Evaluated:** Standard K-Fold (rejected: severe leakage from overlapping trade lifespans); Standard Walk-Forward (rejected: generates only 1 backtest path; prone to chronological overfitting on path order); Purged K-Fold without combinations (rejected: generates only 1 path, insufficient sample size for Deflated Sharpe Ratio multiple-testing correction).
+* **Trade-Offs:** Reconstructing $\phi$ paths requires $\binom{N}{k}$ model training iterations; mitigated by budget capping `max_splits` during large-scale genetic search.
+
 ---
 
 ## 2. Deterministic Diagnostic Failure Matrix (Zero-Execution Triage)
@@ -75,6 +89,9 @@ This register records all major architectural decisions, design patterns, and en
 | **`ERR-ECON-LABEL-001`** | `src/quant/analytics/labeling.py`<br>`TripleBarrierConfig.__post_init__`<br>Lines 88–110 | Validates barrier configuration invariants ($c_1, c_2 > 0$, $H \ge 1$, $W \ge 2$, friction $\ge 0$). | `ValueError: profit_multiplier must be strictly positive` or similar validation error. | Misconfigured hyperparameter submitted to `TripleBarrierConfig`. | Inspect configuration parameters against boundary conditions. | Enforce strictly positive multipliers and non-negative friction parameters. | Engine startup failure; uninitialized labeling pipeline. |
 | **`ERR-ECON-LABEL-002`** | `src/quant/analytics/labeling.py`<br>`DynamicTripleBarrierLabeler.label_arrays`<br>Lines 160–178 | Validates array dimensional alignment and minimum length ($N \ge W + H + \text{delay}$). | `ValueError: Input series length ... is too short` or dimension mismatch. | Ingested market data batch contains fewer bars than required for warm-up and horizon. | Check `batch.count` before calling `label_batch`; ensure $N \ge W + H + \text{delay}$. | Filter out historical partitions with insufficient bar counts prior to labeling. | Labeling pipeline crash on boundary data chunks. |
 | **`ERR-ECON-LABEL-003`** | `src/quant/analytics/labeling.py`<br>`compute_parkinson_volatility`<br>Lines 125–140 | Checks strictly positive prices and $High \ge Low$ before logarithm. | `ValueError: High and Low prices must be strictly positive for Parkinson volatility`. | Market data contains corrupt zero/negative prices or inverted High/Low wicks. | Inspect raw bars in DuckDB for zero quotes or crossed wicks. | Enforce `PriceBar` invariant verification at database ingestion gateway. | NaN propagation in volatility estimator; collapses downstream barriers. |
+| **`ERR-ECON-CPCV-001`** | `src/quant/analytics/cross_validation.py`<br>`CPCVConfig.__post_init__`<br>Lines 60–85 | Validates $N \ge 2$, $1 \le k < N$, $0 \le \text{embargo\_pct} < 1$, $\text{max\_splits} \ge 1$. | `ValueError: n_splits must be at least 2` or `n_test_splits must be in [1, N-1]`. | Misconfigured partition dimensions or out-of-range embargo ratio passed to `CPCVConfig`. | Inspect parameters passed to `CPCVConfig`. | Ensure $N \ge 2$ and $k \in [1, N-1]$; set `embargo_pct` $\in [0.0, 1.0)$. | Cross-validation crashes during fold initialization. |
+| **`ERR-ECON-CPCV-002`** | `src/quant/analytics/cross_validation.py`<br>`CombinatorialPurgedCV.split`<br>Lines 380–395 | Ensures retained training observations satisfy `min_train_ratio`. | `ValueError: CPCV split ... violated min_train_ratio: retained ... < threshold ...`. | Excessive trade holding duration or large test blocks/embargo windows over-purge training set. | Calculate average trade holding length relative to block size $T/N$. | Reduce `embargo_pct`, increase `n_splits`, or lower `min_train_ratio` threshold. | Model training fails due to severe sample starvation. |
+| **`ERR-ECON-CPCV-003`** | `src/quant/analytics/cross_validation.py`<br>`_coerce_time_arrays`<br>Lines 250–270 | Validates timestamp causality ($t_{\text{entry}} \le t_{\text{exit}}$) and dimension alignment. | `ValueError: Temporal causality violated: pred_times cannot exceed eval_times` or dimension mismatch. | Inverted entry/exit timestamps or length mismatch between features and event arrays. | Check `pred_times <= eval_times` element-wise and verify `len(pred_times) == len(X)`. | Ensure `BarrierLabel` objects have valid non-negative holding durations. | Erroneous purging logic or broken train/test split alignment. |
 
 ---
 
@@ -110,5 +127,14 @@ This register records all major architectural decisions, design patterns, and en
   - Codified conservative execution: dual intra-bar candle breaches default to stop-loss (`pessimistic_collision=True`), and opening gaps execute at actual open price ($O_k$).
   - Integrated round-trip transaction friction (spread and exchange fees) into net return calculations.
   - Added 24 unit tests in `tests/unit/test_labeling.py` (97 total) passing with **90.20% overall test coverage** and zero warnings.
+* **[Phase 15: Sprint 2 - Step 4: Combinatorial Purged Cross-Validation (CPCV)] - 2026-09-09**:
+  - Created `src/quant/analytics/cross_validation.py` implementing `CombinatorialPurgedCV`, `CPCVConfig`, and `PurgedSplit`.
+  - Engineered exact interval intersection purging to prevent information leakage from overlapping trade lifespans $[t_{\text{entry}}, t_{\text{exit}}]$.
+  - Built adaptive autoregressive embargoing ($h_{\text{embargo}}$) neutralizing post-test residual autocorrelation.
+  - Implemented computational budget bounding (`max_splits`) and defensive starvation protection (`min_train_ratio`).
+  - Supported optional forward-chaining mode strictly enforcing past-to-future causal splits.
+  - Built continuous backtest path reconstruction ($\phi = \binom{N-1}{k-1}$) via canonical greedy positional fold assignment.
+  - Evaluated empirical Sharpe distribution $\{SR_p\}$ and variance $V[\{SR\}]$ for downstream Deflated Sharpe Ratio integration (Step 6).
+  - Added 13 new unit tests in `tests/unit/test_cross_validation.py` (110 total) passing with **90.98% overall test coverage** and zero warnings.
 
 

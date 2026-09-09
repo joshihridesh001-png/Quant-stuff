@@ -85,10 +85,14 @@ Defines path-dependent trade exit thresholds standardized across volatility regi
 ## 4. Validation Methodology: Combinatorial Purged CV & Deflated Sharpe
 
 ### 4.1 Combinatorial Purged Cross-Validation (CPCV)
-* Partition $T$ observations into $N$ chronological blocks.
-* Form test splits from $\binom{N}{k}$ combinations, utilizing remaining $N-k$ blocks for training.
-* **Purging**: Drop training observations whose information horizon overlaps with test fold start.
-* **Embargoing**: Drop training observations for duration $h_{\text{embargo}}$ immediately following test split to prevent autoregressive leakage.
+* Partition $T$ observations into $N$ balanced contiguous chronological blocks $G_0, \dots, G_{N-1}$.
+* Form test splits from $\binom{N}{k}$ combinations (or forward-chained causal partitions), utilizing remaining blocks for candidate training.
+* **Exact Interval Intersection Purging**: A candidate training observation $i$ with holding period $[t_{i, \text{entry}}, t_{i, \text{exit}}]$ is purged if it overlaps any test block interval $[T_{\text{test, start}}, T_{\text{test, end}}]$:
+  $$[t_{i, \text{entry}}, t_{i, \text{exit}}] \cap [T_{\text{test, start}}, T_{\text{test, end}}] \ne \emptyset \iff (t_{i, \text{entry}} \le T_{\text{test, end}}) \land (t_{i, \text{exit}} \ge T_{\text{test, start}})$$
+* **Autoregressive Embargoing**: Training observations immediately succeeding test intervals within duration $h_{\text{embargo}} = \lceil T \cdot \text{embargo\_pct} \rceil$ (or explicit bars) are excluded to eliminate residual autoregressive memory leakage.
+* **Starvation Guard**: Splits failing retained sample ratio constraint $\frac{|\text{train\_indices}|}{T} \ge \text{min\_train\_ratio}$ are defensively rejected.
+* **Continuous Backtest Path Reconstruction**: Folds are stitched into $\phi = \binom{N-1}{k-1}$ continuous out-of-sample backtest paths using greedy positional fold assignment: for each block $g$, its $p$-th test fold occurrence fills path $p$.
+* **Empirical Sharpe Variance Vector**: Evaluates empirical Sharpe distribution $\{SR_p\}_{p=1}^\phi$ and its variance $V[\{SR\}] = \frac{1}{\phi - 1} \sum_{p=1}^\phi (SR_p - \overline{SR})^2$, which is supplied directly as the variance parameter to Step 6 (Deflated Sharpe Ratio).
 
 ### 4.2 Deflated Sharpe Ratio (DSR)
 Evaluates backtested Sharpe Ratio ($\widehat{SR}$) conditional on skewness $\hat{\gamma}_3$, kurtosis $\hat{\gamma}_4$, sample length $T$, trial count $K$, and variance of trials $V[\{\widehat{SR}_k\}]$:

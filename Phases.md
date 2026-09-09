@@ -68,14 +68,19 @@ To eliminate cognitive overload and merge conflicts, Phase 2 is decomposed into 
   * Net return deduction of round-trip bid-ask spread and exchange fee friction.
   * 24 unit tests (97 total) passing with **90.20% coverage** and zero warnings.
 
-#### Step 4: Combinatorial Purged Cross-Validation (CPCV) [ACTIVE / UPCOMING]
-* **Scope:**
-  * Chronological partitioning into $N$ blocks generating $\binom{N}{k}$ combinatorial backtest splits.
-  * Temporal boundary purging to remove overlapping event information horizons $[t_{\text{entry}}, t_{\text{exit}}]$.
-  * Post-test embargo periods to eliminate autoregressive serial correlation leakage.
-* **Acceptance Criteria:** Vectorized split generator producing empirical distributions of backtest paths; memory footprint bounded $< 2\text{GB}$.
+#### Step 4: Combinatorial Purged Cross-Validation (CPCV) [COMPLETE]
+* **Deliverables:**
+  * Combinatorial partitioning into $N$ contiguous chronological blocks generating $\binom{N}{k}$ out-of-sample backtest folds.
+  * Exact interval intersection purging removing training trades whose lifespan $[t_{\text{entry}}, t_{\text{exit}}]$ overlaps test intervals.
+  * Post-test autoregressive embargoing ($h_{\text{embargo}}$) neutralizing serial correlation leakage.
+  * Deterministic budget bounding (`max_splits`) preventing factorial compute explosion during evolutionary search.
+  * Defensive starvation guard (`min_train_ratio`) rejecting over-purged folds.
+  * Forward-chaining mode strictly enforcing past-to-future temporal causality.
+  * Continuous backtest path reconstruction ($\phi = \binom{N-1}{k-1}$ paths) with greedy positional fold assignment.
+  * Path Sharpe ratio distribution and empirical variance $V[\{SR_k\}]$ evaluation feeding directly into Step 6 (Deflated Sharpe Ratio).
+  * 13 unit tests (110 total) passing with **90.98% coverage** and zero warnings.
 
-#### Step 5: Two-Stage Meta-Labeling Architecture [PLANNED]
+#### Step 5: Two-Stage Meta-Labeling Architecture [ACTIVE / UPCOMING]
 * **Scope:**
   * Decoupling primary directional model ($\hat{y}_t \in \{-1, 1\}$) from secondary bet-sizing classifier ($z_t \in \{0, 1\}$).
   * Secondary model trained on feature vectors to predict probability of hitting profit barrier before stop-loss.

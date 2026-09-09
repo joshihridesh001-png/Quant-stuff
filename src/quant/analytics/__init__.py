@@ -5,6 +5,11 @@ Dependencies: numpy, scipy, statsmodels, pyarrow, domain models.
 Relationship: Consumed by application services and research pipelines.
 """
 
+from quant.analytics.cross_validation import (
+    CombinatorialPurgedCV,
+    CPCVConfig,
+    PurgedSplit,
+)
 from quant.analytics.fractional_diff import (
     FractionalDifferentiator,
     StreamingFracDiffBuffer,
@@ -22,9 +27,12 @@ from quant.analytics.labeling import (
 __all__ = [
     "BarrierLabel",
     "BarrierTouchReason",
+    "CPCVConfig",
+    "CombinatorialPurgedCV",
     "DynamicTripleBarrierLabeler",
     "FractionalDifferentiator",
     "PositionSide",
+    "PurgedSplit",
     "StreamingFracDiffBuffer",
     "TripleBarrierConfig",
     "compute_fractional_weights",
