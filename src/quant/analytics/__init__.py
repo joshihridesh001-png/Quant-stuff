@@ -34,6 +34,14 @@ from quant.analytics.labeling import (
     TripleBarrierConfig,
     compute_parkinson_volatility,
 )
+from quant.analytics.market_impact import (
+    DepletionState,
+    GeneralizedPseudoHuber,
+    HubermanStanzlCrossImpact,
+    MarketImpactConfig,
+    MarketImpactResult,
+    MultiAssetMarketImpactEngine,
+)
 from quant.analytics.meta_labeling import (
     ContinuousKellySizer,
     MetaLabel,
@@ -61,10 +69,16 @@ __all__ = [
     "DSRConfig",
     "DSRResult",
     "DeflatedSharpeEngine",
+    "DepletionState",
     "DynamicTripleBarrierLabeler",
     "FractionalDifferentiator",
+    "GeneralizedPseudoHuber",
+    "HubermanStanzlCrossImpact",
+    "MarketImpactConfig",
+    "MarketImpactResult",
     "MetaLabel",
     "MetaLabelConfig",
+    "MultiAssetMarketImpactEngine",
     "OASCovarianceEstimator",
     "PositionSide",
     "ProbabilityCalibrator",

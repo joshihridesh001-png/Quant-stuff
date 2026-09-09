@@ -104,6 +104,19 @@ This register records all major architectural decisions, design patterns, and en
   4. Calibrate thermodynamic temperature $\beta_t$ using the Fournier-Guillin concentration bound clamped to $[\beta_{\min}, \beta_{\max}]$.
 * **Trade-Offs:** Minimum dwell time suppresses single-bar false alarms but requires 3 bars of sustained confirmation before reverting from an emergency panic state.
 
+### ADR-011: Multi-Asset Cross-Impact Propagator with 3/2-Power Generalized Pseudo-Huber Potential
+* **Date:** 2026-09-09 | **Status:** Implemented (Sprint 3, Step 2)
+* **Context:** Standard market impact models treat assets in isolation (ignoring cross-asset spillovers), violate the Huberman-Stanzl No-Dynamic-Arbitrage condition via asymmetric matrices, fail to model the 3/2-power cash cost integral of the universal Square-Root Law, and break optimizer smoothness with discontinuous panic step functions.
+* **Decision:**
+  1. Implement `MultiAssetMarketImpactEngine`, `GeneralizedPseudoHuber`, and `HubermanStanzlCrossImpact` in `src/quant/analytics/market_impact.py`.
+  2. Enforce Huberman-Stanzl No-Arbitrage compliance via symmetric sandwich symmetrization:
+     $$\mathbf{\Lambda}_{\text{cross}} = \lambda_{\text{fee}} \mathbf{I} + \theta \cdot \mathbf{Z}_t^{1/2} \left( \mathbf{D}_{\text{vol}}^{-1/2} \mathbf{\Sigma}_t^{1/2} \mathbf{D}_{\text{vol}}^{-1/2} \right) \mathbf{Z}_t^{1/2} \succ 0$$
+     guaranteeing strict positive definiteness ($\lambda_{\min} \ge \lambda_{\text{fee}} > 0$).
+  3. Formulate the 3/2-power Generalized Pseudo-Huber potential $\psi_{3/2}(u) = (u^2 + \delta^2)^{3/4} - \delta^{1.5}$, yielding exact marginal square-root price impact ($\psi'_{3/2}(u) \sim \sqrt{u}$) and strictly positive second derivative ($\psi''_{3/2}(u) > 0$) everywhere.
+  4. Formulate the panic asymmetry as a smooth multiplicative scale on the base potential $\psi_{3/2}(u)$, mathematically guaranteeing an identically zero gradient at rest ($\nabla \mathcal{C}(\mathbf{0}) = \mathbf{0}$) and eliminating artificial drift.
+  5. Track order book depletion via state-space hyperbolic tangent saturation $\mathbf{B}_t \in [0, B_{\max}]$.
+* **Trade-Offs:** Requires spectral square root of OAS covariance; mitigated by $O(N)$ diagonal square root evaluation on pre-computed spectral factors from Step 1.
+
 ---
 
 ## 2. Deterministic Diagnostic Failure Matrix (Zero-Execution Triage)
@@ -175,6 +188,9 @@ This register records all major architectural decisions, design patterns, and en
 | **`ERR-GAME-REGIME-001`** | `src/quant/analytics/regimes.py`<br>`RegimeConfig.__post_init__`<br>Lines 85–120 | Validates regime configuration invariants ($N \ge 2$, $h > 0$, $k \ge 0$, $\tau \ge 1$, $\lambda_{\min} > 0$). | `ValueError: ERR-GAME-REGIME-PARAM: ...` validation error. | Misconfigured hyperparameter passed to `RegimeConfig`. | Inspect parameters passed to `RegimeConfig`. | Ensure $N \ge 2$, $h > 0$, $k \ge 0$, $\tau_{\text{dwell}} \ge 1$, $\beta \in (0, \infty)$. | Engine initialization fails. |
 | **`ERR-GAME-REGIME-002`** | `src/quant/analytics/regimes.py`<br>`CUSUMJumpDetector.update`<br>Lines 190–225 | Evaluates cumulative deviations and respects minimum dwell time $\tau_{\text{dwell}}$. | Regime whip-sawing in volatile choppy markets. | Single-bar noise triggers premature state transitions. | Inspect return innovation magnitude and dwell counter `current_dwell`. | Filter through two-sided accumulated sum and enforce $\tau_{\text{dwell}} \ge 3$ bars. | Churns portfolio, accumulating severe transaction costs and slippage. |
 | **`ERR-GAME-REGIME-003`** | `src/quant/analytics/regimes.py`<br>`OASCovarianceEstimator.fit_covariance`<br>Lines 240–280 | Computes OAS shrinkage with spectral projection $\lambda \ge \lambda_{\min}$. | Singular matrix, non-positive definite eigenvalues, or optimizer divergence. | Highly correlated assets or low sample sizes during market crashes. | Calculate eigenvalues of output covariance matrix: verify all $\ge 10^{-5}$. | Apply Oracle Approximating Shrinkage and clamp eigenvalues via spectral projection. | Non-convex quadratic subproblems; unbounded portfolio allocations. |
+| **`ERR-GAME-IMPACT-001`** | `src/quant/analytics/market_impact.py`<br>`MarketImpactConfig.__post_init__`<br>Lines 90–135 | Validates configuration invariants ($\lambda_{\text{fee}} > 0, \delta > 0, \rho \in (0, 1), W_0 > 0, \tau_{\text{bar}} \in (0, 1]$). | `ValueError: ERR-GAME-IMPACT-PARAM: ...` validation error. | Misconfigured hyperparameter passed to `MarketImpactConfig`. | Inspect parameters passed to `MarketImpactConfig`. | Ensure $\lambda_{\text{fee}} > 0$, $\delta > 0$, $\rho \in (0, 1)$, $W_0 > 0$, $\tau_{\text{bar}} \in (0, 1]$. | Engine initialization fails. |
+| **`ERR-GAME-IMPACT-002`** | `src/quant/analytics/market_impact.py`<br>`HubermanStanzlCrossImpact.build_matrix`<br>Lines 250–305 | Constructs symmetric sandwich matrix $\mathbf{\Lambda}_{\text{cross}} = \mathbf{\Lambda}_{\text{cross}}^T \succ 0$. | Matrix asymmetry, negative eigenvalues, or dynamic price manipulation arbitrage. | Non-symmetric multiplication or singular covariance inputs. | Verify symmetry ($\mathbf{\Lambda} = \mathbf{\Lambda}^T$) and check eigenvalues $\ge \lambda_{\text{fee}}$. | Apply symmetric sandwich transformation $\mathbf{Z}^{1/2} \mathbf{D}^{-1/2} \mathbf{\Sigma}^{1/2} \mathbf{D}^{-1/2} \mathbf{Z}^{1/2}$. | Price manipulation arbitrage; non-convex Newton solver divergence. |
+| **`ERR-GAME-IMPACT-003`** | `src/quant/analytics/market_impact.py`<br>`MultiAssetMarketImpactEngine.evaluate_impact`<br>Lines 390–420 | Enforces dimensional alignment between $\Delta \mathbf{a}$, $\mathbf{\Sigma}$, $\text{ADV}$, and $\boldsymbol{\sigma}$. | `ValueError: ERR-GAME-IMPACT-DIM: Array lengths do not match ...`. | Dimensionality mismatch between target portfolio weights and market universe. | Check `len(delta_allocations) == len(daily_dollar_volumes) == len(asset_volatilities)`. | Align input vector dimensions to current active portfolio universe. | Solver crashes during execution evaluation. |
 
 ---
 
@@ -242,5 +258,13 @@ This register records all major architectural decisions, design patterns, and en
   - Formulated thermodynamic temperature $\beta_t$ using Fournier-Guillin concentration bounds clamped to $[\beta_{\min}, \beta_{\max}]$.
   - Exported all Step 1 components in `src/quant/analytics/__init__.py`.
   - Added 21 unit tests in `tests/unit/test_regimes.py` (149 total project tests) passing with **92.38% overall coverage** (99% on `regimes.py`).
+* **[Phase 19: Sprint 3 - Step 2: Multi-Asset Cross-Impact Propagator Engine] - 2026-09-09**:
+  - Created `src/quant/analytics/market_impact.py` implementing `MultiAssetMarketImpactEngine`, `GeneralizedPseudoHuber`, `HubermanStanzlCrossImpact`, `MarketImpactConfig`, `MarketImpactResult`, and `DepletionState`.
+  - Enforced Huberman-Stanzl No-Arbitrage theorem via symmetric sandwich cross-impact matrix $\mathbf{\Lambda}_{\text{cross}} = \mathbf{\Lambda}_{\text{cross}}^T \succ 0$ with $\lambda_{\min} \ge \lambda_{\text{fee}} > 0$.
+  - Formulated 3/2-power Generalized Pseudo-Huber potential $\psi_{3/2}(u) = (u^2 + \delta^2)^{3/4} - \delta^{1.5}$, generating the exact universal Square-Root Law of price impact ($\psi'_{3/2} \sim \sqrt{u}$) and strict convexity everywhere ($\psi''_{3/2} > 0$).
+  - Built smooth Bayesian panic asymmetry gate with exact zero gradient at rest ($\nabla \mathcal{C}(\mathbf{0}) = \mathbf{0}$).
+  - Tracked transient order book depletion via state-space hyperbolic tangent saturation $\mathbf{B}_t \in [0, B_{\max}]$.
+  - Exported all Step 2 components in `src/quant/analytics/__init__.py`.
+  - Added 19 unit tests in `tests/unit/test_market_impact.py` (168 total project tests) passing with **92.40% overall coverage** (93% on `market_impact.py`).
 
 

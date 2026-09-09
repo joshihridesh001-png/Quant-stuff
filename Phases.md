@@ -116,11 +116,13 @@ Decomposed into 4 sequential micro-steps implementing the Entropic Distributiona
   * Fournier-Guillin concentration bound calibrating thermodynamic ambiguity temperature $\beta_t \in [\beta_{\min}, \beta_{\max}]$.
   * 21 unit tests (149 total) passing with **92.38% overall coverage** (99% on `regimes.py`) and zero warnings.
 
-#### Step 2: Microstructure Propagator & Kyle-Obizhaeva Impact [UPCOMING]
-* **Scope:**
-  * Regularized Kyle's Lambda linking adverse selection to Phase 2 Step 5's Kelly meta-label $z_t$ with exchange fee floor $\lambda_{\text{fee}}$.
-  * Pseudo-Huber smoothing eliminating the infinite gradient at zero trade size.
-  * Asymmetric panic liquidation penalties and crowded exit liquidity decay.
+#### Step 2: Microstructure Propagator & Kyle-Obizhaeva Impact [COMPLETE]
+* **Deliverables:**
+  * Huberman-Stanzl Arbitrage-Free Cross-Impact Constructor (`HubermanStanzlCrossImpact`) with symmetric sandwich tensor $\mathbf{\Lambda}_{\text{cross}} \succ 0$ linking asset adverse selection to Phase 2 Step 5's Kelly meta-label $z_t$.
+  * 3/2-power Generalized Pseudo-Huber potential (`GeneralizedPseudoHuber`) modeling the exact universal Square-Root Law of price impact ($\psi'_{3/2}(u) \sim \sqrt{u}$) with guaranteed strict convexity everywhere.
+  * Continuous Bayesian panic asymmetry gate with exact zero gradient at rest ($\nabla \mathcal{C}(\mathbf{0}) = \mathbf{0}$) eliminating artificial drift.
+  * State-space bounded order book depletion buffer with hyperbolic tangent saturation ($\mathbf{B}_t \le B_{\max}$).
+  * 19 unit tests (168 total) passing with **92.40% overall coverage** (93% on `market_impact.py`) and zero warnings.
 
 #### Step 3: Stackelberg Leader-Follower Trajectory [UPCOMING]
 * **Scope:**
