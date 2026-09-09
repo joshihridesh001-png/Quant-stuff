@@ -41,11 +41,21 @@ from quant.analytics.meta_labeling import (
     ProbabilityCalibrator,
     TwoStageMetaLabeler,
 )
+from quant.analytics.regimes import (
+    CausalBayesianRegimeFilter,
+    CUSUMJumpDetector,
+    OASCovarianceEstimator,
+    RegimeConfig,
+    RegimeEstimationResult,
+    RegimeState,
+)
 
 __all__ = [
     "BarrierLabel",
     "BarrierTouchReason",
     "CPCVConfig",
+    "CUSUMJumpDetector",
+    "CausalBayesianRegimeFilter",
     "CombinatorialPurgedCV",
     "ContinuousKellySizer",
     "DSRConfig",
@@ -55,9 +65,13 @@ __all__ = [
     "FractionalDifferentiator",
     "MetaLabel",
     "MetaLabelConfig",
+    "OASCovarianceEstimator",
     "PositionSide",
     "ProbabilityCalibrator",
     "PurgedSplit",
+    "RegimeConfig",
+    "RegimeEstimationResult",
+    "RegimeState",
     "StreamingFracDiffBuffer",
     "TripleBarrierConfig",
     "TwoStageMetaLabeler",

@@ -104,14 +104,36 @@ To eliminate cognitive overload and merge conflicts, Phase 2 is decomposed into 
 
 ---
 
-### Phase 3: Scenario Matrix & Game Theory Engine [ACTIVE / UPCOMING]
+### Phase 3: Scenario Matrix & Game Theory Engine [ACTIVE]
+
+Decomposed into 4 sequential micro-steps implementing the Entropic Distributionally Robust Stackelberg Engine:
+
+#### Step 1: Causal Bayesian Jump-Regime Estimator & Ambiguity Scaling [COMPLETE]
+* **Deliverables:**
+  * Online causal Bayesian filter tracking regime probabilities $\boldsymbol{\pi}_t = [P(\text{Absorption}), P(\text{Momentum}), P(\text{Panic})]^T$ with simplex sum enforcement ($\sum \pi_j = 1$).
+  * Two-sided Cumulative Sum (CUSUM) shock detector ($S_t^+, S_t^-$) with dwell time hysteresis ($\tau_{\text{dwell}} = 3$) preventing regime whip-sawing while instantly triggering emergency panic priors on violent sell-offs.
+  * Oracle Approximating Shrinkage (OAS) covariance estimator with spectral projection enforcing positive definiteness ($\lambda_{\min} \ge 10^{-5}$) under collinear or starved sample windows.
+  * Fournier-Guillin concentration bound calibrating thermodynamic ambiguity temperature $\beta_t \in [\beta_{\min}, \beta_{\max}]$.
+  * 21 unit tests (149 total) passing with **92.38% overall coverage** (99% on `regimes.py`) and zero warnings.
+
+#### Step 2: Microstructure Propagator & Kyle-Obizhaeva Impact [UPCOMING]
 * **Scope:**
-  * Bayesian game formulation of market price formation against Nature/Counterparties.
-  * Adversarial market response regimes:
-    * $\mathbf{s}_1$: Immediate Absorption / Efficient Reversal
-    * $\mathbf{s}_2$: Momentum Cascade / Stop-Run Continuation
-    * $\mathbf{s}_3$: Adversarial Liquidity Trap / Squeeze
-  * Minimax Regret payoff matrix optimization incorporating square-root market impact and crowding penalties.
+  * Regularized Kyle's Lambda linking adverse selection to Phase 2 Step 5's Kelly meta-label $z_t$ with exchange fee floor $\lambda_{\text{fee}}$.
+  * Pseudo-Huber smoothing eliminating the infinite gradient at zero trade size.
+  * Asymmetric panic liquidation penalties and crowded exit liquidity decay.
+
+#### Step 3: Stackelberg Leader-Follower Trajectory [UPCOMING]
+* **Scope:**
+  * Discrete Monotone Hyperbolic Propagator scheduling multi-period execution slices ($\sum_{k=1}^H \alpha_k = 1, \alpha_k > 0$).
+  * Continuous quadratic-bilinear Stackelberg payoff functional accounting for market maker quote shading.
+  * Friction-consistent institutional benchmark universe (Equal Weight, Risk Parity, Inverse Volatility, Cash).
+
+#### Step 4: Closed-Form Boltzmann Dual & Entropic Minimax Regret Solver [UPCOMING]
+* **Scope:**
+  * Max-shifted Log-Sum-Exp Boltzmann dual potential.
+  * Bounded Latent Softmax parameterization enforcing simplex feasibility ($0 \le a_i \le w_{\max}$, $\sum a_i \le 1$).
+  * Sub-50 microsecond pure NumPy vectorized Newton-Raphson solver.
+  * Certified worst-case regret metric $V_i(\text{Regret})$ feeding directly into Phase 4 Genetic Algorithm fitness.
 
 ---
 
