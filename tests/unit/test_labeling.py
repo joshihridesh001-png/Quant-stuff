@@ -537,4 +537,3 @@ def test_barrier_label_invariants() -> None:
             upper_barrier=102.0,
             lower_barrier=98.0,
         )
-
