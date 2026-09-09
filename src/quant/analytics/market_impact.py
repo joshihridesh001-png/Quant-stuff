@@ -368,6 +368,7 @@ class MultiAssetMarketImpactEngine:
         kelly_conviction: np.ndarray | None = None,
         crowding_scores: np.ndarray | None = None,
         update_state: bool = False,
+        cross_impact_matrix: np.ndarray | None = None,
     ) -> MarketImpactResult:
         """Evaluate total execution friction and exact analytical gradient.
 
@@ -380,6 +381,7 @@ class MultiAssetMarketImpactEngine:
             kelly_conviction: Optional 1D array of Kelly confidence scores z_t in [0, 1].
             crowding_scores: Optional 1D array of trade crowding indicators.
             update_state: If True, updates the internal order book depletion state B_t.
+            cross_impact_matrix: Optional precomputed symmetric Huberman-Stanzl matrix Lambda_cross.
 
         Returns:
             MarketImpactResult containing total cost, permanent/transient split, and gradient.
@@ -399,11 +401,14 @@ class MultiAssetMarketImpactEngine:
         participation_rates = (self.config.portfolio_value * delta_a) / safe_bar_vols
 
         # 2. Permanent Cross-Impact Layer: 0.5 * Delta a^T * Lambda_cross * Delta a
-        lambda_cross = self.cross_constructor.build_matrix(
-            covariance=covariance,
-            daily_dollar_volumes=vols,
-            kelly_conviction=kelly_conviction,
-        )
+        if cross_impact_matrix is not None:
+            lambda_cross = cross_impact_matrix
+        else:
+            lambda_cross = self.cross_constructor.build_matrix(
+                covariance=covariance,
+                daily_dollar_volumes=vols,
+                kelly_conviction=kelly_conviction,
+            )
         permanent_cost = 0.5 * float(np.dot(delta_a, np.dot(lambda_cross, delta_a)))
         grad_permanent = np.dot(lambda_cross, delta_a)
 

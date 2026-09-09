@@ -408,6 +408,7 @@ class StackelbergPayoffEngine:
         panic_probability: float = 0.0,
         kelly_conviction: np.ndarray | None = None,
         crowding_scores: np.ndarray | None = None,
+        cross_impact_matrix: np.ndarray | None = None,
     ) -> float:
         """Evaluate net continuous Stackelberg utility U(a, s_j).
 
@@ -421,6 +422,7 @@ class StackelbergPayoffEngine:
             panic_probability: Probability of panic regime pi_panic in [0, 1].
             kelly_conviction: Optional Kelly confidence scores.
             crowding_scores: Optional crowding indicators.
+            cross_impact_matrix: Optional precomputed symmetric Huberman-Stanzl matrix Lambda_cross.
 
         Returns:
             Scalar net utility value in portfolio return space.
@@ -465,6 +467,7 @@ class StackelbergPayoffEngine:
             kelly_conviction=kelly_conviction,
             crowding_scores=crowding_scores,
             update_state=False,
+            cross_impact_matrix=cross_impact_matrix,
         )
         friction_cost = impact_result.total_cost
 
@@ -482,6 +485,7 @@ class StackelbergPayoffEngine:
         panic_probability: float = 0.0,
         kelly_conviction: np.ndarray | None = None,
         crowding_scores: np.ndarray | None = None,
+        cross_impact_matrix: np.ndarray | None = None,
     ) -> np.ndarray:
         """Evaluate exact analytical gradient nabla_a U(a, s_j).
 
@@ -531,10 +535,87 @@ class StackelbergPayoffEngine:
             kelly_conviction=kelly_conviction,
             crowding_scores=crowding_scores,
             update_state=False,
+            cross_impact_matrix=cross_impact_matrix,
         )
         grad_friction = impact_result.gradient
 
         return np.asarray(grad_return - grad_variance - grad_friction, dtype=np.float64)
+
+    def evaluate_utility_and_gradient(
+        self,
+        allocation: np.ndarray,
+        initial_allocation: np.ndarray | None,
+        expected_returns: np.ndarray,
+        covariance: np.ndarray,
+        daily_dollar_volumes: np.ndarray,
+        asset_volatilities: np.ndarray,
+        panic_probability: float = 0.0,
+        kelly_conviction: np.ndarray | None = None,
+        crowding_scores: np.ndarray | None = None,
+        cross_impact_matrix: np.ndarray | None = None,
+    ) -> tuple[float, np.ndarray]:
+        """Evaluate both net utility U(a, s_j) and analytical gradient nabla_a U(a, s_j) in a single pass.
+
+        Args:
+            Same as evaluate_utility.
+
+        Returns:
+            Tuple of (utility_scalar, gradient_vector).
+        """
+        a = np.asarray(allocation, dtype=np.float64).flatten()
+        n = len(a)
+
+        a_0 = (
+            np.zeros(n, dtype=np.float64)
+            if initial_allocation is None
+            else np.asarray(initial_allocation, dtype=np.float64).flatten()
+        )
+        mu = np.asarray(expected_returns, dtype=np.float64).flatten()
+        sigma_mat = np.asarray(covariance, dtype=np.float64)
+
+        if len(a_0) != n or len(mu) != n or sigma_mat.shape != (n, n):
+            raise ValueError(
+                f"{ERR_STACK_DIM}: Dimensional mismatch: a={n}, a_0={len(a_0)}, "
+                f"mu={len(mu)}, sigma={sigma_mat.shape}"
+            )
+
+        # 1. Gross Return
+        gross_asset_return = float(np.dot(a, mu))
+        cash_weight = max(0.0, 1.0 - float(np.sum(a)))
+        cash_return = cash_weight * self.config.risk_free_rate
+        total_return = gross_asset_return + cash_return
+        grad_return = mu - self.config.risk_free_rate * np.ones(n, dtype=np.float64)
+
+        # 2. Portfolio Variance & Follower Predatory Shading
+        sigma_a = np.dot(sigma_mat, a)
+        quad_term = float(np.dot(a, sigma_a))
+        variance_penalty = 0.5 * self.config.risk_aversion * quad_term
+        predatory_penalty = self.config.predatory_shading_intensity * quad_term
+        effective_penalty_coef = (
+            self.config.risk_aversion + 2.0 * self.config.predatory_shading_intensity
+        )
+        grad_variance = effective_penalty_coef * sigma_a
+
+        # 3. Market Friction Cost & Gradient C(a - a_0)
+        delta_a = a - a_0
+        impact_result = self.impact_engine.evaluate_impact(
+            delta_allocations=delta_a,
+            covariance=sigma_mat,
+            daily_dollar_volumes=daily_dollar_volumes,
+            asset_volatilities=asset_volatilities,
+            panic_probability=panic_probability,
+            kelly_conviction=kelly_conviction,
+            crowding_scores=crowding_scores,
+            update_state=False,
+            cross_impact_matrix=cross_impact_matrix,
+        )
+        friction_cost = impact_result.total_cost
+        grad_friction = impact_result.gradient
+
+        utility = total_return - variance_penalty - predatory_penalty - friction_cost
+        gradient = np.asarray(grad_return - grad_variance - grad_friction, dtype=np.float64)
+
+        return float(utility), gradient
 
     def evaluate_hessian(
         self,
@@ -545,6 +626,7 @@ class StackelbergPayoffEngine:
         asset_volatilities: np.ndarray,
         panic_probability: float = 0.0,
         crowding_scores: np.ndarray | None = None,
+        cross_impact_matrix: np.ndarray | None = None,
     ) -> np.ndarray:
         """Evaluate exact analytical Hessian matrix H_a U(a, s_j).
 
@@ -562,6 +644,7 @@ class StackelbergPayoffEngine:
             asset_volatilities: 1D array of asset volatilities (length N).
             panic_probability: Probability of panic regime pi_panic in [0, 1].
             crowding_scores: Optional crowding indicators.
+            cross_impact_matrix: Optional precomputed symmetric Huberman-Stanzl matrix Lambda_cross.
 
         Returns:
             2D symmetric negative-definite array of shape (N, N).
@@ -588,10 +671,13 @@ class StackelbergPayoffEngine:
         hessian_variance = effective_penalty_coef * sigma_mat
 
         # 2. Permanent Cross-Impact Hessian: Lambda_cross
-        lambda_cross = self.impact_engine.cross_constructor.build_matrix(
-            covariance=sigma_mat,
-            daily_dollar_volumes=vols,
-        )
+        if cross_impact_matrix is not None:
+            lambda_cross = cross_impact_matrix
+        else:
+            lambda_cross = self.impact_engine.cross_constructor.build_matrix(
+                covariance=sigma_mat,
+                daily_dollar_volumes=vols,
+            )
 
         # 3. 3/2-Power Transient Hessian Diagonal
         delta_a = a - a_0
