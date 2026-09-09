@@ -74,11 +74,17 @@ Defines path-dependent trade exit thresholds standardized across volatility regi
   $$R_t = \text{side} \cdot \frac{P_{\text{exit}} - P_{\text{entry}}}{P_{\text{entry}}} - 2 \cdot (\text{spread} + \text{fee})$$
 * **Categorical Label**: $y_t \in \{1, -1, 0\}$ depending on first barrier touched.
 
-### 3.3 Two-Stage Meta-Labeling Architecture
-1. **Primary Model (Directional)**: Generates trade recommendation $\hat{y}_t \in \{-1, 1\}$ with high recall.
-2. **Secondary Model (Conviction & Sizing)**: Trains a probability-calibrated binary classifier on feature matrix $\mathbf{X}_t$ to predict:
-   $$z_t = \mathbb{I}(y_t = \hat{y}_t) \in \{0, 1\}$$
-3. **Bet Sizing**: Position size is parameterized by calibrated probability: $p_t = \mathbb{P}(z_t = 1 \mid \mathbf{X}_t)$.
+### 3.3 Two-Stage Continuous-Payoff Kelly Meta-Labeling Architecture
+1. **Primary Model (Directional Recall)**: Generates high-recall directional orientation $\hat{y}_t \in \{-1, 1\}$.
+2. **Payoff-Aware Meta-Labeling**: Evaluates direction-aligned net payoff $\pi_t = \hat{y}_t \cdot R_t^{\text{net}}$, assigning binary success target:
+   $$z_t = \mathbb{I}(\pi_t > 0) \in \{0, 1\}$$
+   Fairly credits net-profitable vertical timeouts while penalizing fee-eroded trades.
+3. **Regularized Platt Calibration**: Maps model margins $m_t$ to monotonic calibrated probability $p_t$:
+   $$p_t = \frac{1}{1 + \exp(A \cdot m_t + B)}, \quad A < 0$$
+   Validated via mandatory Brier score reduction against baseline prior.
+4. **Time-Decayed Fractional Kelly Sizing**: Calculates optimal growth allocation scaled by conservative multiplier $\lambda \in [0.25, 0.50]$:
+   $$f^*_t = \frac{p_t \cdot b_t - (1 - p_t)}{b_t}, \quad s_t = \text{sign}(\hat{y}_t) \cdot \min\left( L_{\text{max}}, \frac{\lambda \cdot \max(0, f^*_t)}{\sqrt{\max(1, \tau_t) / \tau_{\text{ref}}} \cdot \max(1, c_t)} \right)$$
+   where $b_t$ is the net payoff odds ratio, $\tau_t$ is holding duration, and $c_t$ is active concurrent trade count. Zero allocation is enforced when expected value is non-positive ($f^*_t \le 0$).
 
 ---
 

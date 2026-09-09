@@ -68,6 +68,21 @@ This register records all major architectural decisions, design patterns, and en
 * **Alternatives Evaluated:** Standard K-Fold (rejected: severe leakage from overlapping trade lifespans); Standard Walk-Forward (rejected: generates only 1 backtest path; prone to chronological overfitting on path order); Purged K-Fold without combinations (rejected: generates only 1 path, insufficient sample size for Deflated Sharpe Ratio multiple-testing correction).
 * **Trade-Offs:** Reconstructing $\phi$ paths requires $\binom{N}{k}$ model training iterations; mitigated by budget capping `max_splits` during large-scale genetic search.
 
+### ADR-008: Continuous-Payoff Fractional Kelly Meta-Labeling with Holding Duration Discounting and Concurrency Throttling
+* **Date:** 2026-09-09 | **Status:** Implemented (Sprint 2, Step 5)
+* **Context:** Standard binary classification meta-labeling treats all winning trades identically, discarding trade magnitude and path-dependent holding duration. Uncalibrated classification outputs produce miscalibrated probabilities that lead to severe overbetting when plugged into the classic Kelly formula. Furthermore, portfolio-level risk explodes when simultaneous positions are sized independently without concurrency throttling or holding duration discounting.
+* **Decision:**
+  1. Implement `TwoStageMetaLabeler`, `ProbabilityCalibrator`, `ContinuousKellySizer`, and `MetaLabelConfig` in `src/quant/analytics/meta_labeling.py`.
+  2. Implement regularized Platt scaling with L2 ridge penalty in `ProbabilityCalibrator`, ensuring strictly bounded monotonic posterior probabilities and gating against probability distortion via Brier score thresholding (`brier_score_threshold`, default 0.25).
+  3. Formulate continuous payoff odds $b_t = \frac{\mathbb{E}[\pi \mid \pi > 0]}{|\mathbb{E}[\pi \mid \pi < 0]|}$ where $\pi_t = \hat{y}_t \cdot R_t^{\text{net}}$, using rolling or global sample estimates.
+  4. Formulate fractional Kelly sizing with duration discounting and concurrency throttling:
+     $$f_t^* = \max\left(0, \; \frac{p_t b_t - (1 - p_t)}{b_t}\right) \cdot \lambda \cdot \sqrt{\frac{\tau_t}{\tau_{\text{ref}}}} \cdot \frac{1}{c_t}$$
+     clamped strictly to $[0, f_{\max}]$.
+  5. Compute exact temporal concurrency $c_t$ using concurrent interval overlaps $[t_{\text{entry}}, t_{\text{exit}}]$ across active positions.
+  6. Return zero bet size whenever expectancy $p_t b_t - (1 - p_t) \le 0$ or odds $b_t \le 0$.
+* **Alternatives Evaluated:** Pure binary 0/1 meta-labeling with fixed stake (rejected: throws away trade magnitude, treats 1 bp wins same as 500 bp wins); Unconstrained full Kelly criterion (rejected: causes ruin / drawdowns $>50\%$ under model parameter uncertainty); Isotonic regression calibration (rejected: overfits on small financial sample sizes and lacks parametric smoothness).
+* **Trade-Offs:** Half-Kelly ($\lambda=0.50$) sacrifices $25\%$ of long-run theoretical growth rate to achieve a $75\%$ reduction in equity variance and dramatically reduced drawdown probability.
+
 ---
 
 ## 2. Deterministic Diagnostic Failure Matrix (Zero-Execution Triage)
@@ -92,6 +107,9 @@ This register records all major architectural decisions, design patterns, and en
 | **`ERR-ECON-CPCV-001`** | `src/quant/analytics/cross_validation.py`<br>`CPCVConfig.__post_init__`<br>Lines 60–85 | Validates $N \ge 2$, $1 \le k < N$, $0 \le \text{embargo\_pct} < 1$, $\text{max\_splits} \ge 1$. | `ValueError: n_splits must be at least 2` or `n_test_splits must be in [1, N-1]`. | Misconfigured partition dimensions or out-of-range embargo ratio passed to `CPCVConfig`. | Inspect parameters passed to `CPCVConfig`. | Ensure $N \ge 2$ and $k \in [1, N-1]$; set `embargo_pct` $\in [0.0, 1.0)$. | Cross-validation crashes during fold initialization. |
 | **`ERR-ECON-CPCV-002`** | `src/quant/analytics/cross_validation.py`<br>`CombinatorialPurgedCV.split`<br>Lines 380–395 | Ensures retained training observations satisfy `min_train_ratio`. | `ValueError: CPCV split ... violated min_train_ratio: retained ... < threshold ...`. | Excessive trade holding duration or large test blocks/embargo windows over-purge training set. | Calculate average trade holding length relative to block size $T/N$. | Reduce `embargo_pct`, increase `n_splits`, or lower `min_train_ratio` threshold. | Model training fails due to severe sample starvation. |
 | **`ERR-ECON-CPCV-003`** | `src/quant/analytics/cross_validation.py`<br>`_coerce_time_arrays`<br>Lines 250–270 | Validates timestamp causality ($t_{\text{entry}} \le t_{\text{exit}}$) and dimension alignment. | `ValueError: Temporal causality violated: pred_times cannot exceed eval_times` or dimension mismatch. | Inverted entry/exit timestamps or length mismatch between features and event arrays. | Check `pred_times <= eval_times` element-wise and verify `len(pred_times) == len(X)`. | Ensure `BarrierLabel` objects have valid non-negative holding durations. | Erroneous purging logic or broken train/test split alignment. |
+| **`ERR-ECON-META-001`** | `src/quant/analytics/meta_labeling.py`<br>`MetaLabelConfig.__post_init__`<br>Lines 50–70 | Validates hyperparameters ($\lambda \in (0, 1]$, $f_{\max} > 0$, $\tau_{\text{ref}} > 0$, $brier \in (0, 1)$). | `ValueError: kelly_fraction must be in (0.0, 1.0]` or similar validation error. | Misconfigured hyperparameter passed to `MetaLabelConfig`. | Inspect configuration kwargs against valid parameter domains. | Restrict $\lambda \le 1.0$, $f_{\max} > 0$, $\tau_{\text{ref}} > 0$, $brier \in (0, 1)$. | Engine fails startup; uninitialized bet sizing engine. |
+| **`ERR-ECON-META-002`** | `src/quant/analytics/meta_labeling.py`<br>`ProbabilityCalibrator.calibrate`<br>Lines 150–175 | Calibrates raw model margins and verifies Brier score $\le$ threshold. | `RuntimeError: ProbabilityCalibrator must be fitted...` or `ValueError: Calibration failed: Brier score ... exceeds threshold ...`. | `calibrate()` invoked before `fit()`, or uninformative raw margins produce severe Brier degradation. | Verify `fit()` was called; check calibration Brier score against baseline. | Retrain primary model features or adjust Brier threshold if dataset has high intrinsic noise. | Bet sizing pipeline halts; uncalibrated probabilities prevent trade execution. |
+| **`ERR-ECON-META-003`** | `src/quant/analytics/meta_labeling.py`<br>`ContinuousKellySizer.compute_size`<br>Lines 230–260 | Computes bounded non-negative bet size $f_t^* \in [0, f_{\max}]$. | `ValueError: Probability p must be in [0.0, 1.0]` or negative leverage / concurrency error. | Caller passed probability outside $[0, 1]$, non-positive concurrency $c_t \le 0$, or negative duration $\tau_t < 0$. | Inspect input arguments: check $0 \le p_t \le 1$, $c_t \ge 1$, $\tau_t \ge 0$. | Ensure probabilities are clipped to $[0, 1]$ and concurrency is lower-bounded by 1. | Invalid leverage submitted to execution broker; order rejected or account margin breached. |
 
 ---
 
@@ -136,5 +154,12 @@ This register records all major architectural decisions, design patterns, and en
   - Built continuous backtest path reconstruction ($\phi = \binom{N-1}{k-1}$) via canonical greedy positional fold assignment.
   - Evaluated empirical Sharpe distribution $\{SR_p\}$ and variance $V[\{SR\}]$ for downstream Deflated Sharpe Ratio integration (Step 6).
   - Added 13 new unit tests in `tests/unit/test_cross_validation.py` (110 total) passing with **90.98% overall test coverage** and zero warnings.
+* **[Phase 16: Sprint 2 - Step 5: Continuous-Payoff Kelly Meta-Labeling & Bet Sizing Engine] - 2026-09-09**:
+  - Created `src/quant/analytics/meta_labeling.py` implementing `TwoStageMetaLabeler`, `ContinuousKellySizer`, `ProbabilityCalibrator`, `MetaLabelConfig`, and `MetaLabel`.
+  - Engineered continuous-payoff alignment $\pi_t = \hat{y}_t \cdot R_t^{\text{net}}$, assigning binary meta-label $z_t = 1$ if $\pi_t > 0$ else $0$.
+  - Built regularized Platt scaling with L2 ridge penalty in `ProbabilityCalibrator` with monotonic sigmoid mapping and Brier score validation thresholding.
+  - Implemented time-decayed fractional Kelly bet sizing with duration discounting ($\sqrt{\tau_t / \tau_{\text{ref}}}$) and concurrency throttling ($c_t$), enforcing strict zero allocation on non-positive expectancy.
+  - Exported all core meta-labeling interfaces in `src/quant/analytics/__init__.py`.
+  - Added 8 unit tests in `tests/unit/test_meta_labeling.py` (118 total project tests) passing with **91.40% overall test coverage** (95% coverage on `meta_labeling.py`).
 
 

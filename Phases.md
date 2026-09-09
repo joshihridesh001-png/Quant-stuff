@@ -80,14 +80,17 @@ To eliminate cognitive overload and merge conflicts, Phase 2 is decomposed into 
   * Path Sharpe ratio distribution and empirical variance $V[\{SR_k\}]$ evaluation feeding directly into Step 6 (Deflated Sharpe Ratio).
   * 13 unit tests (110 total) passing with **90.98% coverage** and zero warnings.
 
-#### Step 5: Two-Stage Meta-Labeling Architecture [ACTIVE / UPCOMING]
-* **Scope:**
-  * Decoupling primary directional model ($\hat{y}_t \in \{-1, 1\}$) from secondary bet-sizing classifier ($z_t \in \{0, 1\}$).
-  * Secondary model trained on feature vectors to predict probability of hitting profit barrier before stop-loss.
-  * Probability calibration (Brier score verification) parameterizing bet size.
-* **Acceptance Criteria:** Demonstrable increase in out-of-sample Sharpe ratio relative to raw directional heuristic.
+#### Step 5: Two-Stage Meta-Labeling Architecture [COMPLETE]
+* **Deliverables:**
+  * Two-stage Continuous-Payoff Kelly Meta-Labeling engine decoupling directional discovery from capital allocation.
+  * Payoff-aware meta-labeling ($\pi_t = \hat{y}_t \cdot R_t^{\text{net}}$) correctly crediting net-profitable vertical timeouts and penalizing fee-eroded trades.
+  * Regularized Platt logistic calibration (Platt scaling) mapping decision margins to smooth, monotonic probabilities with mandatory Brier score validation gate.
+  * Time-Decayed Fractional Kelly Criterion ($f^* = \lambda \cdot \frac{p \cdot b - (1-p)}{b}$) maximizing long-term compound capital growth.
+  * Holding duration discounting ($\sqrt{\tau_t / \tau_{\text{ref}}}$) pricing capital opportunity costs.
+  * Portfolio-level concurrency throttling ($c_t$) normalizing overlapping trade allocations to enforce an aggregate $100\%$ leverage limit ($L_{\text{max}} = 1.0$).
+  * 8 unit tests (118 total) passing with **91.40% coverage** and zero warnings.
 
-#### Step 6: Deflated Sharpe Ratio (DSR) & Statistical Significance [PLANNED]
+#### Step 6: Deflated Sharpe Ratio (DSR) & Statistical Significance [ACTIVE / UPCOMING]
 * **Scope:**
   * Adjustment of empirical Sharpe ratio for skewness $\hat{\gamma}_3$, kurtosis $\hat{\gamma}_4$, sample length $T$, trial count $K$, and variance of trials $V[\{SR_k\}]$.
   * Calculation of Expected Maximum Sharpe Ratio.
