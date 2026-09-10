@@ -5,6 +5,17 @@ Dependencies: numpy, scipy, statsmodels, pyarrow, domain models.
 Relationship: Consumed by application services and research pipelines.
 """
 
+from quant.analytics.chromosomes import (
+    GENE_REGISTRY,
+    ChromosomeVectorCodec,
+    GameTheoryChromosome,
+    GeneSpec,
+    InferenceChromosome,
+    RepresentationChromosome,
+    RiskChromosome,
+    ScaleType,
+    StrategyChromosome,
+)
 from quant.analytics.cross_validation import (
     CombinatorialPurgedCV,
     CPCVConfig,
@@ -81,6 +92,7 @@ __all__ = [
     "CPCVConfig",
     "CUSUMJumpDetector",
     "CausalBayesianRegimeFilter",
+    "ChromosomeVectorCodec",
     "CombinatorialPurgedCV",
     "ContinuousKellySizer",
     "DSRConfig",
@@ -91,8 +103,12 @@ __all__ = [
     "DynamicTripleBarrierLabeler",
     "EntropicBoltzmannPotential",
     "FractionalDifferentiator",
+    "GENE_REGISTRY",
+    "GameTheoryChromosome",
+    "GeneSpec",
     "GeneralizedPseudoHuber",
     "HubermanStanzlCrossImpact",
+    "InferenceChromosome",
     "InstitutionalBenchmarkUniverse",
     "LatentSoftmaxTransform",
     "MarketImpactConfig",
@@ -110,9 +126,13 @@ __all__ = [
     "RegimeConfig",
     "RegimeEstimationResult",
     "RegimeState",
+    "RepresentationChromosome",
+    "RiskChromosome",
+    "ScaleType",
     "StackelbergConfig",
     "StackelbergPayoffEngine",
     "StackelbergPayoffTensorConstructor",
+    "StrategyChromosome",
     "StreamingFracDiffBuffer",
     "TripleBarrierConfig",
     "TwoStageMetaLabeler",

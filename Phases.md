@@ -142,13 +142,21 @@ Decomposed into 4 sequential micro-steps implementing the Entropic Distributiona
 
 ---
 
-### Phase 4: Evolutionary Population & Hypergamy Dynamics [PLANNED]
-* **Scope:**
-  * Algorithmic genotype chromosome encoding ($\mathbf{g}_{\text{repr}}, \mathbf{g}_{\text{game}}, \mathbf{g}_{\text{infer}}, \mathbf{g}_{\text{risk}}$).
-  * Multi-objective fitness function combining Deflated Sharpe, Drawdown penalty, Minimax Regret, and Novelty distance.
-  * Population stratification into Alpha ($20\%$) and Aspirant ($80\%$) cohorts.
-  * Hypergamic assortative mating gated by residual orthogonality threshold ($\text{Corr}(\mathbf{e}_{\text{Alpha}}, \mathbf{e}_{\text{Aspirant}}) < \delta_{\text{ortho}}$).
-  * Entropy-governed adaptive mutation rates scaled by realized volatility.
+### Phase 4: Evolutionary Population & Hypergamy Dynamics [IN PROGRESS]
+
+#### Step 1: Chromosome Architecture & Vector Encoding Engine [COMPLETE]
+* **Deliverables:**
+  * Declarative Gene Registry (`GENE_REGISTRY`) specifying 20 algorithmic parameters across Representation, Game Theory, Inference, and Risk blocks with scale types (`ScaleType`).
+  * Continuous Unit Hypercube Codec (`ChromosomeVectorCodec`) implementing scale-invariant hybrid logarithmic-linear normalization.
+  * Invariant satisfaction by construction: timescale ordering ($\tau_{\text{fast}} < \tau_{\text{slow}}$) via ratio parameterization and regime scenario simplex ($\sum p_j \equiv 1.0, p_j > 0$) via unconstrained softmax logits with zero-mean gauge fixing.
+  * Bucket midpoint centering $u(k) = (k + 0.5) / K$ eliminating floating-point round-trip drift in discrete parameter quantization.
+  * Gauge-invariant phenotypic distance metric operating on decoded regime probabilities rather than raw logits.
+  * Typed factory adapters (`to_stackelberg_config`, `to_regime_config`, `to_minimax_config`, `to_triple_barrier_config`, `to_meta_label_config`) and backward-compatible dictionary serialization.
+  * 32 unit tests (291 total) passing with **93.71% overall coverage** (98% on `chromosomes.py`) and zero warnings.
+
+#### Step 2: Novelty Distance & Multi-Objective Pareto Sorting [PLANNED]
+#### Step 3: Hypergamic Assortative Selection & Residual Orthogonality Gating [PLANNED]
+#### Step 4: Adaptive Volatility Mutation & Generational Lifecycle Engine [PLANNED]
 
 ---
 

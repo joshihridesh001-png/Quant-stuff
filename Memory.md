@@ -147,6 +147,20 @@ This register records all major architectural decisions, design patterns, and en
   5. Cache cross-impact matrices $\mathbf{\Lambda}_{\text{cross}}$ across regime scenarios and employ single-pass simultaneous utility/gradient evaluation (`evaluate_utility_and_gradient`), driving solve latency to $< 400\mu\text{s}$ (sub-millisecond).
 * **Trade-Offs:** Latent softmax parameterization compresses gradient near boundaries; completely solved by the KKT projected gradient norm termination criterion.
 
+### ADR-014: Scale-Free Declarative Chromosome Architecture & Invariant by Construction
+* **Date:** 2026-09-10 | **Status:** Implemented (Sprint 4, Step 1)
+* **Context:** Financial strategy genetic algorithms suffer from multi-scale domain blindness (where large numbers dominate mutation variance), clumping from discontinuous boundary repairs, and probability simplex violations when mutating scenario beliefs. Discrete parameters also introduce floating-point boundary drift during round-trip encoding and fake diversity in distance calculations.
+* **Decision:**
+  1. Implement `GENE_REGISTRY`, `GeneSpec`, and `ScaleType` in `src/quant/analytics/chromosomes.py`, declaring 20 parameters across 4 sub-chromosomes (`RepresentationChromosome`, `GameTheoryChromosome`, `InferenceChromosome`, `RiskChromosome`).
+  2. Implement hybrid logarithmic-linear normalization in `ChromosomeVectorCodec`: logarithmic scaling for multi-order-of-magnitude parameters ($\tau_{\text{slow}}$, $\tau_{\text{ambig}}$) and linear scaling for bounded ratios and weights.
+  3. Enforce invariants by construction:
+     - Ordering invariant $\tau_{\text{fast}} < \tau_{\text{slow}}$ guaranteed by evolving base timescale $\tau_{\text{slow}}$ and ratio $r_\tau \in [0.02, 0.50]$.
+     - Simplex invariant $\sum p_j \equiv 1.0, p_j > 0.0$ guaranteed by evolving unconstrained softmax logits $\mathbf{z} \in [-2.0, 2.0]^3$ with zero-mean gauge fixing.
+  4. Guarantee discrete quantization stability via bucket midpoint centering $u(k) = (k + 0.5) / K$, granting a $\pm 2.5\%$ safety buffer against IEEE-754 precision drift.
+  5. Compute phenotypic behavioral distance on normalized decoded phenotypes using actual regime probabilities $\mathbf{p} \in \Delta^3$ rather than unconstrained logits.
+  6. Equip `StrategyChromosome` with typed factory adapters (`to_stackelberg_config`, `to_regime_config`, `to_minimax_config`, `to_triple_barrier_config`, `to_meta_label_config`) and backward-compatible dictionary serialization with legacy aliasing.
+* **Trade-Offs:** Adds an explicit codec translation layer, but guarantees 100% valid offspring across the entire unit hypercube with zero wasted backtest evaluations.
+
 ---
 
 ## 2. Deterministic Diagnostic Failure Matrix (Zero-Execution Triage)
@@ -229,6 +243,11 @@ This register records all major architectural decisions, design patterns, and en
 | **`ERR-GAME-MINIMAX-002`** | `src/quant/analytics/minimax_regret.py`<br>`EntropicBoltzmannPotential`<br>Lines 300–345 | Evaluates Log-Sum-Exp dual potential with max-shift normalization. | Partition function underflow ($Z \le 0$) or infinite dual potential. | Extreme negative returns or numerical underflow in probability weighting. | Check partition function value; inspect scaled regret range. | Handled automatically via fallback to uniform distribution and max-shift scalar baseline. | Loss of thermodynamic temperature scaling. |
 | **`ERR-GAME-MINIMAX-003`** | `src/quant/analytics/minimax_regret.py`<br>`VectorizedNewtonSolver.solve`<br>Lines 595–615 | Enforces dimensional alignment across assets, scenarios, ceilings, and priors. | `ValueError: ERR-GAME-MINIMAX-003: Dimension mismatch across ...`. | Array lengths of priors, ceilings, or scenarios do not align with asset universe. | Verify `len(priors) == len(ceilings) == len(regime_scenarios)` and `len(a_0) == len(vols)`. | Re-align scenario matrices and benchmark ceilings before invoking solver. | Crash during vectorized Newton-Raphson iterations. |
 | **`ERR-GAME-MINIMAX-004`** | `src/quant/analytics/minimax_regret.py`<br>`VectorizedNewtonSolver.solve`<br>Lines 670–705 | Solves regularized Newton system with Levenberg damping $(H + \mu I)^{-1} g$. | Singular matrix LinAlgError or non-descent step direction. | Ill-conditioned Hessian or numerical rank deficiency in latent space. | Check eigenvalue spectrum of regularized Hessian matrix. | Handled defensively by falling back to regularized steepest descent direction $-g$. | Slowed convergence rate during ill-conditioned regimes. |
+| **`ERR-EVO-CHROM-001`** | `src/quant/analytics/chromosomes.py`<br>`GeneSpec.__post_init__`<br>Lines 85–110 | Validates gene bounds ($x_{\min} < x_{\max}$, step $> 0$, $x_{\min} > 0$ for log). | `ValueError: ERR-EVO-CHROM-001: ...` parameter bounds error. | Lower bound exceeds upper bound or non-positive log bound declared in `GeneSpec`. | Inspect registry definition in `GENE_REGISTRY`. | Ensure $x_{\min} < x_{\max}$ and strictly positive lower bounds for logarithmic parameters. | Registry initialization failure. |
+| **`ERR-EVO-CHROM-002`** | `src/quant/analytics/chromosomes.py`<br>`StrategyChromosome`<br>Lines 150–220 | Guarantees ordering ($\tau_{\text{fast}} < \tau_{\text{slow}}$) and simplex ($\sum p_j = 1$). | Invariant breach during crossover/mutation. | Direct manipulation of raw chromosome properties outside vector codec. | Check `tau_fast < tau_slow` and `sum(priors) == 1.0`. | Use `ChromosomeVectorCodec` which guarantees invariants by construction via ratio and softmax logits. | Model training / backtest corruption. |
+| **`ERR-EVO-CHROM-003`** | `src/quant/analytics/chromosomes.py`<br>`ChromosomeVectorCodec.decode`<br>Lines 720–740 | Enforces exact 1D vector dimension $D = 20$. | `ValueError: ERR-EVO-CHROM-003: Expected 1D array of shape (20,) ...`. | Crossover or external genetic operator emitted truncated or padded array. | Check `len(u) == 20` and `u.ndim == 1`. | Align genetic operator array dimension with `ChromosomeVectorCodec.dimension`. | Population evaluation crashes during generational cycle. |
+| **`ERR-EVO-CHROM-004`** | `src/quant/analytics/chromosomes.py`<br>`ChromosomeVectorCodec.decode`<br>Lines 730–745 | Verifies all vector elements are finite numbers. | `ValueError: ERR-EVO-CHROM-004: Vector contains NaN or Inf elements`. | Unchecked division by zero in genetic operator or numerical overflow. | Check `np.all(np.isfinite(u))`. | Project/clamp values to unit hypercube $[0, 1]$; intercept NaN generation in crossover. | Downstream model crashes on unparseable chromosome. |
+| **`ERR-EVO-CHROM-005`** | `src/quant/analytics/chromosomes.py`<br>`StrategyChromosome.from_dict`<br>Lines 330–355 | Reconstructs chromosome from dictionary with fallback to defaults. | `ValueError: ERR-EVO-CHROM-005: Expected dict, got ...`. | Non-dict object passed to `from_dict()`, or unparseable corrupted JSON stored in database. | Check input payload type and verify JSON structure in `genotypes` table. | Validate JSON schema before invoking `from_dict()`; populate missing keys with registry defaults. | Database hydration failure; strategy evaluation aborts. |
 
 ---
 
@@ -322,3 +341,14 @@ This register records all major architectural decisions, design patterns, and en
   - Exported all Step 4 components in `src/quant/analytics/__init__.py`.
   - Added 21 unit tests in `tests/unit/test_minimax_regret.py` (259 total project tests) passing with **93.38% overall coverage** (96% on `minimax_regret.py`).
   - Formally concluded **Phase 3 (Scenario Matrix & Game Theory Engine) as 100% COMPLETE**.
+* **[Phase 22: Sprint 4 - Step 1: Chromosome Architecture & Vector Encoding Engine] - 2026-09-10**:
+  - Created `src/quant/analytics/chromosomes.py` implementing `GENE_REGISTRY` ($D = 20$), `GeneSpec`, `ScaleType`, `RepresentationChromosome`, `GameTheoryChromosome`, `InferenceChromosome`, `RiskChromosome`, `StrategyChromosome`, and `ChromosomeVectorCodec`.
+  - Solved multi-scale domain blindness using hybrid logarithmic-linear normalization on the unit hypercube $\mathbf{u} \in [0, 1]^{20}$.
+  - Enforced timescale ordering ($\tau_{\text{fast}} < \tau_{\text{slow}}$) via ratio parameterization and regime scenario probability simplex ($\sum p_j \equiv 1.0, p_j > 0$) via softmax logits with zero-mean gauge fixing.
+  - Eliminated floating-point round-trip drift in discrete parameters through bucket midpoint centering $u(k) = (k + 0.5) / K$.
+  - Developed gauge-invariant phenotypic distance metric operating on decoded regime probabilities rather than raw unconstrained logits.
+  - Equipped `StrategyChromosome` with typed factory adapters (`to_stackelberg_config`, `to_regime_config`, `to_minimax_config`, `to_triple_barrier_config`, `to_meta_label_config`) and full backward-compatible dictionary serialization with legacy aliases (`risk_aversion_lambda`, `belief_prior`).
+  - Synchronized `src/quant/services/genotype_service.py` to seed generation 0 populations with complete 20-gene chromosomes.
+  - Exported all Step 1 components in `src/quant/analytics/__init__.py`.
+  - Added 32 unit tests in `tests/unit/test_chromosomes.py` (291 total project tests) passing with **93.71% overall coverage** (98% on `chromosomes.py`).
+
