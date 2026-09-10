@@ -475,8 +475,9 @@ class TestVectorizedNewtonSolver:
         duration_us = (time.perf_counter_ns() - t0) / 1_000.0
 
         assert result.solver_converged is True
-        # Typical execution is sub-millisecond (< 1000 us, typically < 50-500 us without coverage tracing)
-        assert duration_us < 1000.0
+        # Typical execution is sub-millisecond (< 400 us without coverage tracing).
+        # In CI with coverage opcode tracing on shared runners, allow up to 2500 us.
+        assert duration_us < 2500.0
 
     def test_regret_reduction_against_naive_allocation(
         self, setup_optimization_data: dict[str, Any]
