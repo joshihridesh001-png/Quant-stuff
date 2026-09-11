@@ -19,6 +19,7 @@ from quant.analytics.circuit_breakers import (
     CircuitBreakerError,
     CircuitBreakerState,
     CircuitBreakerTier,
+    ContinuousHaircutCalculator,
     DegenerateCircuitBreakerException,
     EpistemicEntropyCalculator,
     InvalidCircuitBreakerInputException,
@@ -992,3 +993,430 @@ class TestEpistemicEntropyCalculator:
         assert state.directional_entropy == h_dir
         assert state.epistemic_ratio == rho
         assert np.array_equal(state.directional_probabilities, probs)
+
+
+class TestContinuousHaircutCalculator:
+    """Validate ContinuousHaircutCalculator composite shock and continuous haircut dynamics."""
+
+    def test_init_defaults_and_properties(self) -> None:
+        """Verify institutional defaults and read-only property accessors."""
+        calc = ContinuousHaircutCalculator()
+        assert calc.steepness == 10.0
+        assert calc.midpoint == 0.50
+        assert calc.weight_entropy == 0.50
+        assert calc.weight_epistemic_ratio == 0.30
+        assert calc.weight_ambiguity == 0.20
+        assert calc.beta_min == 1.0
+        assert calc.beta_max == 5.0
+
+        # Custom initialization
+        custom = ContinuousHaircutCalculator(
+            steepness=15.0,
+            midpoint=0.60,
+            weight_entropy=0.40,
+            weight_epistemic_ratio=0.40,
+            weight_ambiguity=0.20,
+            beta_min=2.0,
+            beta_max=8.0,
+        )
+        assert custom.steepness == 15.0
+        assert custom.midpoint == 0.60
+        assert custom.weight_entropy == 0.40
+        assert custom.weight_epistemic_ratio == 0.40
+        assert custom.weight_ambiguity == 0.20
+        assert custom.beta_min == 2.0
+        assert custom.beta_max == 8.0
+
+        # Read-only property accessors
+        with pytest.raises(AttributeError):
+            calc.steepness = 20.0  # type: ignore[misc]
+        with pytest.raises(AttributeError):
+            calc.midpoint = 0.40  # type: ignore[misc]
+
+    def test_from_config_factory(self) -> None:
+        """Verify factory construction from CircuitBreakerConfig."""
+        cfg = CircuitBreakerConfig(
+            haircut_steepness=12.0,
+            haircut_midpoint=0.55,
+            weight_entropy=0.60,
+            weight_epistemic_ratio=0.25,
+            weight_ambiguity=0.15,
+            beta_min=1.5,
+            beta_max=6.0,
+        )
+        calc = ContinuousHaircutCalculator.from_config(cfg)
+        assert calc.steepness == 12.0
+        assert calc.midpoint == 0.55
+        assert calc.weight_entropy == 0.60
+        assert calc.weight_epistemic_ratio == 0.25
+        assert calc.weight_ambiguity == 0.15
+        assert calc.beta_min == 1.5
+        assert calc.beta_max == 6.0
+
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator.from_config("invalid_config")  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "field_name,bad_val",
+        [
+            ("steepness", float("nan")),
+            ("steepness", float("inf")),
+            ("midpoint", float("nan")),
+            ("midpoint", float("inf")),
+            ("weight_entropy", float("nan")),
+            ("weight_epistemic_ratio", float("inf")),
+            ("weight_ambiguity", float("nan")),
+            ("beta_min", float("nan")),
+            ("beta_max", float("inf")),
+        ],
+    )
+    def test_init_non_finite_validation(self, field_name: str, bad_val: float) -> None:
+        """Verify non-finite parameters trigger DegenerateCircuitBreakerException (INV-CB-005)."""
+        kwargs: dict[str, float] = {
+            "steepness": 10.0,
+            "midpoint": 0.50,
+            "weight_entropy": 0.50,
+            "weight_epistemic_ratio": 0.30,
+            "weight_ambiguity": 0.20,
+            "beta_min": 1.0,
+            "beta_max": 5.0,
+        }
+        kwargs[field_name] = bad_val
+        with pytest.raises(DegenerateCircuitBreakerException):
+            ContinuousHaircutCalculator(**kwargs)
+
+    @pytest.mark.parametrize(
+        "field_name,bad_val",
+        [
+            ("steepness", "10.0"),
+            ("steepness", True),
+            ("midpoint", False),
+            ("weight_entropy", None),
+            ("weight_epistemic_ratio", "0.3"),
+            ("weight_ambiguity", True),
+            ("beta_min", "1.0"),
+            ("beta_max", None),
+        ],
+    )
+    def test_init_type_validation(self, field_name: str, bad_val: object) -> None:
+        """Verify non-float and boolean parameters raise InvalidCircuitBreakerInputException."""
+        kwargs: dict[str, object] = {
+            "steepness": 10.0,
+            "midpoint": 0.50,
+            "weight_entropy": 0.50,
+            "weight_epistemic_ratio": 0.30,
+            "weight_ambiguity": 0.20,
+            "beta_min": 1.0,
+            "beta_max": 5.0,
+        }
+        kwargs[field_name] = bad_val
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(**kwargs)  # type: ignore[arg-type]
+
+    def test_init_boundary_validation(self) -> None:
+        """Verify parameter range invariants and constraints."""
+        # steepness <= 0.0
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(steepness=0.0)
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(steepness=-5.0)
+
+        # midpoint not in (0.0, 1.0)
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(midpoint=0.0)
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(midpoint=1.0)
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(midpoint=-0.1)
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(midpoint=1.1)
+
+        # negative weights
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(
+                weight_entropy=-0.1, weight_epistemic_ratio=0.6, weight_ambiguity=0.5
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(
+                weight_entropy=0.5, weight_epistemic_ratio=-0.1, weight_ambiguity=0.6
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(
+                weight_entropy=0.5, weight_epistemic_ratio=0.6, weight_ambiguity=-0.1
+            )
+
+        # weights sum violation
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(
+                weight_entropy=0.40, weight_epistemic_ratio=0.30, weight_ambiguity=0.20
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(
+                weight_entropy=0.60, weight_epistemic_ratio=0.30, weight_ambiguity=0.20
+            )
+
+        # beta_min <= 0.0
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(beta_min=0.0)
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(beta_min=-1.0)
+
+        # beta_max <= beta_min
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(beta_min=5.0, beta_max=5.0)
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            ContinuousHaircutCalculator(beta_min=5.0, beta_max=3.0)
+
+    def test_compute_composite_shock_mathematical_precision(self) -> None:
+        """Verify thermodynamic normalized ambiguity and composite shock score precision."""
+        calc = ContinuousHaircutCalculator(
+            weight_entropy=0.50,
+            weight_epistemic_ratio=0.30,
+            weight_ambiguity=0.20,
+            beta_min=1.0,
+            beta_max=5.0,
+        )
+
+        # Minimum shock: H=0, rho=0, beta <= beta_min -> Xi = 0.0
+        shock_min = calc.compute_composite_shock(
+            epistemic_entropy=0.0, epistemic_ratio=0.0, ambiguity_beta=0.5
+        )
+        assert shock_min == 0.0
+
+        # Maximum shock: H=1, rho=1, beta >= beta_max -> Xi = 1.0
+        shock_max = calc.compute_composite_shock(
+            epistemic_entropy=1.0, epistemic_ratio=1.0, ambiguity_beta=6.0
+        )
+        assert shock_max == 1.0
+
+        # Midpoint ambiguity: beta = 3.0 -> tilde_beta = (3-1)/(5-1) = 0.50
+        # Xi = 0.50 * 0.4 + 0.30 * 0.6 + 0.20 * 0.50 = 0.20 + 0.18 + 0.10 = 0.48
+        shock_mid = calc.compute_composite_shock(
+            epistemic_entropy=0.40, epistemic_ratio=0.60, ambiguity_beta=3.0
+        )
+        assert math.isclose(shock_mid, 0.48, rel_tol=1e-12)
+        assert 0.0 <= shock_mid <= 1.0
+
+        # Boundary beta exactly at beta_min and beta_max
+        shock_bmin = calc.compute_composite_shock(
+            epistemic_entropy=0.20, epistemic_ratio=0.30, ambiguity_beta=1.0
+        )
+        # tilde_beta = 0.0 -> Xi = 0.50 * 0.20 + 0.30 * 0.30 = 0.19
+        assert math.isclose(shock_bmin, 0.19, rel_tol=1e-12)
+
+        shock_bmax = calc.compute_composite_shock(
+            epistemic_entropy=0.20, epistemic_ratio=0.30, ambiguity_beta=5.0
+        )
+        # tilde_beta = 1.0 -> Xi = 0.19 + 0.20 = 0.39
+        assert math.isclose(shock_bmax, 0.39, rel_tol=1e-12)
+
+    def test_compute_composite_shock_defensive_failures(self) -> None:
+        """Verify composite shock calculation rejects invalid or non-finite inputs."""
+        calc = ContinuousHaircutCalculator()
+
+        # Non-finite inputs raise DegenerateCircuitBreakerException (INV-CB-005)
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_composite_shock(
+                epistemic_entropy=float("nan"), epistemic_ratio=0.5, ambiguity_beta=2.0
+            )
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_composite_shock(
+                epistemic_entropy=0.5, epistemic_ratio=float("inf"), ambiguity_beta=2.0
+            )
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_composite_shock(
+                epistemic_entropy=0.5, epistemic_ratio=0.5, ambiguity_beta=float("nan")
+            )
+
+        # Out of bounds raises InvalidCircuitBreakerInputException
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_composite_shock(
+                epistemic_entropy=-0.01, epistemic_ratio=0.5, ambiguity_beta=2.0
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_composite_shock(
+                epistemic_entropy=1.01, epistemic_ratio=0.5, ambiguity_beta=2.0
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_composite_shock(
+                epistemic_entropy=0.5, epistemic_ratio=-0.01, ambiguity_beta=2.0
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_composite_shock(
+                epistemic_entropy=0.5, epistemic_ratio=1.01, ambiguity_beta=2.0
+            )
+
+        # Non-positive ambiguity_beta
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_composite_shock(
+                epistemic_entropy=0.5, epistemic_ratio=0.5, ambiguity_beta=0.0
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_composite_shock(
+                epistemic_entropy=0.5, epistemic_ratio=0.5, ambiguity_beta=-1.0
+            )
+
+        # Type errors
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_composite_shock(
+                epistemic_entropy="0.5",  # type: ignore[arg-type]
+                epistemic_ratio=0.5,
+                ambiguity_beta=2.0,
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_composite_shock(
+                epistemic_entropy=0.5,
+                epistemic_ratio=True,  # type: ignore[arg-type]
+                ambiguity_beta=2.0,
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_composite_shock(
+                epistemic_entropy=0.5,
+                epistemic_ratio=0.5,
+                ambiguity_beta=False,  # type: ignore[arg-type]
+            )
+
+    def test_compute_haircut_boundary_contracts(self) -> None:
+        """INV-CB-001: kappa(0.0) == 1.0, kappa(1.0) == 0.0, kappa(midpoint) == 0.50."""
+        # Symmetric midpoint (0.50)
+        calc = ContinuousHaircutCalculator(steepness=10.0, midpoint=0.50)
+
+        assert calc.compute_haircut(0.0) == 1.0
+        assert calc.compute_haircut(1.0) == 0.0
+        assert math.isclose(calc.compute_haircut(0.50), 0.50, rel_tol=1e-12)
+
+        # Asymmetric midpoint (0.40, k=12.0)
+        calc_asym = ContinuousHaircutCalculator(steepness=12.0, midpoint=0.40)
+        assert calc_asym.compute_haircut(0.0) == 1.0
+        assert calc_asym.compute_haircut(1.0) == 0.0
+        assert math.isclose(calc_asym.compute_haircut(0.40), 0.50, abs_tol=1e-2)
+
+        # Asymmetric midpoint (0.70, k=8.0) approx 0.50 within 0.05
+        calc_high = ContinuousHaircutCalculator(steepness=8.0, midpoint=0.70)
+        assert calc_high.compute_haircut(0.0) == 1.0
+        assert calc_high.compute_haircut(1.0) == 0.0
+        assert math.isclose(calc_high.compute_haircut(0.70), 0.50, abs_tol=0.05)
+
+    def test_compute_haircut_monotonicity_and_smoothness(self) -> None:
+        """Verify haircut is strictly monotonic non-increasing and continuously differentiable."""
+        calc = ContinuousHaircutCalculator(steepness=10.0, midpoint=0.50)
+        shocks = np.linspace(0.0, 1.0, 1001)
+        haircuts = np.array([calc.compute_haircut(float(s)) for s in shocks])
+
+        # All values strictly in [0.0, 1.0]
+        assert np.all(haircuts >= 0.0)
+        assert np.all(haircuts <= 1.0)
+
+        # Exact endpoints
+        assert haircuts[0] == 1.0
+        assert haircuts[-1] == 0.0
+
+        # Monotonicity: d_kappa / d_Xi <= 0 everywhere
+        diffs = np.diff(haircuts)
+        assert np.all(diffs <= 0.0)
+
+        # Smoothness: no discontinuous jumps
+        max_diff = float(np.max(np.abs(diffs)))
+        # For k=10, max slope is at midpoint: |d_kappa/d_Xi| ~ k/4 = 2.5
+        # Step size h = 1e-3, so max step difference ~ 2.5 * 1e-3 = 2.5e-3
+        assert max_diff < 5e-3
+
+    def test_compute_haircut_steepness_sensitivity(self) -> None:
+        """Verify steeper k yields sharper transition around midpoint."""
+        calc_gentle = ContinuousHaircutCalculator(steepness=4.0, midpoint=0.50)
+        calc_steep = ContinuousHaircutCalculator(steepness=25.0, midpoint=0.50)
+
+        # At Xi = 0.20 (low shock):
+        # gentle haircut preserves some risk reduction
+        # steep haircut stays much closer to 1.0
+        k_gentle_low = calc_gentle.compute_haircut(0.20)
+        k_steep_low = calc_steep.compute_haircut(0.20)
+        assert k_steep_low > k_gentle_low
+
+        # At Xi = 0.80 (high shock):
+        # gentle haircut retains some small exposure
+        # steep haircut cuts exposure close to 0.0
+        k_gentle_high = calc_gentle.compute_haircut(0.80)
+        k_steep_high = calc_steep.compute_haircut(0.80)
+        assert k_steep_high < k_gentle_high
+
+    def test_compute_haircut_defensive_failures(self) -> None:
+        """Verify haircut computation rejects out-of-bounds, non-finite, and invalid types."""
+        calc = ContinuousHaircutCalculator()
+
+        # Non-finite values raise DegenerateCircuitBreakerException (INV-CB-005)
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_haircut(float("nan"))
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_haircut(float("inf"))
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_haircut(-float("inf"))
+
+        # Out of bounds raise InvalidCircuitBreakerInputException
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_haircut(-0.001)
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_haircut(1.001)
+
+        # Invalid types
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_haircut("0.5")  # type: ignore[arg-type]
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_haircut(True)  # type: ignore[arg-type]
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_haircut(False)  # type: ignore[arg-type]
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_haircut(None)  # type: ignore[arg-type]
+
+    def test_end_to_end_circuit_breaker_pipeline_integration(self) -> None:
+        """Verify seamless integration from entropy calculator to haircut calculator and domain state."""
+        entropy_calc = EpistemicEntropyCalculator(sign_threshold=1e-4)
+        haircut_calc = ContinuousHaircutCalculator(steepness=10.0, midpoint=0.50)
+
+        # Disagreement scenario: split models
+        predictions = np.array([0.04, -0.03, 0.05, -0.04], dtype=np.float64)
+        weights = np.array([0.25, 0.25, 0.25, 0.25], dtype=np.float64)
+
+        h_epi, h_dir, rho, probs = entropy_calc.compute_epistemic_entropy(
+            predictions=predictions,
+            weights=weights,
+            aleatoric_variance=0.01,
+            epistemic_variance=0.04,  # epistemic dominant: rho = 0.04 / 0.05 = 0.80
+        )
+
+        ambiguity_beta = 3.5  # elevated macro ambiguity
+
+        # Compute composite shock
+        shock = haircut_calc.compute_composite_shock(
+            epistemic_entropy=h_epi,
+            epistemic_ratio=rho,
+            ambiguity_beta=ambiguity_beta,
+        )
+        assert 0.0 <= shock <= 1.0
+
+        # Compute continuous haircut
+        haircut = haircut_calc.compute_haircut(shock)
+        assert 0.0 <= haircut <= 1.0
+
+        # Construct immutable state
+        state = CircuitBreakerState(
+            tier=CircuitBreakerTier.CAUTION if haircut < 0.50 else CircuitBreakerTier.NORMAL,
+            active_bars_in_tier=1,
+            continuous_haircut=haircut,
+            epistemic_entropy=h_epi,
+            directional_entropy=h_dir,
+            epistemic_ratio=rho,
+            composite_shock_score=shock,
+            directional_probabilities=probs,
+            step_index=1,
+        )
+
+        # Form execution decision
+        decision = CircuitBreakerDecision.from_state(
+            action_tier=state.tier,
+            execution_haircut=state.continuous_haircut,
+            state=state,
+        )
+
+        assert decision.execution_haircut == haircut
+        assert decision.state == state

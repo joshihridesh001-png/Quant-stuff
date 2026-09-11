@@ -625,3 +625,257 @@ class EpistemicEntropyCalculator:
         bounded_composite = float(np.clip(composite_entropy, 0.0, 1.0)) + 0.0
 
         return bounded_composite, directional_entropy, epistemic_ratio, directional_probs
+
+
+class ContinuousHaircutCalculator:
+    """Calculates continuous soft haircut and thermodynamic composite shock score.
+
+    Implements:
+    - Normalized thermodynamic ambiguity:
+        beta_tilde = clip((beta - beta_min) / (beta_max - beta_min), 0.0, 1.0)
+    - Weighted composite shock score:
+        Xi_t = omega_H * H_epistemic + omega_rho * rho_epistemic + omega_beta * beta_tilde in [0.0, 1.0]
+    - Normalized logistic sigmoid haircut:
+        kappa_raw = 1 / (1 + exp(k_steep * (Xi_t - Xi_mid)))
+        kappa_t = clip((kappa_raw - kappa_1) / (kappa_0 - kappa_1), 0.0, 1.0)
+
+    Enforces Invariants:
+    - INV-CB-001: Bounded Continuous Haircut (kappa_t in [0.0, 1.0]), kappa(0.0) == 1.0, kappa(1.0) == 0.0.
+    - INV-CB-005: Immediate defensive failure on non-finite data (NaN/Inf).
+    """
+
+    def __init__(
+        self,
+        steepness: float = 10.0,
+        midpoint: float = 0.50,
+        weight_entropy: float = 0.50,
+        weight_epistemic_ratio: float = 0.30,
+        weight_ambiguity: float = 0.20,
+        beta_min: float = 1.0,
+        beta_max: float = 5.0,
+    ) -> None:
+        """Initialize ContinuousHaircutCalculator with defensive parameter validation.
+
+        Args:
+            steepness: Logistic sigmoid steepness coefficient k_steep > 0.0 (default 10.0).
+            midpoint: Logistic sigmoid midpoint inflection Xi_mid in (0.0, 1.0) (default 0.50).
+            weight_entropy: Composite shock weight for epistemic entropy omega_H >= 0.0 (default 0.50).
+            weight_epistemic_ratio: Composite shock weight for epistemic ratio omega_rho >= 0.0 (default 0.30).
+            weight_ambiguity: Composite shock weight for thermodynamic ambiguity omega_beta >= 0.0 (default 0.20).
+            beta_min: Macroeconomic ambiguity lower normalization bound beta_min > 0.0 (default 1.0).
+            beta_max: Macroeconomic ambiguity upper normalization bound beta_max > beta_min (default 5.0).
+        """
+        for param_name, val in (
+            ("steepness", steepness),
+            ("midpoint", midpoint),
+            ("weight_entropy", weight_entropy),
+            ("weight_epistemic_ratio", weight_epistemic_ratio),
+            ("weight_ambiguity", weight_ambiguity),
+            ("beta_min", beta_min),
+            ("beta_max", beta_max),
+        ):
+            if not isinstance(val, (int, float)) or isinstance(val, bool):
+                raise InvalidCircuitBreakerInputException(
+                    f"{param_name} must be a float, got {type(val)}"
+                )
+            if not math.isfinite(val):
+                raise DegenerateCircuitBreakerException(
+                    f"INV-CB-005: {param_name} must be a finite float, got {val}"
+                )
+
+        if steepness <= 0.0:
+            raise InvalidCircuitBreakerInputException(
+                f"steepness must be strictly positive (> 0.0), got {steepness}"
+            )
+
+        if not (0.0 < midpoint < 1.0):
+            raise InvalidCircuitBreakerInputException(
+                f"midpoint must be in (0.0, 1.0), got {midpoint}"
+            )
+
+        if weight_entropy < 0.0 or weight_epistemic_ratio < 0.0 or weight_ambiguity < 0.0:
+            raise InvalidCircuitBreakerInputException(
+                "Component weights must be non-negative: "
+                f"weight_entropy={weight_entropy}, "
+                f"weight_epistemic_ratio={weight_epistemic_ratio}, "
+                f"weight_ambiguity={weight_ambiguity}"
+            )
+
+        total_weight = weight_entropy + weight_epistemic_ratio + weight_ambiguity
+        if abs(total_weight - 1.0) > 1e-6:
+            raise InvalidCircuitBreakerInputException(
+                f"Component weights must sum to 1.0 +/- 1e-6, got {total_weight}"
+            )
+
+        if beta_min <= 0.0:
+            raise InvalidCircuitBreakerInputException(
+                f"beta_min must be strictly positive (> 0.0), got {beta_min}"
+            )
+
+        if beta_max <= beta_min:
+            raise InvalidCircuitBreakerInputException(
+                f"beta_max ({beta_max}) must be strictly greater than beta_min ({beta_min})"
+            )
+
+        self._steepness: float = float(steepness)
+        self._midpoint: float = float(midpoint)
+        self._weight_entropy: float = float(weight_entropy)
+        self._weight_epistemic_ratio: float = float(weight_epistemic_ratio)
+        self._weight_ambiguity: float = float(weight_ambiguity)
+        self._beta_min: float = float(beta_min)
+        self._beta_max: float = float(beta_max)
+
+        self._kappa_0: float = self._raw_sigmoid(0.0, self._steepness, self._midpoint)
+        self._kappa_1: float = self._raw_sigmoid(1.0, self._steepness, self._midpoint)
+        self._kappa_range: float = self._kappa_0 - self._kappa_1
+
+    @staticmethod
+    def _raw_sigmoid(shock: float, steepness: float, midpoint: float) -> float:
+        """Evaluates numerically stable logistic sigmoid function."""
+        x = steepness * (shock - midpoint)
+        if x > 500.0:
+            return 0.0
+        if x < -500.0:
+            return 1.0
+        return 1.0 / (1.0 + math.exp(x))
+
+    @property
+    def steepness(self) -> float:
+        """Logistic sigmoid steepness coefficient k_steep."""
+        return self._steepness
+
+    @property
+    def midpoint(self) -> float:
+        """Logistic sigmoid midpoint inflection Xi_mid."""
+        return self._midpoint
+
+    @property
+    def weight_entropy(self) -> float:
+        """Composite shock weight for epistemic entropy omega_H."""
+        return self._weight_entropy
+
+    @property
+    def weight_epistemic_ratio(self) -> float:
+        """Composite shock weight for epistemic ratio omega_rho."""
+        return self._weight_epistemic_ratio
+
+    @property
+    def weight_ambiguity(self) -> float:
+        """Composite shock weight for thermodynamic ambiguity omega_beta."""
+        return self._weight_ambiguity
+
+    @property
+    def beta_min(self) -> float:
+        """Macroeconomic ambiguity lower normalization bound beta_min."""
+        return self._beta_min
+
+    @property
+    def beta_max(self) -> float:
+        """Macroeconomic ambiguity upper normalization bound beta_max."""
+        return self._beta_max
+
+    @classmethod
+    def from_config(cls, config: CircuitBreakerConfig) -> ContinuousHaircutCalculator:
+        """Create a ContinuousHaircutCalculator from a CircuitBreakerConfig instance."""
+        if not isinstance(config, CircuitBreakerConfig):
+            raise InvalidCircuitBreakerInputException(
+                f"config must be an instance of CircuitBreakerConfig, got {type(config)}"
+            )
+        return cls(
+            steepness=config.haircut_steepness,
+            midpoint=config.haircut_midpoint,
+            weight_entropy=config.weight_entropy,
+            weight_epistemic_ratio=config.weight_epistemic_ratio,
+            weight_ambiguity=config.weight_ambiguity,
+            beta_min=config.beta_min,
+            beta_max=config.beta_max,
+        )
+
+    def compute_composite_shock(
+        self,
+        epistemic_entropy: float,
+        epistemic_ratio: float,
+        ambiguity_beta: float,
+    ) -> float:
+        """Calculates normalized thermodynamic ambiguity and weighted composite shock score.
+
+        tilde_beta = clip((beta - beta_min) / (beta_max - beta_min), 0.0, 1.0)
+        Xi_t = omega_H * H_epistemic + omega_rho * rho_epistemic + omega_beta * tilde_beta
+
+        Returns:
+            Xi_t: float in [0.0, 1.0]
+        """
+        for param_name, val in (
+            ("epistemic_entropy", epistemic_entropy),
+            ("epistemic_ratio", epistemic_ratio),
+            ("ambiguity_beta", ambiguity_beta),
+        ):
+            if not isinstance(val, (int, float)) or isinstance(val, bool):
+                raise InvalidCircuitBreakerInputException(
+                    f"{param_name} must be a float, got {type(val)}"
+                )
+            if not math.isfinite(val):
+                raise DegenerateCircuitBreakerException(
+                    f"INV-CB-005: {param_name} must be a finite float, got {val}"
+                )
+
+        if not (0.0 <= epistemic_entropy <= 1.0):
+            raise InvalidCircuitBreakerInputException(
+                f"epistemic_entropy must be in [0.0, 1.0], got {epistemic_entropy}"
+            )
+
+        if not (0.0 <= epistemic_ratio <= 1.0):
+            raise InvalidCircuitBreakerInputException(
+                f"epistemic_ratio must be in [0.0, 1.0], got {epistemic_ratio}"
+            )
+
+        if ambiguity_beta <= 0.0:
+            raise InvalidCircuitBreakerInputException(
+                f"ambiguity_beta must be strictly positive (> 0.0), got {ambiguity_beta}"
+            )
+
+        normalized_beta = min(
+            max((ambiguity_beta - self._beta_min) / (self._beta_max - self._beta_min), 0.0),
+            1.0,
+        )
+
+        raw_shock = (
+            self._weight_entropy * epistemic_entropy
+            + self._weight_epistemic_ratio * epistemic_ratio
+            + self._weight_ambiguity * normalized_beta
+        )
+        return float(min(max(raw_shock, 0.0), 1.0)) + 0.0
+
+    def compute_haircut(self, composite_shock: float) -> float:
+        """Calculates normalized logistic sigmoid haircut multiplier kappa_t in [0.0, 1.0].
+
+        Guarantees INV-CB-001:
+        - kappa_t(0.0) == 1.0000
+        - kappa_t(1.0) == 0.0000
+        - Strictly monotonically decreasing with respect to composite_shock.
+        - Continuous and smooth.
+
+        Returns:
+            kappa_t: float in [0.0, 1.0]
+        """
+        if not isinstance(composite_shock, (int, float)) or isinstance(composite_shock, bool):
+            raise InvalidCircuitBreakerInputException(
+                f"composite_shock must be a float, got {type(composite_shock)}"
+            )
+        if not math.isfinite(composite_shock):
+            raise DegenerateCircuitBreakerException(
+                f"INV-CB-005: composite_shock must be a finite float, got {composite_shock}"
+            )
+        if not (0.0 <= composite_shock <= 1.0):
+            raise InvalidCircuitBreakerInputException(
+                f"composite_shock must be in [0.0, 1.0], got {composite_shock}"
+            )
+
+        if composite_shock == 0.0:
+            return 1.0
+        if composite_shock == 1.0:
+            return 0.0
+
+        kappa_raw = self._raw_sigmoid(composite_shock, self._steepness, self._midpoint)
+        normalized_haircut = (kappa_raw - self._kappa_1) / self._kappa_range
+        return float(min(max(normalized_haircut, 0.0), 1.0)) + 0.0
