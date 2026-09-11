@@ -827,6 +827,413 @@ def update_regime_posteriors(
     return updated_posteriors, composite_prior
 
 
+class TikhonovCorrelationEstimator:
+    """Tikhonov-regularized pairwise correlation estimator with flatline model defense.
+
+    Computes empirical pairwise prediction/return correlation matrix C_hat in R^{K x K},
+    defensively handles zero-variance/flatline models (clamping standard deviation sigma_k >= 1e-8
+    and setting pairwise correlations for flatline models to 0.0 with diagonal 1.0),
+    and applies Tikhonov ridge shrinkage:
+        C_t = (1 - delta) * C_hat + delta * I_K
+    with delta in (0.0, 1.0) (default 0.05), guaranteeing C_t is strictly positive definite
+    with lambda_min >= delta.
+    """
+
+    def __init__(
+        self,
+        ridge_shrinkage: float = 0.05,
+        min_std_dev: float = 1e-8,
+    ) -> None:
+        """Initialize the Tikhonov correlation estimator.
+
+        Args:
+            ridge_shrinkage: Ridge regularization parameter delta in (0.0, 1.0).
+            min_std_dev: Defensive standard deviation floor sigma_min > 0.0 for flatline detection.
+
+        Raises:
+            EnsembleError: If ridge_shrinkage not in (0, 1) or min_std_dev <= 0.
+            DegenerateEnsembleException: If parameters contain NaN or Inf.
+        """
+        if not (isinstance(ridge_shrinkage, (int, float)) and math.isfinite(ridge_shrinkage)):
+            raise DegenerateEnsembleException(
+                f"ridge_shrinkage must be a finite float, got {ridge_shrinkage}"
+            )
+        if not (0.0 < ridge_shrinkage < 1.0):
+            raise EnsembleError(f"ridge_shrinkage must be in (0.0, 1.0), got {ridge_shrinkage}")
+
+        if not (isinstance(min_std_dev, (int, float)) and math.isfinite(min_std_dev)):
+            raise DegenerateEnsembleException(
+                f"min_std_dev must be a finite float, got {min_std_dev}"
+            )
+        if min_std_dev <= 0.0:
+            raise EnsembleError(f"min_std_dev must be > 0.0, got {min_std_dev}")
+
+        self._ridge_shrinkage: float = float(ridge_shrinkage)
+        self._min_std_dev: float = float(min_std_dev)
+
+    @property
+    def ridge_shrinkage(self) -> float:
+        """Ridge shrinkage regularizer delta."""
+        return self._ridge_shrinkage
+
+    @property
+    def min_std_dev(self) -> float:
+        """Defensive standard deviation floor sigma_min."""
+        return self._min_std_dev
+
+    def compute_correlation_matrix(self, predictions: np.ndarray) -> np.ndarray:
+        """Compute Tikhonov-regularized pairwise correlation matrix from predictions or returns.
+
+        Args:
+            predictions: 2D array of historical model predictions or returns of shape (N, K)
+                where N >= 1 is sample size / time bars and K >= 1 is number of models.
+
+        Returns:
+            C: Regularized correlation matrix of shape (K, K), symmetric with unit diagonal
+                and minimum eigenvalue lambda_min >= ridge_shrinkage.
+
+        Raises:
+            InvalidPredictionException: If predictions is not a 2D array or is empty.
+            DegenerateEnsembleException: If predictions contains NaN or Inf.
+        """
+        if not isinstance(predictions, np.ndarray) or predictions.ndim != 2:
+            raise InvalidPredictionException("predictions must be a 2D numpy array")
+        n_samples, k_models = predictions.shape
+        if n_samples < 1 or k_models < 1:
+            raise InvalidPredictionException(
+                f"predictions must have shape (N, K) with N >= 1, K >= 1, got {predictions.shape}"
+            )
+        if not np.all(np.isfinite(predictions)):
+            raise DegenerateEnsembleException("predictions must contain only finite values")
+
+        if n_samples == 1:
+            # Single observation: zero sample variance for all models across time.
+            # All models are flatline. Return identity matrix.
+            return np.eye(k_models, dtype=np.float64)
+
+        # Compute column means and standard deviations
+        means = np.mean(predictions, axis=0)
+        centered = predictions - means
+        stds = np.std(predictions, axis=0)
+
+        # Identify flatline / zero-variance models
+        is_flatline = stds < self._min_std_dev
+
+        # If all models are flatline, return identity matrix
+        if np.all(is_flatline):
+            return np.eye(k_models, dtype=np.float64)
+
+        # Standardize non-flatline columns to unit vectors
+        z = np.zeros_like(centered, dtype=np.float64)
+        for k in range(k_models):
+            if not is_flatline[k]:
+                col_norm = float(np.linalg.norm(centered[:, k]))
+                if col_norm >= self._min_std_dev:
+                    z[:, k] = centered[:, k] / col_norm
+
+        # Empirical correlation Gram matrix
+        c_emp = z.T @ z
+
+        # Defensive handling for flatline models:
+        # Zero off-diagonals and set unit diagonal
+        for k in range(k_models):
+            if is_flatline[k]:
+                c_emp[k, :] = 0.0
+                c_emp[:, k] = 0.0
+                c_emp[k, k] = 1.0
+
+        # Enforce exact [-1, 1] range, unit diagonal, and symmetry
+        c_emp = np.clip(c_emp, -1.0, 1.0)
+        np.fill_diagonal(c_emp, 1.0)
+        c_emp = 0.5 * (c_emp + c_emp.T)
+
+        # Tikhonov regularizer / ridge shrinkage:
+        # C_t = (1 - delta) * C_hat + delta * I_K
+        eye = np.eye(k_models, dtype=np.float64)
+        c_reg = (1.0 - self._ridge_shrinkage) * c_emp + self._ridge_shrinkage * eye
+        np.fill_diagonal(c_reg, 1.0)
+        c_reg = 0.5 * (c_reg + c_reg.T)
+
+        return c_reg.astype(np.float64)
+
+    def regularize_correlation_matrix(self, correlation_matrix: np.ndarray) -> np.ndarray:
+        """Apply Tikhonov ridge shrinkage directly to an existing correlation matrix.
+
+        Args:
+            correlation_matrix: 2D square correlation matrix of shape (K, K).
+
+        Returns:
+            C: Regularized correlation matrix with lambda_min >= ridge_shrinkage.
+
+        Raises:
+            InvalidPredictionException: If matrix is not 2D square.
+            DegenerateEnsembleException: If matrix contains NaN or Inf.
+        """
+        if not isinstance(correlation_matrix, np.ndarray) or correlation_matrix.ndim != 2:
+            raise InvalidPredictionException("correlation_matrix must be a 2D numpy array")
+        if (
+            correlation_matrix.shape[0] != correlation_matrix.shape[1]
+            or correlation_matrix.shape[0] < 1
+        ):
+            raise InvalidPredictionException(
+                f"correlation_matrix must be square (K, K), got {correlation_matrix.shape}"
+            )
+        if not np.all(np.isfinite(correlation_matrix)):
+            raise DegenerateEnsembleException("correlation_matrix must contain only finite values")
+
+        k_models = correlation_matrix.shape[0]
+        c_sym = 0.5 * (correlation_matrix + correlation_matrix.T)
+        c_sym = np.clip(c_sym, -1.0, 1.0)
+        np.fill_diagonal(c_sym, 1.0)
+
+        eye = np.eye(k_models, dtype=np.float64)
+        c_reg = (1.0 - self._ridge_shrinkage) * c_sym + self._ridge_shrinkage * eye
+        np.fill_diagonal(c_reg, 1.0)
+        c_reg = 0.5 * (c_reg + c_reg.T)
+
+        return cast(np.ndarray, c_reg.astype(np.float64))
+
+
+class OrthogonalityRegularizedSolver:
+    """Entropic Mirror Descent optimizer on the probability simplex.
+
+    Solves the clone-penalized quadratic objective:
+        min_{w in Delta^K} { w^T s + (lambda_ortho / 2) * w^T C w - tau * H(w) }
+    where s is the composite loss/score vector, C is the Tikhonov-regularized correlation matrix,
+    and H(w) = -sum w_k ln(w_k) is Shannon entropy.
+
+    Optimizes on the simplex Delta^K via exponentiated gradient descent with Log-Sum-Exp max shift,
+    terminates on infinity-norm convergence (< tol) or max_iter iterations, and applies
+    Laplace floor smoothing:
+        w_k <- (1 - K * eps_floor) * w_k + eps_floor
+    strictly upholding Invariant INV-ENS-001 (Strict Simplex Conservation).
+    """
+
+    def __init__(
+        self,
+        orthogonality_penalty: float = 0.25,
+        temperature: float = 1.0,
+        learning_rate: float = 0.50,
+        max_iter: int = 10,
+        tol: float = 1e-6,
+        min_weight_floor: float = 1e-5,
+        config: EnsembleConfig | None = None,
+    ) -> None:
+        """Initialize the OrthogonalityRegularizedSolver.
+
+        Args:
+            orthogonality_penalty: Penalty multiplier lambda_ortho >= 0.0 on model correlation.
+            temperature: Entropy temperature tau > 0.0.
+            learning_rate: Step size eta > 0.0 for mirror descent.
+            max_iter: Maximum mirror descent iterations >= 1.
+            tol: Infinity-norm convergence tolerance > 0.0.
+            min_weight_floor: Minimum Laplace probability floor eps_floor > 0.0.
+            config: Optional EnsembleConfig to inherit default hyperparameters.
+
+        Raises:
+            EnsembleError: If any parameter violates bounds or is invalid.
+            DegenerateEnsembleException: If parameters contain NaN or Inf.
+        """
+        if config is not None:
+            orthogonality_penalty = config.orthogonality_penalty
+            temperature = config.temperature
+            learning_rate = config.mirror_descent_lr
+            max_iter = config.mirror_descent_max_iter
+            tol = config.mirror_descent_tol
+            min_weight_floor = config.min_weight_floor
+
+        # Finiteness validations
+        for name, val in [
+            ("orthogonality_penalty", orthogonality_penalty),
+            ("temperature", temperature),
+            ("learning_rate", learning_rate),
+            ("tol", tol),
+            ("min_weight_floor", min_weight_floor),
+        ]:
+            if not (isinstance(val, (int, float)) and math.isfinite(val)):
+                raise DegenerateEnsembleException(f"{name} must be a finite float, got {val}")
+
+        if orthogonality_penalty < 0.0:
+            raise EnsembleError(
+                f"orthogonality_penalty must be >= 0.0, got {orthogonality_penalty}"
+            )
+        if temperature <= 0.0:
+            raise EnsembleError(f"temperature must be > 0.0, got {temperature}")
+        if learning_rate <= 0.0:
+            raise EnsembleError(f"learning_rate must be > 0.0, got {learning_rate}")
+        if not (isinstance(max_iter, int) and max_iter >= 1):
+            raise EnsembleError(f"max_iter must be an integer >= 1, got {max_iter}")
+        if tol <= 0.0:
+            raise EnsembleError(f"tol must be > 0.0, got {tol}")
+        if min_weight_floor <= 0.0:
+            raise EnsembleError(f"min_weight_floor must be > 0.0, got {min_weight_floor}")
+
+        self._orthogonality_penalty: float = float(orthogonality_penalty)
+        self._temperature: float = float(temperature)
+        self._learning_rate: float = float(learning_rate)
+        self._max_iter: int = int(max_iter)
+        self._tol: float = float(tol)
+        self._min_weight_floor: float = float(min_weight_floor)
+
+    @property
+    def orthogonality_penalty(self) -> float:
+        """Orthogonality penalty lambda_ortho."""
+        return self._orthogonality_penalty
+
+    @property
+    def temperature(self) -> float:
+        """Entropy temperature tau."""
+        return self._temperature
+
+    @property
+    def learning_rate(self) -> float:
+        """Mirror descent step size eta."""
+        return self._learning_rate
+
+    @property
+    def max_iter(self) -> int:
+        """Maximum mirror descent iterations."""
+        return self._max_iter
+
+    @property
+    def tol(self) -> float:
+        """Convergence tolerance."""
+        return self._tol
+
+    @property
+    def min_weight_floor(self) -> float:
+        """Minimum weight floor eps_floor."""
+        return self._min_weight_floor
+
+    def solve(
+        self,
+        scores: np.ndarray,
+        correlation_matrix: np.ndarray,
+        current_weights: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Solve for optimal model weights on the simplex via Entropic Mirror Descent.
+
+        Args:
+            scores: 1D array of model loss scores s_t of shape (K,).
+            correlation_matrix: 2D regularized correlation matrix C_t of shape (K, K).
+            current_weights: Optional 1D warm-start weight vector w^{(0)} of shape (K,).
+                If None, initialized uniformly to 1/K.
+
+        Returns:
+            w_star: Optimal weight allocation vector on Delta^K satisfying INV-ENS-001
+                (sum=1.0 +/- 1e-10, w_k >= eps_floor > 0).
+
+        Raises:
+            InvalidPredictionException: If inputs fail dimension or simplex alignment.
+            DegenerateEnsembleException: If inputs contain NaN or Inf, or optimization collapses.
+        """
+        # Defensive validation on scores
+        if not isinstance(scores, np.ndarray) or scores.ndim != 1:
+            raise InvalidPredictionException("scores must be a 1D numpy array")
+        k_models = len(scores)
+        if k_models < 1:
+            raise InvalidPredictionException("scores must contain at least 1 model score")
+        if not np.all(np.isfinite(scores)):
+            raise DegenerateEnsembleException("scores must contain only finite values")
+
+        # Defensive validation on correlation_matrix
+        if not isinstance(correlation_matrix, np.ndarray) or correlation_matrix.ndim != 2:
+            raise InvalidPredictionException("correlation_matrix must be a 2D numpy array")
+        if correlation_matrix.shape != (k_models, k_models):
+            raise InvalidPredictionException(
+                f"correlation_matrix shape {correlation_matrix.shape} must match (K, K) with K={k_models}"
+            )
+        if not np.all(np.isfinite(correlation_matrix)):
+            raise DegenerateEnsembleException("correlation_matrix must contain only finite values")
+
+        # Defensive validation on current_weights
+        if current_weights is not None:
+            if not isinstance(current_weights, np.ndarray) or current_weights.ndim != 1:
+                raise InvalidPredictionException("current_weights must be a 1D numpy array")
+            if current_weights.shape != (k_models,):
+                raise InvalidPredictionException(
+                    f"current_weights shape {current_weights.shape} must match scores shape ({k_models},)"
+                )
+            if not np.all(np.isfinite(current_weights)):
+                raise DegenerateEnsembleException("current_weights must contain only finite values")
+            if np.any(current_weights < 0.0):
+                raise InvalidPredictionException("current_weights elements must be non-negative")
+            init_sum = float(np.sum(current_weights))
+            if not (math.isfinite(init_sum) and init_sum > 0.0):
+                raise InvalidPredictionException("current_weights sum must be strictly positive")
+            w = (current_weights / init_sum).astype(np.float64, copy=True)
+            w = np.maximum(w, 1e-30)
+            w /= float(np.sum(w))
+        else:
+            w = np.full(k_models, 1.0 / float(k_models), dtype=np.float64)
+
+        step_factor = self._learning_rate / self._temperature
+        penalty = self._orthogonality_penalty
+        has_penalty = penalty > 0.0
+
+        scaled_scores = -step_factor * scores
+        scaled_penalty = -step_factor * penalty
+
+        cw = np.empty(k_models, dtype=np.float64)
+        v = np.empty(k_models, dtype=np.float64)
+
+        # Entropic Mirror Descent loop (exponentiated gradient with Log-Sum-Exp shift)
+        for _ in range(self._max_iter):
+            # Scaled mirror gradient: - (eta / tau) * (s + lambda_ortho * (C @ w))
+            if has_penalty:
+                np.dot(correlation_matrix, w, out=cw)
+                np.multiply(cw, scaled_penalty, out=v)
+                v += scaled_scores
+            else:
+                np.copyto(v, scaled_scores)
+
+            # Mirror step: w_i^{(m+1)} proportional to w_i^{(m)} * exp(scaled_grad_i)
+            v -= np.max(v)
+            np.exp(v, out=v)
+            v *= w
+            denom = float(np.sum(v))
+            if not (math.isfinite(denom) and denom > 0.0):
+                raise DegenerateEnsembleException(
+                    "Mirror descent step collapsed to non-finite or non-positive denominator"
+                )
+            v /= denom
+
+            # Convergence check: L_infinity norm without temporary array allocations
+            np.subtract(v, w, out=cw)
+            np.abs(cw, out=cw)
+            diff = float(np.max(cw))
+            np.copyto(w, v)
+            if diff < self._tol:
+                break
+
+        # Laplace floor regularization:
+        # w_k <- (1 - K * eps_floor) * w_k + eps_floor
+        eps_floor = self._min_weight_floor
+        if eps_floor * float(k_models) >= 1.0:
+            eps_floor = 0.001 / float(k_models)
+        if eps_floor * float(k_models) >= 1.0:
+            eps_floor = 0.5 / float(k_models)
+
+        w = (1.0 - float(k_models) * eps_floor) * w + eps_floor
+
+        # Normalize and enforce INV-ENS-001
+        w_sum = float(np.sum(w))
+        if not (math.isfinite(w_sum) and w_sum > 0.0):
+            raise DegenerateEnsembleException("Laplace smoothing produced invalid sum")
+        w = w / w_sum
+
+        if not np.all(w > 0.0):
+            raise DegenerateEnsembleException(
+                "INV-ENS-001 violation: weights must be strictly positive"
+            )
+        if not math.isclose(float(np.sum(w)), 1.0, abs_tol=1e-10):
+            raise DegenerateEnsembleException(
+                f"INV-ENS-001 violation: weights sum to {np.sum(w)}, expected 1.0 +/- 1e-10"
+            )
+
+        return w.astype(np.float64)
+
+
 __all__ = [
     "EnsembleError",
     "DegenerateEnsembleException",
@@ -838,4 +1245,6 @@ __all__ = [
     "AsymmetricDownsideLossScorer",
     "predict_forward_regime_prior",
     "update_regime_posteriors",
+    "TikhonovCorrelationEstimator",
+    "OrthogonalityRegularizedSolver",
 ]

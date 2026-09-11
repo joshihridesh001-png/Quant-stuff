@@ -20,6 +20,8 @@ from quant.analytics.ensemble import (
     EnsemblePrediction,
     EnsembleState,
     InvalidPredictionException,
+    OrthogonalityRegularizedSolver,
+    TikhonovCorrelationEstimator,
     VolatilityAdaptiveForgetting,
     predict_forward_regime_prior,
     update_regime_posteriors,
@@ -1335,3 +1337,327 @@ class TestAsymmetricDownsideLossScorer:
             bad_mat = np.copy(valid_mat)
             bad_mat[0, 0] = np.nan
             scorer.compute_cohort_downside_variances(bad_mat)
+
+
+class TestCorrelationAndMirrorDescentSolver:
+    """Tests for TikhonovCorrelationEstimator and OrthogonalityRegularizedSolver."""
+
+    def test_tikhonov_correlation_regularizer_with_zero_variance_model(self) -> None:
+        """Verify handling of flatline zero-variance models and ridge shrinkage."""
+        estimator = TikhonovCorrelationEstimator(ridge_shrinkage=0.05)
+        # Model 0 and Model 1 normal, Model 2 flat zeros (inactive)
+        preds = np.array(
+            [
+                [0.01, -0.01, 0.0],
+                [0.02, -0.02, 0.0],
+                [0.00, 0.01, 0.0],
+                [0.03, -0.03, 0.0],
+            ]
+        )
+        C = estimator.compute_correlation_matrix(preds)
+        assert C.shape == (3, 3)
+        assert not np.isnan(C).any()
+        assert not np.isinf(C).any()
+
+        # Diagonal must be strictly 1.0
+        np.testing.assert_allclose(np.diag(C), 1.0, atol=1e-10)
+
+        # Off-diagonal for flatline model (index 2) must be exactly 0.0
+        assert C[2, 0] == 0.0
+        assert C[2, 1] == 0.0
+        assert C[0, 2] == 0.0
+        assert C[1, 2] == 0.0
+
+        # Matrix must be symmetric
+        np.testing.assert_allclose(C, C.T, atol=1e-12)
+
+        # Eigenvalues must be >= ridge_shrinkage (strictly positive definite)
+        eigvals = np.linalg.eigvalsh(C)
+        assert np.all(eigvals >= 0.049)
+
+    def test_tikhonov_correlation_regularizer_all_flatline(self) -> None:
+        """Verify that when all models are constant/flatline, returns identity matrix."""
+        estimator = TikhonovCorrelationEstimator(ridge_shrinkage=0.05)
+        preds = np.ones((5, 4)) * 0.05
+        C = estimator.compute_correlation_matrix(preds)
+        assert C.shape == (4, 4)
+        np.testing.assert_allclose(C, np.eye(4), atol=1e-10)
+
+    def test_tikhonov_correlation_regularizer_single_time_step(self) -> None:
+        """Verify that a single time observation (N=1) returns identity matrix."""
+        estimator = TikhonovCorrelationEstimator(ridge_shrinkage=0.05)
+        preds = np.array([[0.01, 0.02, -0.01]])
+        C = estimator.compute_correlation_matrix(preds)
+        assert C.shape == (3, 3)
+        np.testing.assert_allclose(C, np.eye(3), atol=1e-10)
+
+    def test_tikhonov_correlation_regularizer_shape_symmetry_and_pd(self) -> None:
+        """Verify correlation matrix symmetry, unit diagonal, and positive definiteness."""
+        estimator = TikhonovCorrelationEstimator(ridge_shrinkage=0.10)
+        rng = np.random.default_rng(42)
+        preds = rng.normal(0.001, 0.02, size=(50, 6))
+
+        C = estimator.compute_correlation_matrix(preds)
+        assert C.shape == (6, 6)
+        np.testing.assert_allclose(C, C.T, atol=1e-12)
+        np.testing.assert_allclose(np.diag(C), 1.0, atol=1e-10)
+
+        # Eigenvalues >= delta
+        eigvals = np.linalg.eigvalsh(C)
+        assert np.all(eigvals >= 0.099)
+
+    def test_tikhonov_correlation_regularizer_validation(self) -> None:
+        """Verify defensive validations for TikhonovCorrelationEstimator."""
+        # Init parameter validations
+        with pytest.raises(EnsembleError, match="ridge_shrinkage"):
+            TikhonovCorrelationEstimator(ridge_shrinkage=0.0)
+        with pytest.raises(EnsembleError, match="ridge_shrinkage"):
+            TikhonovCorrelationEstimator(ridge_shrinkage=1.0)
+        with pytest.raises(EnsembleError, match="ridge_shrinkage"):
+            TikhonovCorrelationEstimator(ridge_shrinkage=-0.05)
+        with pytest.raises(DegenerateEnsembleException, match="ridge_shrinkage"):
+            TikhonovCorrelationEstimator(ridge_shrinkage=float("nan"))
+
+        with pytest.raises(EnsembleError, match="min_std_dev"):
+            TikhonovCorrelationEstimator(min_std_dev=0.0)
+        with pytest.raises(EnsembleError, match="min_std_dev"):
+            TikhonovCorrelationEstimator(min_std_dev=-1e-5)
+        with pytest.raises(DegenerateEnsembleException, match="min_std_dev"):
+            TikhonovCorrelationEstimator(min_std_dev=float("inf"))
+
+        estimator = TikhonovCorrelationEstimator()
+
+        # Non-2D inputs
+        with pytest.raises(InvalidPredictionException, match="predictions"):
+            estimator.compute_correlation_matrix(np.array([0.01, 0.02]))
+        with pytest.raises(InvalidPredictionException, match="predictions"):
+            estimator.compute_correlation_matrix(np.ones((2, 2, 2)))
+        with pytest.raises(InvalidPredictionException, match="predictions"):
+            estimator.compute_correlation_matrix([[0.01, 0.02]])  # type: ignore[arg-type]
+
+        # Empty inputs
+        with pytest.raises(InvalidPredictionException, match="predictions"):
+            estimator.compute_correlation_matrix(np.zeros((0, 3)))
+        with pytest.raises(InvalidPredictionException, match="predictions"):
+            estimator.compute_correlation_matrix(np.zeros((3, 0)))
+
+        # Non-finite values
+        with pytest.raises(DegenerateEnsembleException, match="predictions"):
+            bad = np.ones((4, 3))
+            bad[1, 1] = np.nan
+            estimator.compute_correlation_matrix(bad)
+        with pytest.raises(DegenerateEnsembleException, match="predictions"):
+            bad = np.ones((4, 3))
+            bad[1, 1] = np.inf
+            estimator.compute_correlation_matrix(bad)
+
+    def test_mirror_descent_solver_penalizes_clones(self) -> None:
+        """Verify that Entropic Mirror Descent penalizes collinear/clone model pairs."""
+        solver = OrthogonalityRegularizedSolver(
+            orthogonality_penalty=0.50,
+            temperature=1.0,
+            min_weight_floor=1e-4,
+        )
+        K = 3
+        # Model 0 and Model 1 are identical clones (corr = 0.95)
+        # Model 2 is an independent orthogonal model (corr = 0.0 with both)
+        C = np.array(
+            [
+                [1.0, 0.95, 0.0],
+                [0.95, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        # Equal loss scores for all three models
+        scores = np.array([1.0, 1.0, 1.0])
+        initial_w = np.full(K, 1.0 / K)
+
+        w_star = solver.solve(scores=scores, correlation_matrix=C, current_weights=initial_w)
+
+        # Invariant INV-ENS-001
+        assert math.isclose(float(np.sum(w_star)), 1.0, abs_tol=1e-10)
+        assert np.all(w_star > 0.0)
+
+        # Model 2 (orthogonal) must receive higher weight than either clone
+        assert w_star[2] > w_star[0]
+        assert w_star[2] > w_star[1]
+        assert w_star[0] == pytest.approx(w_star[1], rel=1e-3)
+
+    def test_mirror_descent_solver_uncorrelated_models_uniform(self) -> None:
+        """Verify that with identity correlation and equal scores, weights remain uniform."""
+        solver = OrthogonalityRegularizedSolver(
+            orthogonality_penalty=0.25,
+            temperature=1.0,
+        )
+        K = 4
+        C = np.eye(K)
+        scores = np.array([0.5, 0.5, 0.5, 0.5])
+        w_star = solver.solve(scores=scores, correlation_matrix=C)
+
+        np.testing.assert_allclose(w_star, 1.0 / K, atol=1e-6)
+        assert math.isclose(float(np.sum(w_star)), 1.0, abs_tol=1e-10)
+
+    def test_mirror_descent_solver_favors_lower_loss_scores(self) -> None:
+        """Verify that models with lower loss scores receive monotonically higher weights."""
+        solver = OrthogonalityRegularizedSolver(
+            orthogonality_penalty=0.10,
+            temperature=1.0,
+        )
+        K = 3
+        C = np.eye(K)
+        # Model 0 best, Model 1 middle, Model 2 worst
+        scores = np.array([0.1, 0.5, 1.2])
+        w_star = solver.solve(scores=scores, correlation_matrix=C)
+
+        assert w_star[0] > w_star[1] > w_star[2]
+        assert math.isclose(float(np.sum(w_star)), 1.0, abs_tol=1e-10)
+        assert np.all(w_star > 0.0)
+
+    def test_mirror_descent_solver_laplace_floor_guarantee(self) -> None:
+        """Verify that even catastrophically failing models receive weight >= floor."""
+        floor = 1e-3
+        solver = OrthogonalityRegularizedSolver(
+            orthogonality_penalty=0.25,
+            temperature=1.0,
+            min_weight_floor=floor,
+        )
+        K = 4
+        C = np.eye(K)
+        # Model 3 has catastrophic loss
+        scores = np.array([0.01, 0.02, 0.015, 1e6])
+        w_star = solver.solve(scores=scores, correlation_matrix=C)
+
+        # Invariant INV-ENS-001
+        assert math.isclose(float(np.sum(w_star)), 1.0, abs_tol=1e-10)
+        assert np.all(w_star > 0.0)
+        assert w_star[3] >= floor * 0.999
+
+    def test_mirror_descent_solver_config_integration(self) -> None:
+        """Verify initialization via EnsembleConfig."""
+        cfg = EnsembleConfig(
+            orthogonality_penalty=0.35,
+            temperature=0.8,
+            mirror_descent_lr=0.4,
+            mirror_descent_max_iter=15,
+            mirror_descent_tol=1e-7,
+            min_weight_floor=1e-4,
+        )
+        solver = OrthogonalityRegularizedSolver(config=cfg)
+        assert solver.orthogonality_penalty == 0.35
+        assert solver.temperature == 0.8
+        assert solver.learning_rate == 0.4
+        assert solver.max_iter == 15
+        assert solver.tol == 1e-7
+        assert solver.min_weight_floor == 1e-4
+
+    def test_mirror_descent_solver_validation(self) -> None:
+        """Verify defensive validation for OrthogonalityRegularizedSolver."""
+        # Parameter validations
+        with pytest.raises(EnsembleError, match="orthogonality_penalty"):
+            OrthogonalityRegularizedSolver(orthogonality_penalty=-0.1)
+        with pytest.raises(DegenerateEnsembleException, match="orthogonality_penalty"):
+            OrthogonalityRegularizedSolver(orthogonality_penalty=float("nan"))
+
+        with pytest.raises(EnsembleError, match="temperature"):
+            OrthogonalityRegularizedSolver(temperature=0.0)
+        with pytest.raises(EnsembleError, match="temperature"):
+            OrthogonalityRegularizedSolver(temperature=-1.0)
+        with pytest.raises(DegenerateEnsembleException, match="temperature"):
+            OrthogonalityRegularizedSolver(temperature=float("nan"))
+
+        with pytest.raises(EnsembleError, match="learning_rate"):
+            OrthogonalityRegularizedSolver(learning_rate=0.0)
+        with pytest.raises(EnsembleError, match="learning_rate"):
+            OrthogonalityRegularizedSolver(learning_rate=-0.5)
+
+        with pytest.raises(EnsembleError, match="max_iter"):
+            OrthogonalityRegularizedSolver(max_iter=0)
+
+        with pytest.raises(EnsembleError, match="tol"):
+            OrthogonalityRegularizedSolver(tol=0.0)
+
+        with pytest.raises(EnsembleError, match="min_weight_floor"):
+            OrthogonalityRegularizedSolver(min_weight_floor=0.0)
+
+        solver = OrthogonalityRegularizedSolver()
+        valid_scores = np.array([0.1, 0.2, 0.3])
+        valid_C = np.eye(3)
+        valid_w = np.array([0.3, 0.3, 0.4])
+
+        # Invalid scores
+        with pytest.raises(InvalidPredictionException, match="scores"):
+            solver.solve(np.array([[0.1, 0.2]]), valid_C)
+        with pytest.raises(InvalidPredictionException, match="scores"):
+            solver.solve(np.array([]), valid_C)
+        with pytest.raises(InvalidPredictionException, match="scores"):
+            solver.solve([0.1, 0.2], valid_C)  # type: ignore[arg-type]
+        with pytest.raises(DegenerateEnsembleException, match="scores"):
+            solver.solve(np.array([0.1, np.nan, 0.3]), valid_C)
+
+        # Invalid correlation_matrix
+        with pytest.raises(InvalidPredictionException, match="correlation_matrix"):
+            solver.solve(valid_scores, np.array([1.0, 1.0, 1.0]))
+        with pytest.raises(InvalidPredictionException, match="correlation_matrix"):
+            solver.solve(valid_scores, np.eye(4))  # Mismatched dimension
+        with pytest.raises(InvalidPredictionException, match="correlation_matrix"):
+            solver.solve(valid_scores, np.zeros((3, 2)))
+        with pytest.raises(DegenerateEnsembleException, match="correlation_matrix"):
+            bad_C = np.eye(3)
+            bad_C[0, 1] = np.nan
+            solver.solve(valid_scores, bad_C)
+
+        # Invalid current_weights
+        with pytest.raises(InvalidPredictionException, match="current_weights"):
+            solver.solve(valid_scores, valid_C, current_weights=np.array([0.5, 0.5]))
+        with pytest.raises(InvalidPredictionException, match="current_weights"):
+            solver.solve(valid_scores, valid_C, current_weights=np.array([[0.3], [0.3], [0.4]]))
+        with pytest.raises(DegenerateEnsembleException, match="current_weights"):
+            solver.solve(valid_scores, valid_C, current_weights=np.array([0.3, np.nan, 0.4]))
+        with pytest.raises(InvalidPredictionException, match="current_weights"):
+            solver.solve(valid_scores, valid_C, current_weights=np.array([-0.1, 0.5, 0.6]))
+        with pytest.raises(InvalidPredictionException, match="current_weights"):
+            solver.solve(valid_scores, valid_C, current_weights=np.zeros(3))
+
+        # Valid inputs with warm-start current_weights succeed
+        w_res = solver.solve(valid_scores, valid_C, current_weights=valid_w)
+        assert len(w_res) == 3
+        assert math.isclose(float(np.sum(w_res)), 1.0, abs_tol=1e-10)
+
+    def test_mirror_descent_performance_benchmark(self) -> None:
+        """Verify execution SLA: Entropic Mirror Descent on K=100 takes < 0.15ms per solve."""
+        import time
+
+        K = 100
+        rng = np.random.default_rng(123)
+        scores = rng.uniform(0.01, 0.05, size=K)
+
+        # Generate a synthetic positive definite correlation matrix
+        X = rng.normal(0.0, 1.0, size=(200, K))
+        estimator = TikhonovCorrelationEstimator(ridge_shrinkage=0.05)
+        C = estimator.compute_correlation_matrix(X)
+
+        solver = OrthogonalityRegularizedSolver(
+            orthogonality_penalty=0.25,
+            temperature=1.0,
+            learning_rate=0.50,
+            max_iter=10,
+            tol=1e-6,
+        )
+
+        # Warmup (stabilize CPU frequency, branch predictor, and memory cache)
+        for _ in range(5):
+            solver.solve(scores, C)
+
+        # Benchmark 50 executions
+        times = []
+        for _ in range(50):
+            t0 = time.perf_counter()
+            w_star = solver.solve(scores, C)
+            times.append(time.perf_counter() - t0)
+
+        mean_time_ms = float(np.mean(times)) * 1000.0
+        assert mean_time_ms <= 0.15, (
+            f"Entropic Mirror Descent SLA violated: {mean_time_ms:.4f}ms > 0.15ms"
+        )
+        assert math.isclose(float(np.sum(w_star)), 1.0, abs_tol=1e-10)
+        assert np.all(w_star > 0.0)
