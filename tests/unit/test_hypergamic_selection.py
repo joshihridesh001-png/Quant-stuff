@@ -89,3 +89,205 @@ class TestDomainEntitiesAndInvariants:
         assert len(res.mating_pairs) == 1
         with pytest.raises(Exception):
             res.rejection_count = 5  # type: ignore[misc]
+
+
+class TestParetoCohortStratifier:
+    """Test Pareto cohort stratification logic."""
+
+    def test_stratification_preserves_large_front_1(self) -> None:
+        """When Front 1 size exceeds alpha_ratio * N, all of Front 1 is preserved."""
+        import numpy as np
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            ParetoCohortStratifier,
+        )
+        from quant.analytics.pareto_sorting import (
+            CandidateFitness,
+            ParetoFront,
+            RankingResult,
+        )
+
+        t_bars = 100
+        candidates = []
+        for i in range(20):
+            r = np.random.randn(t_bars)
+            fit = CandidateFitness(
+                candidate_id=f"cand_{i:02d}",
+                dsr=1.0 + float(i) * 0.05,
+                minimax_regret=0.05,
+                return_series=r,
+                residual_series=r,
+                backtest_length=t_bars,
+                is_feasible=True,
+            )
+            candidates.append(fit)
+
+        # Front 1 has 8 members (0..7), Front 2 has 12 members (8..19)
+        f1_ids = tuple(f"cand_{i:02d}" for i in range(8))
+        f2_ids = tuple(f"cand_{i:02d}" for i in range(8, 20))
+        ranking = RankingResult(
+            fronts=(
+                ParetoFront(rank=1, candidate_ids=f1_ids, apd_scores=tuple(0.1 * i for i in range(8))),
+                ParetoFront(rank=2, candidate_ids=f2_ids, apd_scores=tuple(0.2 * i for i in range(12))),
+            ),
+            infeasible_ids=(),
+            active_reference_rays=np.zeros((28, 3)),
+            archive_size=8,
+            subspace_rank=3,
+        )
+
+        stratifier = ParetoCohortStratifier(HypergamicConfig(alpha_ratio=0.25))
+        alphas, aspirants = stratifier.stratify(candidates, ranking)
+
+        # Target alpha count was 5, but Front 1 has 8 -> Front-preserving retains all 8!
+        assert len(alphas) == 8
+        assert {a.candidate_id for a in alphas} == set(f1_ids)
+        assert len(aspirants) == 12
+        assert {asp.candidate_id for asp in aspirants} == set(f2_ids)
+
+    def test_stratification_pads_from_front_2_when_small(self) -> None:
+        """When Front 1 is smaller than target alpha count, pad from Front 2 using APD order."""
+        import numpy as np
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            ParetoCohortStratifier,
+        )
+        from quant.analytics.pareto_sorting import (
+            CandidateFitness,
+            ParetoFront,
+            RankingResult,
+        )
+
+        t_bars = 100
+        candidates = []
+        for i in range(20):
+            r = np.random.randn(t_bars)
+            fit = CandidateFitness(
+                candidate_id=f"cand_{i:02d}",
+                dsr=1.0 + float(i) * 0.05,
+                minimax_regret=0.05,
+                return_series=r,
+                residual_series=r,
+                backtest_length=t_bars,
+                is_feasible=True,
+            )
+            candidates.append(fit)
+
+        # Front 1 has only 2 members (target is 5). Front 2 has 6 members.
+        f1_ids = ("cand_00", "cand_01")
+        f2_ids = ("cand_02", "cand_03", "cand_04", "cand_05", "cand_06", "cand_07")
+        f3_ids = tuple(f"cand_{i:02d}" for i in range(8, 20))
+
+        # APD scores: lower is better. cand_04 has best (0.01), cand_02 has (0.05), cand_05 has (0.10)
+        f2_apd = (0.05, 0.20, 0.01, 0.10, 0.30, 0.40)
+
+        ranking = RankingResult(
+            fronts=(
+                ParetoFront(rank=1, candidate_ids=f1_ids, apd_scores=(0.1, 0.2)),
+                ParetoFront(rank=2, candidate_ids=f2_ids, apd_scores=f2_apd),
+                ParetoFront(rank=3, candidate_ids=f3_ids, apd_scores=tuple(0.5 * i for i in range(12))),
+            ),
+            infeasible_ids=(),
+            active_reference_rays=np.zeros((28, 3)),
+            archive_size=2,
+            subspace_rank=1,
+        )
+
+        stratifier = ParetoCohortStratifier(HypergamicConfig(alpha_ratio=0.25))  # target = 5
+        alphas, aspirants = stratifier.stratify(candidates, ranking)
+
+        assert len(alphas) == 5
+        alpha_ids = {a.candidate_id for a in alphas}
+        # Includes all of Front 1
+        assert "cand_00" in alpha_ids and "cand_01" in alpha_ids
+        # Top 3 from Front 2 by APD: cand_04 (0.01), cand_02 (0.05), cand_05 (0.10)
+        assert "cand_04" in alpha_ids
+        assert "cand_02" in alpha_ids
+        assert "cand_05" in alpha_ids
+
+        # Remaining 15 candidates are in aspirants
+        assert len(aspirants) == 15
+        assert alpha_ids.isdisjoint({asp.candidate_id for asp in aspirants})
+
+    def test_stratification_excludes_infeasible_candidates(self) -> None:
+        """Infeasible candidates are rejected from both Alpha and Aspirant cohorts."""
+        import numpy as np
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            ParetoCohortStratifier,
+        )
+        from quant.analytics.pareto_sorting import (
+            CandidateFitness,
+            ParetoFront,
+            RankingResult,
+        )
+
+        t_bars = 100
+        candidates = []
+        for i in range(10):
+            r = np.random.randn(t_bars)
+            fit = CandidateFitness(
+                candidate_id=f"cand_{i}",
+                dsr=1.0,
+                minimax_regret=0.05,
+                return_series=r,
+                residual_series=r,
+                backtest_length=t_bars,
+                is_feasible=(i != 9),  # cand_9 is infeasible
+            )
+            candidates.append(fit)
+
+        ranking = RankingResult(
+            fronts=(
+                ParetoFront(rank=1, candidate_ids=("cand_0", "cand_1"), apd_scores=(0.1, 0.2)),
+                ParetoFront(rank=2, candidate_ids=("cand_2", "cand_3"), apd_scores=(0.3, 0.4)),
+            ),
+            infeasible_ids=("cand_9",),
+            active_reference_rays=np.zeros((28, 3)),
+            archive_size=2,
+            subspace_rank=1,
+        )
+
+        stratifier = ParetoCohortStratifier(HypergamicConfig(alpha_ratio=0.30))
+        alphas, aspirants = stratifier.stratify(candidates, ranking)
+
+        all_cohort_ids = {c.candidate_id for c in alphas} | {c.candidate_id for c in aspirants}
+        assert "cand_9" not in all_cohort_ids
+
+    def test_stratification_no_viable_raises_invalid_cohort(self) -> None:
+        """When all candidates are infeasible or below DSR threshold, raises InvalidCohortException."""
+        import numpy as np
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            InvalidCohortException,
+            ParetoCohortStratifier,
+        )
+        from quant.analytics.pareto_sorting import (
+            CandidateFitness,
+            RankingResult,
+        )
+
+        t_bars = 100
+        r = np.random.randn(t_bars)
+        cand = CandidateFitness(
+            candidate_id="inf_0",
+            dsr=0.10,
+            minimax_regret=0.05,
+            return_series=r,
+            residual_series=r,
+            backtest_length=t_bars,
+            is_feasible=False,
+        )
+        ranking = RankingResult(
+            fronts=(),
+            infeasible_ids=("inf_0",),
+            active_reference_rays=np.zeros((28, 3)),
+            archive_size=0,
+            subspace_rank=0,
+        )
+
+        stratifier = ParetoCohortStratifier(HypergamicConfig())
+        with pytest.raises(InvalidCohortException, match="No viable candidates available"):
+            stratifier.stratify([cand], ranking)
+
+

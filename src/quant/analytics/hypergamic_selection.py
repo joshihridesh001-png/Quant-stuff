@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Tuple
 
 from quant.analytics.chromosomes import StrategyChromosome
+from quant.analytics.pareto_sorting import CandidateFitness, RankingResult
 
 
 # =====================================================================
@@ -146,3 +147,103 @@ class OffspringResult:
     elite_ids: Tuple[str, ...] = ()
     rejection_count: int = 0
     relaxation_count: int = 0
+
+
+# =====================================================================
+# 1. Front-Preserving Pareto Cohort Stratifier
+# =====================================================================
+
+
+class ParetoCohortStratifier:
+    """Stratifies a multi-objective ranked population into Alpha and Aspirant cohorts.
+
+    Enforces Front-Preserving Pareto Stratification:
+    - Front 1 is the primary core of the Alpha cohort.
+    - If |Front 1| >= target_alpha_size, all of Front 1 is retained to prevent
+      arbitrarily severing non-dominated solutions.
+    - If |Front 1| < target_alpha_size, the deficit is filled using the top
+      APD-ranked candidates from Front 2.
+    - Infeasible candidates are strictly excluded from both cohorts.
+    """
+
+    def __init__(self, config: HypergamicConfig | None = None) -> None:
+        """Initialize stratifier with configuration bounds."""
+        self._config = config or HypergamicConfig()
+
+    def stratify(
+        self,
+        candidates: list[CandidateFitness],
+        ranking: RankingResult,
+    ) -> tuple[list[CandidateFitness], list[CandidateFitness]]:
+        """Partition viable candidates into Alpha and Aspirant cohorts.
+
+        Args:
+            candidates: Population candidate fitness records.
+            ranking: Multi-objective ranking result from Step 2 Pareto sorting.
+
+        Returns:
+            Tuple of (alpha_cohort, aspirant_cohort).
+
+        Raises:
+            InvalidCohortException: If no viable candidates exist to form cohorts.
+        """
+        cand_by_id = {c.candidate_id: c for c in candidates if c.is_feasible}
+        infeasible_set = set(ranking.infeasible_ids)
+
+        viable_cands = {
+            cid: cand
+            for cid, cand in cand_by_id.items()
+            if cid not in infeasible_set and cand.dsr >= 0.50
+        }
+        if not viable_cands:
+            raise InvalidCohortException(
+                "No viable candidates available for hypergamic stratification."
+            )
+
+        target_alpha = max(1, math.ceil(self._config.alpha_ratio * len(viable_cands)))
+
+        alpha_ids: list[str] = []
+
+        if not ranking.fronts:
+            # Fallback if no fronts present
+            sorted_cands = sorted(viable_cands.values(), key=lambda c: c.dsr, reverse=True)
+            alpha_cands = sorted_cands[:target_alpha]
+            asp_cands = sorted_cands[target_alpha:] or alpha_cands
+            return alpha_cands, asp_cands
+
+        # Front 1
+        f1 = ranking.fronts[0]
+        f1_viable = [cid for cid in f1.candidate_ids if cid in viable_cands]
+
+        if len(f1_viable) >= target_alpha:
+            # Front-preserving: retain all of Front 1
+            alpha_ids.extend(f1_viable)
+        else:
+            alpha_ids.extend(f1_viable)
+            needed = target_alpha - len(alpha_ids)
+            if len(ranking.fronts) > 1:
+                f2 = ranking.fronts[1]
+                # Sort Front 2 by APD score (lower is better)
+                f2_pairs = [
+                    (cid, apd)
+                    for cid, apd in zip(f2.candidate_ids, f2.apd_scores, strict=False)
+                    if cid in viable_cands and cid not in alpha_ids
+                ]
+                f2_sorted = sorted(f2_pairs, key=lambda x: x[1])
+                for cid, _ in f2_sorted[:needed]:
+                    alpha_ids.append(cid)
+
+        # Aspirants are all remaining viable candidates
+        alpha_set = set(alpha_ids)
+        aspirant_ids = [cid for cid in viable_cands if cid not in alpha_set]
+
+        # If aspirant cohort is empty (e.g. whole population in Front 1),
+        # fallback to self-mating across the Alpha cohort
+        if not aspirant_ids:
+            aspirant_ids = list(alpha_ids)
+
+        alphas = [viable_cands[cid] for cid in alpha_ids]
+        aspirants = [viable_cands[cid] for cid in aspirant_ids]
+
+        return alphas, aspirants
+
