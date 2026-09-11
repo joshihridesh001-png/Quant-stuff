@@ -368,3 +368,289 @@ class EnsemblePrediction:
             raise DegenerateEnsembleException(
                 f"ambiguity_shrinkage_weight must be in [0.0, 1.0], got {self.ambiguity_shrinkage_weight}"
             )
+
+
+class VolatilityAdaptiveForgetting:
+    """Dynamically computes volatility-adaptive forgetting factors alpha_t.
+
+    Enforces Invariant INV-ENS-003 by strictly clamping memory decay factors
+    to [alpha_min, alpha_max] based on normalized volatility deviations from a
+    running exponential moving average baseline.
+
+    In calm regimes (sigma_t < sigma_bar), alpha_t approaches alpha_max (expanding
+    effective memory window). In panic shocks (sigma_t >> sigma_bar), alpha_t contracts
+    toward alpha_min (accelerating memory decay to quickly adapt to structural shifts).
+    """
+
+    def __init__(
+        self,
+        config: EnsembleConfig,
+        initial_mean_vol: float = 0.01,
+        vol_smoothing: float = 0.10,
+    ) -> None:
+        """Initialize the volatility-adaptive forgetting tracker.
+
+        Args:
+            config: EnsembleConfig containing base, min, max forgetting factors and sensitivity.
+            initial_mean_vol: Initial baseline volatility sigma_bar_0 > 0.0.
+            vol_smoothing: Exponential moving average update rate beta in (0.0, 1.0].
+
+        Raises:
+            EnsembleError: If initial_mean_vol <= 0 or vol_smoothing not in (0, 1].
+            DegenerateEnsembleException: If initial_mean_vol or vol_smoothing is non-finite.
+        """
+        if not isinstance(config, EnsembleConfig):
+            raise EnsembleError(f"config must be an EnsembleConfig, got {type(config)}")
+
+        if not (isinstance(initial_mean_vol, (int, float)) and math.isfinite(initial_mean_vol)):
+            raise DegenerateEnsembleException(
+                f"initial_mean_vol must be a finite float, got {initial_mean_vol}"
+            )
+        if initial_mean_vol <= 0.0:
+            raise EnsembleError(f"initial_mean_vol must be > 0.0, got {initial_mean_vol}")
+
+        if not (isinstance(vol_smoothing, (int, float)) and math.isfinite(vol_smoothing)):
+            raise DegenerateEnsembleException(
+                f"vol_smoothing must be a finite float, got {vol_smoothing}"
+            )
+        if not (0.0 < vol_smoothing <= 1.0):
+            raise EnsembleError(f"vol_smoothing must be in (0, 1], got {vol_smoothing}")
+
+        self._config = config
+        self._mean_realized_vol: float = float(initial_mean_vol)
+        self._smoothing: float = float(vol_smoothing)
+
+    @property
+    def mean_realized_volatility(self) -> float:
+        """Current exponential moving average baseline volatility sigma_bar."""
+        return self._mean_realized_vol
+
+    def compute_alpha(self, realized_vol: float) -> float:
+        """Compute volatility-adapted forgetting factor alpha_t and update baseline volatility.
+
+        Args:
+            realized_vol: Contemporaneous realized volatility observation sigma_t > 0.0.
+
+        Returns:
+            alpha_t: Memory forgetting factor strictly bounded in [alpha_min, alpha_max].
+
+        Raises:
+            DegenerateEnsembleException: If realized_vol is non-finite (NaN/Inf).
+            EnsembleError: If realized_vol <= 0.0.
+        """
+        if not (isinstance(realized_vol, (int, float)) and math.isfinite(realized_vol)):
+            raise DegenerateEnsembleException(
+                f"realized_vol must be a finite float, got {realized_vol}"
+            )
+        if realized_vol <= 0.0:
+            raise EnsembleError(f"realized_vol must be > 0.0, got {realized_vol}")
+
+        # Normalized volatility deviation Delta sigma = (sigma_t - sigma_bar) / sigma_bar
+        delta_sigma = (realized_vol - self._mean_realized_vol) / self._mean_realized_vol
+
+        # Dynamic alpha formulation: alpha_t = clip(alpha_0 - kappa_alpha * Delta sigma, alpha_min, alpha_max)
+        raw_alpha = (
+            self._config.base_forgetting_factor - self._config.volatility_sensitivity * delta_sigma
+        )
+        alpha_t = float(
+            np.clip(
+                raw_alpha,
+                self._config.min_forgetting_factor,
+                self._config.max_forgetting_factor,
+            )
+        )
+
+        # Running baseline update: sigma_bar <- (1 - beta) * sigma_bar + beta * sigma_t
+        self._mean_realized_vol = (1.0 - self._smoothing) * self._mean_realized_vol + (
+            self._smoothing * float(realized_vol)
+        )
+
+        return alpha_t
+
+
+def predict_forward_regime_prior(
+    current_regime_probs: np.ndarray,
+    transition_matrix: np.ndarray,
+) -> np.ndarray:
+    """Project current regime probabilities forward via Markov transition matrix.
+
+    Computes p_{t+1|t} = P_trans^T * p_t, projecting forward probability distribution
+    over regimes {0: Absorption, 1: Momentum, 2: Panic} for predictive model weighting.
+
+    Args:
+        current_regime_probs: 1D array of shape (3,) summing to 1.0 +/- 1e-10 with p_i >= 0.
+        transition_matrix: 2D array of shape (3, 3) where each row sums to 1.0 +/- 1e-10.
+
+    Returns:
+        forward_regime_probs: 1D array of shape (3,) summing strictly to 1.0.
+
+    Raises:
+        InvalidPredictionException: If inputs fail shape, non-negativity, or simplex constraints.
+        DegenerateEnsembleException: If inputs contain NaN or Inf values.
+    """
+    # Defensive type and shape validations for current_regime_probs
+    if not isinstance(current_regime_probs, np.ndarray) or current_regime_probs.ndim != 1:
+        raise InvalidPredictionException("current_regime_probs must be a 1D numpy array")
+    if current_regime_probs.shape != (3,):
+        raise InvalidPredictionException(
+            f"current_regime_probs must have shape (3,), got {current_regime_probs.shape}"
+        )
+    if not np.all(np.isfinite(current_regime_probs)):
+        raise DegenerateEnsembleException("current_regime_probs must contain only finite values")
+    if np.any(current_regime_probs < 0.0):
+        raise InvalidPredictionException("current_regime_probs elements must be non-negative")
+    p_sum = float(np.sum(current_regime_probs))
+    if not math.isclose(p_sum, 1.0, abs_tol=1e-10):
+        raise InvalidPredictionException(
+            f"current_regime_probs must sum to 1.0 +/- 1e-10, got {p_sum}"
+        )
+
+    # Defensive type and shape validations for transition_matrix
+    if not isinstance(transition_matrix, np.ndarray) or transition_matrix.ndim != 2:
+        raise InvalidPredictionException("transition_matrix must be a 2D numpy array")
+    if transition_matrix.shape != (3, 3):
+        raise InvalidPredictionException(
+            f"transition_matrix must have shape (3, 3), got {transition_matrix.shape}"
+        )
+    if not np.all(np.isfinite(transition_matrix)):
+        raise DegenerateEnsembleException("transition_matrix must contain only finite values")
+    if np.any(transition_matrix < 0.0):
+        raise InvalidPredictionException("transition_matrix elements must be non-negative")
+    for row_idx in range(3):
+        row_sum = float(np.sum(transition_matrix[row_idx, :]))
+        if not math.isclose(row_sum, 1.0, abs_tol=1e-10):
+            raise InvalidPredictionException(
+                f"transition_matrix row {row_idx} must sum to 1.0 +/- 1e-10, got {row_sum}"
+            )
+
+    # Compute forward projection: p_{t+1|t} = P_trans^T * p_t
+    forward_p: np.ndarray = transition_matrix.T @ current_regime_probs
+    forward_p = np.clip(forward_p, 0.0, 1.0)
+    norm_sum = float(np.sum(forward_p))
+    if not (math.isfinite(norm_sum) and norm_sum > 0.0):
+        raise DegenerateEnsembleException(
+            "Forward regime probabilities sum collapsed to zero or non-finite"
+        )
+    forward_p = forward_p / norm_sum
+
+    return forward_p
+
+
+def update_regime_posteriors(
+    posteriors: np.ndarray,
+    alpha_t: float,
+    forward_regime_probs: np.ndarray,
+    alpha_min: float = 0.50,
+    alpha_max: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute tempered regime-conditioned model posteriors and composite prior.
+
+    For each regime j in {0, 1, 2}, tempers historical model posteriors by memory factor alpha_t
+    using log-space max-shift for guaranteed numerical stability under extreme likelihoods:
+        ln pi_{j, k} = alpha_t * ln(pi_{j, k} + 1e-30)
+        pi_{j, k}^tempered = exp(ln pi_{j, k} - max_m ln pi_{j, m}) / sum_l exp(ln pi_{j, l} - max_m ln pi_{j, m})
+
+    Blends the tempered regime posteriors with predictive forward regime probabilities:
+        bar{pi}_k = sum_{j=0}^2 p_{t+1|t, j} * pi_{j, k}^tempered
+
+    Args:
+        posteriors: Matrix of regime-conditioned model probabilities of shape (3, K),
+            where each row sums to 1.0 +/- 1e-10 with non-negative elements.
+        alpha_t: Memory forgetting factor strictly within [alpha_min, alpha_max] and (0.0, 1.0).
+        forward_regime_probs: Predictive forward regime vector p_{t+1|t} of shape (3,).
+        alpha_min: Lower bound for alpha_t validation (defaults to 0.50).
+        alpha_max: Upper bound for alpha_t validation (defaults to 1.0).
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]:
+            - updated_posteriors: Tempered posteriors matrix of shape (3, K), strictly normalized per row.
+            - composite_prior: Blended prior distribution vector of shape (K,), strictly normalized.
+
+    Raises:
+        InvalidPredictionException: If posteriors or forward_regime_probs fail dimensions,
+            non-negativity, or simplex constraints.
+        DegenerateEnsembleException: If inputs contain NaN/Inf or alpha_t violates bounds.
+    """
+    # Defensive validation on posteriors
+    if not isinstance(posteriors, np.ndarray) or posteriors.ndim != 2:
+        raise InvalidPredictionException("posteriors must be a 2D numpy array")
+    if posteriors.shape[0] != 3 or posteriors.shape[1] < 1:
+        raise InvalidPredictionException(
+            f"posteriors must have shape (3, K) with K >= 1, got {posteriors.shape}"
+        )
+    if not np.all(np.isfinite(posteriors)):
+        raise DegenerateEnsembleException("posteriors must contain only finite values")
+    if np.any(posteriors < 0.0):
+        raise InvalidPredictionException("posteriors elements must be non-negative")
+    for row_idx in range(3):
+        row_sum = float(np.sum(posteriors[row_idx, :]))
+        if not math.isclose(row_sum, 1.0, abs_tol=1e-10):
+            raise InvalidPredictionException(
+                f"posteriors row {row_idx} must sum to 1.0 +/- 1e-10, got {row_sum}"
+            )
+
+    # Defensive validation on alpha_t
+    if not (isinstance(alpha_t, (int, float)) and math.isfinite(alpha_t)):
+        raise DegenerateEnsembleException(f"alpha_t must be a finite float, got {alpha_t}")
+    if not (alpha_min <= alpha_t <= alpha_max and 0.0 < alpha_t < 1.0):
+        raise DegenerateEnsembleException(
+            f"alpha_t must be in [{alpha_min}, {alpha_max}] and (0, 1), got {alpha_t}"
+        )
+
+    # Defensive validation on forward_regime_probs
+    if not isinstance(forward_regime_probs, np.ndarray) or forward_regime_probs.ndim != 1:
+        raise InvalidPredictionException("forward_regime_probs must be a 1D numpy array")
+    if forward_regime_probs.shape != (3,):
+        raise InvalidPredictionException(
+            f"forward_regime_probs must have shape (3,), got {forward_regime_probs.shape}"
+        )
+    if not np.all(np.isfinite(forward_regime_probs)):
+        raise DegenerateEnsembleException("forward_regime_probs must contain only finite values")
+    if np.any(forward_regime_probs < 0.0):
+        raise InvalidPredictionException("forward_regime_probs elements must be non-negative")
+    f_sum = float(np.sum(forward_regime_probs))
+    if not math.isclose(f_sum, 1.0, abs_tol=1e-10):
+        raise InvalidPredictionException(
+            f"forward_regime_probs must sum to 1.0 +/- 1e-10, got {f_sum}"
+        )
+
+    # Tempered prior per regime j in {0, 1, 2} using log-space max-shift:
+    # ln pi_{j, k} = alpha_t * ln(pi_{j, k} + 1e-30)
+    # pi_{j, k}^tempered = exp(ln pi_{j, k} - max_m ln pi_{j, m}) / sum_l exp(ln pi_{j, l} - max_m ln pi_{j, m})
+    log_pi = alpha_t * np.log(posteriors + 1e-30)
+    max_log_pi = np.max(log_pi, axis=1, keepdims=True)
+    exp_shifted = np.exp(log_pi - max_log_pi)
+    sum_exp = np.sum(exp_shifted, axis=1, keepdims=True)
+    updated_posteriors: np.ndarray = exp_shifted / sum_exp
+
+    # Strictly enforce simplex normalization per row
+    for r in range(3):
+        r_sum = float(np.sum(updated_posteriors[r, :]))
+        if not (math.isfinite(r_sum) and r_sum > 0.0):
+            raise DegenerateEnsembleException(f"updated_posteriors row {r} collapsed")
+        updated_posteriors[r, :] /= r_sum
+
+    # Composite prior: bar{pi}_k = sum_{j=0}^2 p_{t+1|t, j} * pi_{j, k}^tempered
+    composite_prior: np.ndarray = forward_regime_probs @ updated_posteriors
+    composite_prior = np.clip(composite_prior, 0.0, 1.0)
+    comp_sum = float(np.sum(composite_prior))
+    if not (math.isfinite(comp_sum) and comp_sum > 0.0):
+        raise DegenerateEnsembleException(
+            "composite_prior collapsed to non-finite or non-positive sum"
+        )
+    composite_prior = composite_prior / comp_sum
+
+    return updated_posteriors, composite_prior
+
+
+__all__ = [
+    "EnsembleError",
+    "DegenerateEnsembleException",
+    "InvalidPredictionException",
+    "EnsembleConfig",
+    "EnsembleState",
+    "EnsemblePrediction",
+    "VolatilityAdaptiveForgetting",
+    "predict_forward_regime_prior",
+    "update_regime_posteriors",
+]

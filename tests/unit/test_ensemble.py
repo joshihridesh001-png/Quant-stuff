@@ -19,6 +19,9 @@ from quant.analytics.ensemble import (
     EnsemblePrediction,
     EnsembleState,
     InvalidPredictionException,
+    VolatilityAdaptiveForgetting,
+    predict_forward_regime_prior,
+    update_regime_posteriors,
 )
 
 
@@ -688,3 +691,375 @@ class TestDomainEntitiesAndInvariants:
                 volatility_forgetting_factor=0.96,
                 ambiguity_shrinkage_weight=1.1,
             )
+
+
+class TestAdaptiveForgetting:
+    """Unit tests for VolatilityAdaptiveForgetting enforcing Invariant INV-ENS-003."""
+
+    def test_init_validation(self) -> None:
+        """Verify constructor validates initial volatility and smoothing parameter."""
+        cfg = EnsembleConfig()
+
+        # Valid initialization
+        vaf = VolatilityAdaptiveForgetting(cfg, initial_mean_vol=0.015, vol_smoothing=0.10)
+        assert vaf.mean_realized_volatility == pytest.approx(0.015)
+
+        # Invalid initial_mean_vol <= 0 or non-finite
+        with pytest.raises(EnsembleError, match="initial_mean_vol"):
+            VolatilityAdaptiveForgetting(cfg, initial_mean_vol=0.0)
+        with pytest.raises(EnsembleError, match="initial_mean_vol"):
+            VolatilityAdaptiveForgetting(cfg, initial_mean_vol=-0.01)
+        with pytest.raises(EnsembleError, match="initial_mean_vol"):
+            VolatilityAdaptiveForgetting(cfg, initial_mean_vol=float("nan"))
+        with pytest.raises(EnsembleError, match="initial_mean_vol"):
+            VolatilityAdaptiveForgetting(cfg, initial_mean_vol=float("inf"))
+
+        # Invalid vol_smoothing not in (0, 1] or non-finite
+        with pytest.raises(EnsembleError, match="vol_smoothing"):
+            VolatilityAdaptiveForgetting(cfg, vol_smoothing=0.0)
+        with pytest.raises(EnsembleError, match="vol_smoothing"):
+            VolatilityAdaptiveForgetting(cfg, vol_smoothing=-0.1)
+        with pytest.raises(EnsembleError, match="vol_smoothing"):
+            VolatilityAdaptiveForgetting(cfg, vol_smoothing=1.05)
+        with pytest.raises(EnsembleError, match="vol_smoothing"):
+            VolatilityAdaptiveForgetting(cfg, vol_smoothing=float("nan"))
+
+    def test_alpha_expansion_in_calm_markets(self) -> None:
+        """Verify memory expands (alpha -> alpha_max) when realized vol is below baseline."""
+        cfg = EnsembleConfig(
+            base_forgetting_factor=0.96,
+            volatility_sensitivity=0.50,
+            min_forgetting_factor=0.85,
+            max_forgetting_factor=0.99,
+        )
+        vaf = VolatilityAdaptiveForgetting(cfg, initial_mean_vol=0.02, vol_smoothing=0.10)
+
+        # Calm market: realized_vol = 0.01 < baseline 0.02
+        # delta_sigma = (0.01 - 0.02) / 0.02 = -0.50
+        # raw_alpha = 0.96 - 0.50 * (-0.50) = 0.96 + 0.25 = 1.21 -> clamped to 0.99
+        alpha = vaf.compute_alpha(realized_vol=0.01)
+        assert alpha > cfg.base_forgetting_factor
+        assert alpha == pytest.approx(cfg.max_forgetting_factor)
+
+    def test_alpha_contraction_during_panic_shocks(self) -> None:
+        """Verify memory contracts (alpha -> alpha_min) during volatility panic spikes."""
+        cfg = EnsembleConfig(
+            base_forgetting_factor=0.96,
+            volatility_sensitivity=0.50,
+            min_forgetting_factor=0.85,
+            max_forgetting_factor=0.99,
+        )
+        vaf = VolatilityAdaptiveForgetting(cfg, initial_mean_vol=0.01, vol_smoothing=0.10)
+
+        # Panic shock: realized_vol = 0.04 >> baseline 0.01
+        # delta_sigma = (0.04 - 0.01) / 0.01 = 3.0
+        # raw_alpha = 0.96 - 0.50 * 3.0 = 0.96 - 1.50 = -0.54 -> clamped to 0.85
+        alpha = vaf.compute_alpha(realized_vol=0.04)
+        assert alpha < cfg.base_forgetting_factor
+        assert alpha == pytest.approx(cfg.min_forgetting_factor)
+
+    def test_exact_invariant_clamping_inv_ens_003(self) -> None:
+        """Verify INV-ENS-003: alpha strictly remains in [alpha_min, alpha_max] under extreme inputs."""
+        cfg = EnsembleConfig(
+            base_forgetting_factor=0.96,
+            volatility_sensitivity=0.50,
+            min_forgetting_factor=0.85,
+            max_forgetting_factor=0.99,
+        )
+        vaf = VolatilityAdaptiveForgetting(cfg, initial_mean_vol=0.01)
+
+        # Extremely low vol: 1e-8
+        alpha_low = vaf.compute_alpha(1e-8)
+        assert alpha_low == pytest.approx(cfg.max_forgetting_factor)
+
+        # Extremely high vol: 100.0
+        alpha_high = vaf.compute_alpha(100.0)
+        assert alpha_high == pytest.approx(cfg.min_forgetting_factor)
+
+        # Exactly at baseline: delta_sigma = 0 -> alpha == base_forgetting_factor
+        current_baseline = vaf.mean_realized_volatility
+        alpha_base = vaf.compute_alpha(current_baseline)
+        assert alpha_base == pytest.approx(cfg.base_forgetting_factor)
+
+    def test_running_volatility_baseline_exponential_smoothing(self) -> None:
+        """Verify baseline volatility updates via exponential smoothing after alpha computation."""
+        cfg = EnsembleConfig(
+            base_forgetting_factor=0.96,
+            volatility_sensitivity=0.50,
+            min_forgetting_factor=0.85,
+            max_forgetting_factor=0.99,
+        )
+        beta = 0.20
+        vaf = VolatilityAdaptiveForgetting(cfg, initial_mean_vol=0.010, vol_smoothing=beta)
+
+        # Step 1: realized_vol = 0.015
+        # Expected new baseline: (1 - 0.20) * 0.010 + 0.20 * 0.015 = 0.008 + 0.003 = 0.011
+        vaf.compute_alpha(0.015)
+        assert vaf.mean_realized_volatility == pytest.approx(0.011)
+
+        # Step 2: realized_vol = 0.021
+        # Expected new baseline: (1 - 0.20) * 0.011 + 0.20 * 0.021 = 0.0088 + 0.0042 = 0.013
+        vaf.compute_alpha(0.021)
+        assert vaf.mean_realized_volatility == pytest.approx(0.013)
+
+    def test_compute_alpha_invalid_inputs(self) -> None:
+        """Verify defensive handling of invalid realized volatility inputs."""
+        cfg = EnsembleConfig()
+        vaf = VolatilityAdaptiveForgetting(cfg, initial_mean_vol=0.01)
+
+        # Realized vol <= 0
+        with pytest.raises(EnsembleError, match="realized_vol"):
+            vaf.compute_alpha(0.0)
+        with pytest.raises(EnsembleError, match="realized_vol"):
+            vaf.compute_alpha(-0.05)
+
+        # Realized vol NaN or Inf
+        with pytest.raises(DegenerateEnsembleException, match="realized_vol"):
+            vaf.compute_alpha(float("nan"))
+        with pytest.raises(DegenerateEnsembleException, match="realized_vol"):
+            vaf.compute_alpha(float("inf"))
+
+
+class TestPredictiveForwardMarkovTransitions:
+    """Unit tests for predict_forward_regime_prior and simplex conservation."""
+
+    def test_predictive_forward_markov_projection(self) -> None:
+        """Verify forward transition calculation p_{t+1|t} = P_trans^T * p_t."""
+        # Row-stochastic transition matrix: P_trans[i, j] = P(S_{t+1}=j | S_t=i)
+        P_trans = np.array(
+            [
+                [0.80, 0.15, 0.05],
+                [0.10, 0.70, 0.20],
+                [0.05, 0.05, 0.90],
+            ]
+        )
+        p_current = np.array([0.10, 0.80, 0.10])  # Mostly Momentum (regime 1)
+
+        # Expected:
+        # p_next[0] = 0.80 * 0.10 + 0.10 * 0.80 + 0.05 * 0.10 = 0.165
+        # p_next[1] = 0.15 * 0.10 + 0.70 * 0.80 + 0.05 * 0.10 = 0.580
+        # p_next[2] = 0.05 * 0.10 + 0.20 * 0.80 + 0.90 * 0.10 = 0.255
+        p_next = predict_forward_regime_prior(p_current, P_trans)
+
+        assert p_next.shape == (3,)
+        assert np.isclose(np.sum(p_next), 1.0, atol=1e-10)
+        assert p_next[0] == pytest.approx(0.165)
+        assert p_next[1] == pytest.approx(0.580)
+        assert p_next[2] == pytest.approx(0.255)
+        # Momentum regime transition risk increases panic probability
+        assert p_next[2] > p_current[2]
+
+    def test_identity_transition_preserves_distribution(self) -> None:
+        """Verify identity transition matrix leaves regime distribution unchanged."""
+        P_identity = np.eye(3)
+        p_current = np.array([0.25, 0.50, 0.25])
+        p_next = predict_forward_regime_prior(p_current, P_identity)
+
+        assert np.allclose(p_next, p_current)
+        assert np.isclose(np.sum(p_next), 1.0)
+
+    def test_predict_forward_regime_prior_validation(self) -> None:
+        """Verify defensive validation on current_regime_probs and transition_matrix."""
+        valid_p = np.array([0.70, 0.20, 0.10])
+        valid_P = np.array(
+            [
+                [0.8, 0.1, 0.1],
+                [0.2, 0.7, 0.1],
+                [0.1, 0.1, 0.8],
+            ]
+        )
+
+        # Invalid type or shape for current_regime_probs
+        with pytest.raises(InvalidPredictionException, match="current_regime_probs"):
+            predict_forward_regime_prior([0.7, 0.2, 0.1], valid_P)  # type: ignore[arg-type]
+        with pytest.raises(InvalidPredictionException, match="current_regime_probs"):
+            predict_forward_regime_prior(np.array([0.5, 0.5]), valid_P)
+        with pytest.raises(InvalidPredictionException, match="current_regime_probs"):
+            predict_forward_regime_prior(np.zeros((3, 1)), valid_P)
+
+        # Non-finite or negative current_regime_probs
+        with pytest.raises(DegenerateEnsembleException, match="current_regime_probs"):
+            predict_forward_regime_prior(np.array([np.nan, 0.5, 0.5]), valid_P)
+        with pytest.raises(InvalidPredictionException, match="current_regime_probs"):
+            predict_forward_regime_prior(np.array([-0.1, 0.6, 0.5]), valid_P)
+
+        # Sum != 1.0 for current_regime_probs
+        with pytest.raises(InvalidPredictionException, match="current_regime_probs"):
+            predict_forward_regime_prior(np.array([0.5, 0.5, 0.5]), valid_P)
+
+        # Invalid type or shape for transition_matrix
+        with pytest.raises(InvalidPredictionException, match="transition_matrix"):
+            predict_forward_regime_prior(valid_p, valid_P.tolist())  # type: ignore[arg-type]
+        with pytest.raises(InvalidPredictionException, match="transition_matrix"):
+            predict_forward_regime_prior(valid_p, np.eye(2))
+        with pytest.raises(InvalidPredictionException, match="transition_matrix"):
+            predict_forward_regime_prior(valid_p, np.zeros((3, 3, 1)))
+
+        # Non-finite or negative transition_matrix
+        with pytest.raises(DegenerateEnsembleException, match="transition_matrix"):
+            bad_nan_P = np.copy(valid_P)
+            bad_nan_P[0, 0] = np.nan
+            predict_forward_regime_prior(valid_p, bad_nan_P)
+
+        with pytest.raises(InvalidPredictionException, match="transition_matrix"):
+            bad_neg_P = np.copy(valid_P)
+            bad_neg_P[0, 0] = -0.1
+            bad_neg_P[0, 1] += 0.1
+            predict_forward_regime_prior(valid_p, bad_neg_P)
+
+        # Row sum != 1.0 for transition_matrix
+        with pytest.raises(InvalidPredictionException, match="transition_matrix"):
+            bad_sum_P = np.copy(valid_P)
+            bad_sum_P[0, :] = [0.5, 0.1, 0.1]
+            predict_forward_regime_prior(valid_p, bad_sum_P)
+
+
+class TestUpdateRegimePosteriors:
+    """Unit tests for update_regime_posteriors enforcing tempered update and INV-ENS-001."""
+
+    def test_update_regime_posteriors_tempering_and_composition(self) -> None:
+        """Verify tempered posteriors update and composite prior calculation."""
+        K = 4
+        # 3 regimes x 4 models
+        posteriors = np.array(
+            [
+                [0.40, 0.30, 0.20, 0.10],  # Regime 0 (Absorption)
+                [0.10, 0.50, 0.30, 0.10],  # Regime 1 (Momentum)
+                [0.10, 0.10, 0.20, 0.60],  # Regime 2 (Panic)
+            ]
+        )
+        forward_p = np.array([0.20, 0.30, 0.50])
+        alpha_t = 0.95
+
+        updated_posteriors, composite_prior = update_regime_posteriors(
+            posteriors, alpha_t, forward_p
+        )
+
+        # Validate shapes
+        assert updated_posteriors.shape == (3, K)
+        assert composite_prior.shape == (K,)
+
+        # Validate INV-ENS-001 (Simplex conservation on each row and composite prior)
+        for row_idx in range(3):
+            row = updated_posteriors[row_idx, :]
+            assert np.all(row > 0.0)
+            assert np.isclose(np.sum(row), 1.0, atol=1e-10)
+
+        assert np.all(composite_prior > 0.0)
+        assert np.isclose(np.sum(composite_prior), 1.0, atol=1e-10)
+
+        # In Panic regime (weight 0.50), model 3 is dominant (0.60 prior)
+        # Therefore model 3 should have a significant share in the composite prior
+        assert composite_prior[3] > composite_prior[0]
+
+    def test_alpha_tempering_entropy_effect(self) -> None:
+        """Verify lower alpha (higher forgetting) flattens distribution toward uniform (increases entropy)."""
+        K = 3
+        # Skewed posteriors
+        posteriors = np.array(
+            [
+                [0.80, 0.15, 0.05],
+                [0.80, 0.15, 0.05],
+                [0.80, 0.15, 0.05],
+            ]
+        )
+        forward_p = np.array([1.0 / 3, 1.0 / 3, 1.0 / 3])
+
+        # High alpha (memory retention, minimal flattening)
+        up_high, comp_high = update_regime_posteriors(
+            posteriors, alpha_t=0.99, forward_regime_probs=forward_p
+        )
+        assert up_high.shape == (3, K)
+        assert comp_high.shape == (K,)
+
+        # Low alpha (rapid adaptation, significant flattening / tempering)
+        up_low, comp_low = update_regime_posteriors(
+            posteriors, alpha_t=0.85, forward_regime_probs=forward_p
+        )
+        assert up_low.shape == (3, K)
+        assert comp_low.shape == (K,)
+
+        # Top model weight should be higher with alpha=0.99 than with alpha=0.85
+        assert comp_high[0] > comp_low[0]
+        # Trailing model weight should be higher under lower alpha (tempered toward uniform)
+        assert comp_low[2] > comp_high[2]
+
+    def test_numerical_stability_with_extreme_likelihoods(self) -> None:
+        """Verify log-space max-shift prevents underflow/overflow with near-zero priors."""
+        K = 3
+        posteriors = np.array(
+            [
+                [1.0 - 1e-15, 5e-16, 5e-16],
+                [1e-25, 1.0 - 2e-25, 1e-25],
+                [1e-30, 1e-30, 1.0 - 2e-30],
+            ]
+        )
+        forward_p = np.array([0.33, 0.33, 0.34])
+        alpha_t = 0.90
+
+        updated_posteriors, composite_prior = update_regime_posteriors(
+            posteriors, alpha_t, forward_p
+        )
+
+        assert updated_posteriors.shape == (3, K)
+        assert composite_prior.shape == (K,)
+        assert np.all(np.isfinite(updated_posteriors))
+        assert np.all(np.isfinite(composite_prior))
+        assert np.all(updated_posteriors >= 0.0)
+        assert np.all(composite_prior >= 0.0)
+        for r in range(3):
+            assert np.isclose(np.sum(updated_posteriors[r, :]), 1.0, atol=1e-10)
+        assert np.isclose(np.sum(composite_prior), 1.0, atol=1e-10)
+
+    def test_update_regime_posteriors_validation(self) -> None:
+        """Verify defensive checks on posteriors, alpha_t, and forward_regime_probs."""
+        valid_post = np.full((3, 4), 0.25)
+        valid_fp = np.array([0.5, 0.3, 0.2])
+        valid_alpha = 0.96
+
+        # Invalid posteriors type / dimensions
+        with pytest.raises(InvalidPredictionException, match="posteriors"):
+            update_regime_posteriors([[0.25] * 4] * 3, valid_alpha, valid_fp)  # type: ignore[arg-type]
+        with pytest.raises(InvalidPredictionException, match="posteriors"):
+            update_regime_posteriors(np.full((2, 4), 0.25), valid_alpha, valid_fp)
+        with pytest.raises(InvalidPredictionException, match="posteriors"):
+            update_regime_posteriors(np.zeros((3, 0)), valid_alpha, valid_fp)
+
+        # Non-finite posteriors
+        with pytest.raises(DegenerateEnsembleException, match="posteriors"):
+            bad_post = np.copy(valid_post)
+            bad_post[0, 0] = np.nan
+            update_regime_posteriors(bad_post, valid_alpha, valid_fp)
+
+        # Negative posteriors
+        with pytest.raises(InvalidPredictionException, match="posteriors"):
+            bad_post = np.copy(valid_post)
+            bad_post[0, 0] = -0.1
+            bad_post[0, 1] += 0.1
+            update_regime_posteriors(bad_post, valid_alpha, valid_fp)
+
+        # Row sum != 1.0 in posteriors
+        with pytest.raises(InvalidPredictionException, match="posteriors"):
+            bad_post = np.copy(valid_post)
+            bad_post[0, :] = 0.20
+            update_regime_posteriors(bad_post, valid_alpha, valid_fp)
+
+        # Invalid alpha_t
+        with pytest.raises(DegenerateEnsembleException, match="alpha_t"):
+            update_regime_posteriors(valid_post, float("nan"), valid_fp)
+        with pytest.raises(DegenerateEnsembleException, match="alpha_t"):
+            update_regime_posteriors(valid_post, 0.0, valid_fp)
+        with pytest.raises(DegenerateEnsembleException, match="alpha_t"):
+            update_regime_posteriors(valid_post, 1.2, valid_fp)
+        with pytest.raises(DegenerateEnsembleException, match="alpha_t"):
+            update_regime_posteriors(valid_post, 0.40, valid_fp, alpha_min=0.50)
+
+        # Invalid forward_regime_probs
+        with pytest.raises(InvalidPredictionException, match="forward_regime_probs"):
+            update_regime_posteriors(valid_post, valid_alpha, np.array([0.5, 0.5]))
+        with pytest.raises(DegenerateEnsembleException, match="forward_regime_probs"):
+            update_regime_posteriors(valid_post, valid_alpha, np.array([np.nan, 0.5, 0.5]))
+        with pytest.raises(InvalidPredictionException, match="forward_regime_probs"):
+            update_regime_posteriors(valid_post, valid_alpha, np.array([-0.1, 0.6, 0.5]))
+        with pytest.raises(InvalidPredictionException, match="forward_regime_probs"):
+            update_regime_posteriors(valid_post, valid_alpha, np.array([0.4, 0.4, 0.4]))
