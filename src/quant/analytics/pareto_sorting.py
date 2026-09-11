@@ -879,7 +879,9 @@ class BoundaryAnchoredRVEARanker:
             for cand_id in fronts[0].candidate_ids:
                 idx = id_to_idx[cand_id]
                 cand = candidates[idx]
-                self._archive.admit(cand.candidate_id, cand.residual_series, novelties[idx], cand.dsr)
+                self._archive.admit(
+                    cand.candidate_id, cand.residual_series, novelties[idx], cand.dsr
+                )
 
         # Adapt interior reference rays toward active solution clusters
         if generation > 0 and generation % self._lattice._adaptation_interval == 0:

@@ -42,6 +42,7 @@ from quant.analytics.pareto_sorting import (
     InvalidResidualException,
 )
 
+
 def test_candidate_fitness_valid_instantiation():
     returns = np.random.randn(200).astype(np.float64)
     residuals = np.random.randn(200).astype(np.float64)
@@ -59,6 +60,7 @@ def test_candidate_fitness_valid_instantiation():
     assert fit.minimax_regret == 0.045
     assert len(fit.return_series) == 200
 
+
 def test_candidate_fitness_rejects_nan():
     returns = np.array([np.nan, 0.01, 0.02], dtype=np.float64)
     residuals = np.array([0.01, 0.02, 0.03], dtype=np.float64)
@@ -72,6 +74,7 @@ def test_candidate_fitness_rejects_nan():
             backtest_length=3,
             is_feasible=True,
         )
+
 
 def test_candidate_fitness_rejects_mismatched_series_length():
     returns = np.ones(150, dtype=np.float64)

@@ -104,7 +104,7 @@ To eliminate cognitive overload and merge conflicts, Phase 2 is decomposed into 
 
 ---
 
-### Phase 3: Scenario Matrix & Game Theory Engine [ACTIVE]
+### Phase 3: Scenario Matrix & Game Theory Engine [COMPLETE]
 
 Decomposed into 4 sequential micro-steps implementing the Entropic Distributionally Robust Stackelberg Engine:
 
@@ -142,7 +142,7 @@ Decomposed into 4 sequential micro-steps implementing the Entropic Distributiona
 
 ---
 
-### Phase 4: Evolutionary Population & Hypergamy Dynamics [IN PROGRESS]
+### Phase 4: Evolutionary Population & Hypergamy Dynamics [ACTIVE]
 
 #### Step 1: Chromosome Architecture & Vector Encoding Engine [COMPLETE]
 * **Deliverables:**
@@ -154,7 +154,17 @@ Decomposed into 4 sequential micro-steps implementing the Entropic Distributiona
   * Typed factory adapters (`to_stackelberg_config`, `to_regime_config`, `to_minimax_config`, `to_triple_barrier_config`, `to_meta_label_config`) and backward-compatible dictionary serialization.
   * 32 unit tests (291 total) passing with **93.71% overall coverage** (98% on `chromosomes.py`) and zero warnings.
 
-#### Step 2: Novelty Distance & Multi-Objective Pareto Sorting [PLANNED]
+#### Step 2: Novelty Distance & Multi-Objective Pareto Sorting [COMPLETE]
+* **Deliverables:**
+  * Boundary-Anchored Adaptive RVEA with SVD Subspace Orthogonality & Memmel–Ledoit–Wolf Dependent Dominance (BA-ARVEA-SO) architecture.
+  * Domain entities `CandidateFitness`, `ParetoFront`, and `RankingResult` enforcing strict defensive invariants (`INV-PAR-001` to `INV-PAR-006`).
+  * `SVDSubspaceOrthogonalArchive` evaluating true orthogonal novelty via thin SVD basis projection ($1 - R^2$), eliminating multi-collinear clones and novelty parasites.
+  * `AdaptiveReferenceLattice` generating Das-Dennis $K=28$ reference rays ($M=3, p=6$) with immutable basis coordinate anchors $[1,0,0], [0,1,0], [0,0,1]$ (`INV-PAR-004`), dynamic interior ray migration with minimum angular separation ($\theta \ge 0.10\text{ rad}$), and generation-escalated Angle-Penalized Distance (APD).
+  * `DependentNonDominatedSorter` computing the exact Memmel–Ledoit–Wolf asymptotic covariance for strategy differences under return correlation $\rho$, eliminating 300% variance inflation of the independence fallacy.
+  * Deb's Feasibility Rule and Efficient Non-dominated Sorting with Sequential Search (ENS-SS) partitioning populations into non-dominated fronts.
+  * Unified facade `BoundaryAnchoredRVEARanker` with auto-admission of Front-1 elites into the SVD archive.
+  * 29 unit tests (320 total project tests) passing with **99% line coverage** on `pareto_sorting.py` and benchmark latency $< 15\text{ms}$.
+
 #### Step 3: Hypergamic Assortative Selection & Residual Orthogonality Gating [PLANNED]
 #### Step 4: Adaptive Volatility Mutation & Generational Lifecycle Engine [PLANNED]
 

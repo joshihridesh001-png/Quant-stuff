@@ -111,16 +111,20 @@ class CandidateFitness:
     candidate_id: str
     dsr: float
     minimax_regret: float
-    return_series: np.ndarray    # float64, 1D contiguous returns for Memmel-Ledoit-Wolf covariance
-    residual_series: np.ndarray  # float64, 1D contiguous out-of-fold residuals for SVD orthogonality
+    return_series: np.ndarray  # float64, 1D contiguous returns for Memmel-Ledoit-Wolf covariance
+    residual_series: (
+        np.ndarray
+    )  # float64, 1D contiguous out-of-fold residuals for SVD orthogonality
     backtest_length: int
     is_feasible: bool
+
 
 @dataclass(frozen=True)
 class ParetoFront:
     rank: int
     candidate_ids: Tuple[str, ...]
     apd_scores: Tuple[float, ...]
+
 
 @dataclass(frozen=True)
 class RankingResult:

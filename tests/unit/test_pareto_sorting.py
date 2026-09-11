@@ -555,6 +555,7 @@ class TestBoundaryAnchoredRVEARanker:
     def test_ranker_performance_benchmark_sub_15ms(self) -> None:
         """Performance benchmark: 100 candidates with 500-bar series ranked in < 30ms."""
         import time
+
         from quant.analytics.pareto_sorting import (
             BoundaryAnchoredRVEARanker,
             CandidateFitness,
@@ -700,11 +701,13 @@ class TestDefensiveBoundaryInvariantsAndEdgeCases:
         assert archive.admit("elite_1", elite_res, 1.0, 2.0) is True
 
         # Batch: 1 normal, 1 unviable (viability_mask False), 1 flat (zero variance)
-        batch = np.array([
-            np.random.randn(t_bars),
-            np.random.randn(t_bars),
-            np.ones(t_bars),
-        ])
+        batch = np.array(
+            [
+                np.random.randn(t_bars),
+                np.random.randn(t_bars),
+                np.ones(t_bars),
+            ]
+        )
         mask = np.array([True, False, True], dtype=bool)
 
         novelties = archive.compute_novelty(batch, mask)
@@ -791,4 +794,3 @@ class TestDefensiveBoundaryInvariantsAndEdgeCases:
         assert len(result.infeasible_ids) == 0
         assert result.archive_size == 0
         assert result.subspace_rank == 0
-
