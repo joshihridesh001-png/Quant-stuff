@@ -14,6 +14,7 @@ quantitative strategy discovery, replacing standard fixed GA operators with:
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -341,7 +342,7 @@ class AdaptiveVolatilityMutator:
         current_smoothed_ratio: float,
         instantaneous_success_ratio: float,
     ) -> tuple[float, float]:
-        """Adapt global mutation step size via Rechenberg 1/5th rule with exponential smoothing.
+        r"""Adapt global mutation step size via Rechenberg 1/5th rule with exponential smoothing.
 
         Args:
             current_step_size: Current mutation step size sigma_mut^(t).
@@ -441,3 +442,152 @@ class AdaptiveVolatilityMutator:
                 success_count += 1
 
         return float(success_count / total_count)
+
+
+# =====================================================================
+# Dual-Space Stagnation Detector
+# =====================================================================
+
+
+@dataclass(frozen=True)
+class StagnationReport:
+    r"""Audit report and diversification triggers evaluated by StagnationDetector.
+
+    Attributes:
+        phenotypic_diversity: Mean pairwise Euclidean parameter dispersion \bar{D}_param in [0, \sqrt{20}].
+        mean_residual_correlation: Mean pairwise absolute residual Pearson correlation \bar{\rho}_pop in [0, 1].
+        is_stagnant: True if both diversity < threshold and correlation > threshold.
+        stagnation_count: Updated consecutive stagnant generations count.
+        is_cataclysm_triggered: True if stagnation_count reached the limit, triggering hyper-mutation.
+    """
+
+    phenotypic_diversity: float
+    mean_residual_correlation: float
+    is_stagnant: bool
+    stagnation_count: int
+    is_cataclysm_triggered: bool
+
+
+class StagnationDetector:
+    r"""Dual-space population diversity monitor and cataclysmic re-diversification trigger.
+
+    Monitors:
+    1. Genotypic Hypercube Dispersion:
+       \bar{D}_param = \frac{2}{N(N-1)} \sum_{i < j} ||u_i - u_j||_2
+    2. Phenotypic Residual Collinearity:
+       \bar{\rho}_pop = \frac{2}{N(N-1)} \sum_{i < j} |Corr(e_i, e_j)|
+
+    Triggers cataclysmic hyper-mutation when both criteria bind simultaneously for
+    `stagnation_generations_limit` consecutive generations.
+    """
+
+    def __init__(
+        self,
+        config: MutationConfig | None = None,
+        codec: ChromosomeVectorCodec | None = None,
+    ) -> None:
+        self._config = config or MutationConfig()
+        self._codec = codec or ChromosomeVectorCodec()
+
+    @property
+    def config(self) -> MutationConfig:
+        return self._config
+
+    @property
+    def codec(self) -> ChromosomeVectorCodec:
+        return self._codec
+
+    def evaluate(
+        self,
+        chromosomes: Sequence[StrategyChromosome],
+        residuals_or_fitnesses: Sequence[CandidateFitness] | Sequence[np.ndarray],
+        current_stagnation_count: int,
+    ) -> StagnationReport:
+        """Evaluate dual-space population diversity metrics and update stagnation state.
+
+        Args:
+            chromosomes: Sequence of StrategyChromosome instances in the surviving population.
+            residuals_or_fitnesses: Sequence of CandidateFitness objects or 1D residual arrays.
+            current_stagnation_count: Number of consecutive stagnant generations prior to this step.
+
+        Returns:
+            StagnationReport detailing diversity, collinearity, and cataclysm triggers.
+        """
+        if current_stagnation_count < 0:
+            raise StagnationException(
+                f"current_stagnation_count must be >= 0, got {current_stagnation_count}"
+            )
+
+        n = len(chromosomes)
+        if len(residuals_or_fitnesses) != n:
+            raise StagnationException(
+                f"Count mismatch: {n} chromosomes vs {len(residuals_or_fitnesses)} residual series"
+            )
+
+        if n < 2:
+            return StagnationReport(
+                phenotypic_diversity=0.0,
+                mean_residual_correlation=0.0,
+                is_stagnant=False,
+                stagnation_count=0,
+                is_cataclysm_triggered=False,
+            )
+
+        # 1. Genotypic hypercube dispersion \bar{D}_param
+        u_matrix = np.stack([self._codec.encode(c) for c in chromosomes], axis=0)  # (N, 20)
+        diff = u_matrix[:, np.newaxis, :] - u_matrix[np.newaxis, :, :]  # (N, N, 20)
+        dist_matrix = np.linalg.norm(diff, axis=-1)  # (N, N)
+        triu_indices = np.triu_indices(n, k=1)
+        mean_param_dispersion = float(np.mean(dist_matrix[triu_indices]))
+
+        # 2. Phenotypic residual collinearity \bar{\rho}_pop
+        residuals: list[np.ndarray] = []
+        for item in residuals_or_fitnesses:
+            if isinstance(item, CandidateFitness):
+                residuals.append(item.residual_series)
+            elif isinstance(item, np.ndarray):
+                residuals.append(item)
+            else:
+                raise StagnationException(f"Unsupported residual item type: {type(item)}")
+
+        # Validate residual lengths
+        t_len = len(residuals[0])
+        for idx, res in enumerate(residuals):
+            if res.ndim != 1 or len(res) != t_len:
+                raise StagnationException(
+                    f"Residual at index {idx} has length {len(res)}, expected {t_len}"
+                )
+
+        e_matrix = np.stack(residuals, axis=0)  # (N, T)
+        e_centered = e_matrix - np.mean(e_matrix, axis=1, keepdims=True)
+        stds = np.std(e_matrix, axis=1)  # (N,)
+
+        valid_std_mask = stds > 1e-12
+        e_norm = np.zeros_like(e_centered)
+        e_norm[valid_std_mask] = e_centered[valid_std_mask] / stds[valid_std_mask, np.newaxis]
+
+        corr_matrix = (e_norm @ e_norm.T) / float(t_len)
+        mean_residual_correlation = float(np.mean(np.abs(corr_matrix)[triu_indices]))
+        mean_residual_correlation = float(np.clip(mean_residual_correlation, 0.0, 1.0))
+
+        # Stagnation rule: BOTH dispersion < eps AND correlation > rho
+        is_stagnant = (
+            mean_param_dispersion < self._config.stagnation_diversity_threshold
+            and mean_residual_correlation > self._config.stagnation_correlation_threshold
+        )
+
+        new_stagnation_count = current_stagnation_count + 1 if is_stagnant else 0
+
+        if new_stagnation_count >= self._config.stagnation_generations_limit:
+            is_cataclysm_triggered = True
+            new_stagnation_count = 0
+        else:
+            is_cataclysm_triggered = False
+
+        return StagnationReport(
+            phenotypic_diversity=mean_param_dispersion,
+            mean_residual_correlation=mean_residual_correlation,
+            is_stagnant=is_stagnant,
+            stagnation_count=new_stagnation_count,
+            is_cataclysm_triggered=is_cataclysm_triggered,
+        )

@@ -10,7 +10,9 @@ from quant.analytics.evolutionary_lifecycle import (
     InvalidGenerationalStateException,
     LifecycleError,
     MutationConfig,
+    StagnationDetector,
     StagnationException,
+    StagnationReport,
 )
 
 
@@ -365,3 +367,164 @@ class TestRechenbergAdaptation:
         }
         ratio = mutator.compute_apd_success_ratio(pairings, ranking)
         assert np.isclose(ratio, 1.0 / 3.0)
+
+
+class TestStagnationDetector:
+    """Test Dual-Space Phenotypic & Residual Stagnation Detector."""
+
+    def test_stagnation_evaluates_param_diversity_and_residual_correlation(self) -> None:
+        """Computes Euclidean hypercube dispersion and residual correlation accurately."""
+        import numpy as np
+
+        from quant.analytics.chromosomes import StrategyChromosome
+
+        detector = StagnationDetector()
+        c1 = StrategyChromosome()
+        c2 = StrategyChromosome()
+
+        # Perfectly collinear non-constant residuals
+        t = 100
+        r1 = np.linspace(0.0, 1.0, t)
+        r2 = np.linspace(0.0, 1.0, t)
+
+        report = detector.evaluate(
+            chromosomes=[c1, c2],
+            residuals_or_fitnesses=[r1, r2],
+            current_stagnation_count=0,
+        )
+
+        assert isinstance(report, StagnationReport)
+        # Identical chromosomes -> diversity = 0.0
+        assert np.isclose(report.phenotypic_diversity, 0.0)
+        # Identical residuals -> correlation = 1.0
+        assert np.isclose(report.mean_residual_correlation, 1.0)
+        assert report.is_stagnant is True
+        assert report.stagnation_count == 1
+        assert report.is_cataclysm_triggered is False
+
+    def test_stagnation_counter_increments_only_when_both_bind(self) -> None:
+        """Stagnation occurs if and only if BOTH dispersion < eps AND correlation > rho."""
+        import numpy as np
+
+        from quant.analytics.chromosomes import (
+            RepresentationChromosome,
+            RiskChromosome,
+            StrategyChromosome,
+        )
+
+        cfg = MutationConfig(
+            stagnation_diversity_threshold=0.05,
+            stagnation_correlation_threshold=0.80,
+        )
+        detector = StagnationDetector(cfg)
+
+        t = 100
+        r_linear = np.linspace(0.0, 1.0, t)
+        r_sine = np.sin(np.linspace(0.0, 10.0, t))
+
+        c_base = StrategyChromosome()
+        c_distant = StrategyChromosome(
+            representation=RepresentationChromosome(tau_ratio=0.45),
+            risk=RiskChromosome(vol_target=0.35, max_weight=0.45),
+        )
+
+        # Case A: Low diversity (identical) AND High correlation (identical) -> Stagnant
+        rep_a = detector.evaluate(
+            chromosomes=[c_base, c_base],
+            residuals_or_fitnesses=[r_linear, r_linear],
+            current_stagnation_count=0,
+        )
+        assert rep_a.is_stagnant is True
+        assert rep_a.stagnation_count == 1
+
+        # Case B: Low diversity (identical) BUT Low correlation (sine vs linear) -> Diverse
+        rep_b = detector.evaluate(
+            chromosomes=[c_base, c_base],
+            residuals_or_fitnesses=[r_linear, r_sine],
+            current_stagnation_count=1,
+        )
+        assert rep_b.is_stagnant is False
+        assert rep_b.stagnation_count == 0  # reset
+
+        # Case C: High diversity (distant) BUT High correlation (linear vs linear) -> Diverse
+        rep_c = detector.evaluate(
+            chromosomes=[c_base, c_distant],
+            residuals_or_fitnesses=[r_linear, r_linear],
+            current_stagnation_count=1,
+        )
+        assert rep_c.is_stagnant is False
+        assert rep_c.stagnation_count == 0  # reset
+
+    def test_cataclysm_triggers_after_limit_generations(self) -> None:
+        """Exceeding consecutive stagnant generations triggers cataclysm and resets count."""
+        import numpy as np
+
+        from quant.analytics.chromosomes import StrategyChromosome
+
+        cfg = MutationConfig(stagnation_generations_limit=3)
+        detector = StagnationDetector(cfg)
+
+        c = StrategyChromosome()
+        r = np.linspace(0.0, 1.0, 100)
+
+        # Gen 1 stagnant
+        rep1 = detector.evaluate([c, c], [r, r], current_stagnation_count=0)
+        assert rep1.stagnation_count == 1
+        assert rep1.is_cataclysm_triggered is False
+
+        # Gen 2 stagnant
+        rep2 = detector.evaluate([c, c], [r, r], current_stagnation_count=1)
+        assert rep2.stagnation_count == 2
+        assert rep2.is_cataclysm_triggered is False
+
+        # Gen 3 stagnant -> Limit reached!
+        rep3 = detector.evaluate([c, c], [r, r], current_stagnation_count=2)
+        assert rep3.stagnation_count == 0  # reset
+        assert rep3.is_cataclysm_triggered is True
+
+    def test_diverse_population_resets_stagnation_counter(self) -> None:
+        """Diverse population immediately resets counter from 2 to 0."""
+        import numpy as np
+
+        from quant.analytics.chromosomes import (
+            RepresentationChromosome,
+            RiskChromosome,
+            StrategyChromosome,
+        )
+
+        detector = StagnationDetector()
+        c1 = StrategyChromosome()
+        c2 = StrategyChromosome(
+            representation=RepresentationChromosome(tau_ratio=0.45),
+            risk=RiskChromosome(vol_target=0.35, max_weight=0.45),
+        )
+        r1 = np.linspace(0.0, 1.0, 100)
+        r2 = np.sin(np.linspace(0.0, 10.0, 100))
+
+        report = detector.evaluate([c1, c2], [r1, r2], current_stagnation_count=2)
+        assert report.stagnation_count == 0
+        assert report.is_cataclysm_triggered is False
+        assert report.is_stagnant is False
+
+    def test_stagnation_detector_exceptions_and_edge_cases(self) -> None:
+        """Handles population size < 2 and verifies defensive validations."""
+        import numpy as np
+
+        from quant.analytics.chromosomes import StrategyChromosome
+
+        detector = StagnationDetector()
+        c = StrategyChromosome()
+        r = np.ones(100)
+
+        # Population size 1
+        rep = detector.evaluate([c], [r], current_stagnation_count=0)
+        assert rep.phenotypic_diversity == 0.0
+        assert rep.is_stagnant is False
+
+        # Negative stagnation count
+        with pytest.raises(StagnationException, match="current_stagnation_count must be >= 0"):
+            detector.evaluate([c, c], [r, r], current_stagnation_count=-1)
+
+        # Length mismatch
+        with pytest.raises(StagnationException, match="(?i)count mismatch"):
+            detector.evaluate([c, c], [r], current_stagnation_count=0)
