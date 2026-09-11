@@ -14,17 +14,27 @@ quantitative strategy discovery, replacing standard fixed GA operators with:
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.spatial.distance import pdist
 
 from quant.analytics.chromosomes import (
     GENE_REGISTRY,
     ChromosomeVectorCodec,
     StrategyChromosome,
 )
-from quant.analytics.pareto_sorting import CandidateFitness, RankingResult
+from quant.analytics.hypergamic_selection import (
+    HypergamicConfig,
+    HypergamicSelectionEngine,
+)
+from quant.analytics.pareto_sorting import (
+    BoundaryAnchoredRVEARanker,
+    CandidateFitness,
+    ParetoFront,
+    RankingResult,
+)
 
 # =====================================================================
 # Domain Exceptions
@@ -281,24 +291,14 @@ class AdaptiveVolatilityMutator:
         """Chromosome vector codec."""
         return self._codec
 
-    def mutate(
+    def mutate_vector(
         self,
-        chromosome: StrategyChromosome,
+        u: np.ndarray,
         step_size: float | None = None,
         is_cataclysmic: bool = False,
         rng: np.random.Generator | None = None,
     ) -> StrategyChromosome:
-        """Mutate a StrategyChromosome in unit hypercube space with Cauchy fat tails and mirror reflection.
-
-        Args:
-            chromosome: Parent StrategyChromosome to mutate.
-            step_size: Optional step size override sigma_mut. If None, defaults to config.initial_step_size.
-            is_cataclysmic: If True, uses elevated cataclysmic_step_size for high-dispersion re-diversification.
-            rng: Optional numpy Generator for deterministic reproduction.
-
-        Returns:
-            Mutated StrategyChromosome guaranteed to satisfy all domain invariants.
-        """
+        """Mutate encoded unit vector u directly with Cauchy fat tails and mirror reflection."""
         if rng is None:
             rng = np.random.default_rng()
 
@@ -310,8 +310,6 @@ class AdaptiveVolatilityMutator:
             effective_sigma = step_size
         else:
             effective_sigma = self._config.initial_step_size
-
-        u = self._codec.encode(chromosome)
 
         # Draw gene mutation mask
         mask = rng.random(self._codec.dimension) < self._config.mutation_probability
@@ -332,9 +330,24 @@ class AdaptiveVolatilityMutator:
             -u_raw,
             np.where(u_raw > 1.0, 2.0 - u_raw, u_raw),
         )
-        u_clamped = np.clip(u_refl, 0.0, 1.0)
 
-        return self._codec.decode(u_clamped)
+        u_mut = np.clip(u_refl, 0.0, 1.0)
+        return self._codec.decode(u_mut)
+
+    def mutate(
+        self,
+        chromosome: StrategyChromosome,
+        step_size: float | None = None,
+        is_cataclysmic: bool = False,
+        rng: np.random.Generator | None = None,
+    ) -> StrategyChromosome:
+        """Mutate a StrategyChromosome in unit hypercube space with Cauchy fat tails and mirror reflection."""
+        return self.mutate_vector(
+            self._codec.encode(chromosome),
+            step_size=step_size,
+            is_cataclysmic=is_cataclysmic,
+            rng=rng,
+        )
 
     def adapt_step_size(
         self,
@@ -535,10 +548,8 @@ class StagnationDetector:
 
         # 1. Genotypic hypercube dispersion \bar{D}_param
         u_matrix = np.stack([self._codec.encode(c) for c in chromosomes], axis=0)  # (N, 20)
-        diff = u_matrix[:, np.newaxis, :] - u_matrix[np.newaxis, :, :]  # (N, N, 20)
-        dist_matrix = np.linalg.norm(diff, axis=-1)  # (N, N)
-        triu_indices = np.triu_indices(n, k=1)
-        mean_param_dispersion = float(np.mean(dist_matrix[triu_indices]))
+        dists = pdist(u_matrix, metric="euclidean")
+        mean_param_dispersion = float(np.mean(dists))
 
         # 2. Phenotypic residual collinearity \bar{\rho}_pop
         residuals: list[np.ndarray] = []
@@ -567,6 +578,7 @@ class StagnationDetector:
         e_norm[valid_std_mask] = e_centered[valid_std_mask] / stds[valid_std_mask, np.newaxis]
 
         corr_matrix = (e_norm @ e_norm.T) / float(t_len)
+        triu_indices = np.triu_indices(n, k=1)
         mean_residual_correlation = float(np.mean(np.abs(corr_matrix)[triu_indices]))
         mean_residual_correlation = float(np.clip(mean_residual_correlation, 0.0, 1.0))
 
@@ -590,4 +602,352 @@ class StagnationDetector:
             is_stagnant=is_stagnant,
             stagnation_count=new_stagnation_count,
             is_cataclysm_triggered=is_cataclysm_triggered,
+        )
+
+
+# =====================================================================
+# Master Generational Lifecycle Engine
+# =====================================================================
+
+
+class GenerationalLifecycleEngine:
+    r"""Master (\mu + \lambda) APD-Adaptive Evolutionary Lifecycle Engine.
+
+    Executes closed-loop generational strategy evolution:
+    1. Cataclysmic Re-Diversification handling when state.is_cataclysm_triggered is True.
+    2. Hypergamic Assortative Reproduction via Pareto Cohort Stratification and Orthogonality Gating.
+    3. Self-Adaptive Truncated Cauchy Mutation with gene-family scaling and mirror boundary reflection.
+    4. Offspring candidate evaluation via caller-provided simulation evaluator or precomputed fitness.
+    5. Joint (\mu + \lambda) candidate pool formation (|U_t| = 2N).
+    6. Multi-objective Pareto ranking via BoundaryAnchoredRVEARanker (ENS-SS, RVEA APD).
+    7. Environmental Selection: selects surviving P_{t+1} (|P_{t+1}| = N) filling fronts by APD ascending.
+    8. APD-Progress Rechenberg Volatility Adaptation: dynamically adjusts sigma_mut.
+    9. Dual-Space Stagnation Monitoring: computes \bar{D}_param and \bar{\rho}_pop.
+    10. Immutable GenerationalState progression.
+    """
+
+    def __init__(
+        self,
+        mutation_config: MutationConfig | None = None,
+        hypergamic_config: HypergamicConfig | None = None,
+        rvea_ranker: BoundaryAnchoredRVEARanker | None = None,
+        mutator: AdaptiveVolatilityMutator | None = None,
+        stagnation_detector: StagnationDetector | None = None,
+        selection_engine: HypergamicSelectionEngine | None = None,
+        codec: ChromosomeVectorCodec | None = None,
+    ) -> None:
+        self._mutation_config = mutation_config or MutationConfig()
+        self._hypergamic_config = hypergamic_config or HypergamicConfig(elitism_count=0)
+        self._codec = codec or ChromosomeVectorCodec()
+        self._rvea_ranker = rvea_ranker or BoundaryAnchoredRVEARanker()
+        self._mutator = mutator or AdaptiveVolatilityMutator(self._mutation_config, self._codec)
+        self._stagnation_detector = stagnation_detector or StagnationDetector(
+            self._mutation_config, self._codec
+        )
+        self._selection_engine = selection_engine or HypergamicSelectionEngine(
+            self._hypergamic_config
+        )
+        self._cached_ranking: tuple[tuple[str, ...], RankingResult] | None = None
+
+    @property
+    def mutation_config(self) -> MutationConfig:
+        """Hyperparameter configuration for mutation and lifecycle."""
+        return self._mutation_config
+
+    @property
+    def hypergamic_config(self) -> HypergamicConfig:
+        """Hyperparameter configuration for hypergamic reproduction."""
+        return self._hypergamic_config
+
+    def initialize_state(
+        self,
+        chromosomes: dict[str, StrategyChromosome],
+        fitness: Sequence[CandidateFitness],
+        initial_step_size: float | None = None,
+        max_generations: int = 100,
+    ) -> GenerationalState:
+        """Initialize GenerationalState at generation 0 with baseline ranking and diversity metrics.
+
+        Args:
+            chromosomes: Map of candidate_id -> StrategyChromosome for initial population.
+            fitness: Sequence of CandidateFitness records for initial population.
+            initial_step_size: Optional step size override. Defaults to config.initial_step_size.
+            max_generations: Total evolutionary horizon.
+
+        Returns:
+            GenerationalState for generation 0.
+        """
+        n = len(chromosomes)
+        if len(fitness) != n:
+            raise LifecycleError(
+                f"Mismatch between chromosomes count ({n}) and fitness count ({len(fitness)})"
+            )
+        for f in fitness:
+            if f.candidate_id not in chromosomes:
+                raise LifecycleError(
+                    f"Candidate '{f.candidate_id}' in fitness not found in chromosomes."
+                )
+
+        ranking = self._rvea_ranker.rank_population(
+            list(fitness), generation=0, max_generations=max_generations, auto_admit=False
+        )
+        ordered_ids: list[str] = []
+        for front in ranking.fronts:
+            ordered_ids.extend(front.candidate_ids)
+        for inf_id in ranking.infeasible_ids:
+            ordered_ids.append(inf_id)
+
+        front_1_count = len(ranking.fronts[0].candidate_ids) if ranking.fronts else 0
+
+        chrom_list = [chromosomes[cid] for cid in ordered_ids]
+        fitness_list = [next(f for f in fitness if f.candidate_id == cid) for cid in ordered_ids]
+
+        stagnation_report = self._stagnation_detector.evaluate(
+            chromosomes=chrom_list,
+            residuals_or_fitnesses=fitness_list,
+            current_stagnation_count=0,
+        )
+
+        step_size = (
+            initial_step_size
+            if initial_step_size is not None
+            else self._mutation_config.initial_step_size
+        )
+
+        self._cached_ranking = (tuple(f.candidate_id for f in fitness), ranking)
+
+        return GenerationalState(
+            generation_index=0,
+            population_size=n,
+            active_step_size=step_size,
+            smoothed_success_ratio=0.20,
+            phenotypic_diversity=stagnation_report.phenotypic_diversity,
+            mean_residual_correlation=stagnation_report.mean_residual_correlation,
+            stagnation_count=stagnation_report.stagnation_count,
+            is_cataclysm_triggered=stagnation_report.is_cataclysm_triggered,
+            surviving_candidate_ids=tuple(ordered_ids),
+            front_1_count=front_1_count,
+        )
+
+    def step_generation(
+        self,
+        current_chromosomes: dict[str, StrategyChromosome],
+        current_fitness: Sequence[CandidateFitness],
+        current_state: GenerationalState,
+        evaluator: (
+            Callable[[dict[str, StrategyChromosome]], Sequence[CandidateFitness]] | None
+        ) = None,
+        offspring_fitness: Sequence[CandidateFitness] | None = None,
+        seed: int | None = None,
+        max_generations: int = 100,
+    ) -> LifecycleStepResult:
+        """Execute one complete evolutionary generation step under (mu + lambda) selection.
+
+        Args:
+            current_chromosomes: Dict mapping candidate_id -> StrategyChromosome for parent population P_t.
+            current_fitness: Sequence of CandidateFitness records for parent population P_t.
+            current_state: Current GenerationalState audit record.
+            evaluator: Optional callable executing simulation/backtest to evaluate offspring.
+            offspring_fitness: Optional precomputed CandidateFitness sequence for offspring.
+            seed: Optional random seed for reproducible mating and mutation draws.
+            max_generations: Planned total generation horizon for RVEA ray penalty escalation.
+
+        Returns:
+            LifecycleStepResult containing next_chromosomes, surviving_fitness, ranking, and updated state.
+        """
+        n = len(current_chromosomes)
+        if len(current_fitness) != n:
+            raise LifecycleError(
+                f"Population size mismatch: {n} chromosomes vs {len(current_fitness)} fitness records."
+            )
+        if current_state.population_size != n:
+            raise InvalidGenerationalStateException(
+                f"State population size ({current_state.population_size}) does not match chromosomes ({n})."
+            )
+        if evaluator is None and offspring_fitness is None:
+            raise LifecycleError("Either evaluator or offspring_fitness must be provided.")
+
+        rng = np.random.default_rng(seed)
+
+        # 1. Obtain parent ranking (fast-path: check if ranking already cached for this population)
+        parent_candidate_ids = tuple(f.candidate_id for f in current_fitness)
+        if self._cached_ranking is not None and self._cached_ranking[0] == parent_candidate_ids:
+            parent_ranking = self._cached_ranking[1]
+        else:
+            parent_ranking = self._rvea_ranker.rank_population(
+                list(current_fitness),
+                generation=current_state.generation_index,
+                max_generations=max_generations,
+                auto_admit=False,
+            )
+
+        # 2. Hypergamic Reproduction: produce N raw offspring
+        repro_result = self._selection_engine.reproduce(
+            candidates=list(current_fitness),
+            ranking=parent_ranking,
+            chromosome_map=dict(current_chromosomes),
+            target_population_size=n,
+            seed=seed,
+        )
+
+        # 3. Adaptive Cauchy Mutation
+        is_cataclysmic = current_state.is_cataclysm_triggered
+        mutated_offspring_map: dict[str, StrategyChromosome] = {}
+        offspring_to_parent: dict[str, str] = {}
+
+        next_gen_idx = current_state.generation_index + 1
+
+        for i, raw_child in enumerate(repro_result.offspring_chromosomes):
+            child_id = f"gen_{next_gen_idx}_ind_{i}"
+            mutated_child = self._mutator.mutate(
+                chromosome=raw_child,
+                step_size=current_state.active_step_size,
+                is_cataclysmic=is_cataclysmic,
+                rng=rng,
+            )
+            mutated_offspring_map[child_id] = mutated_child
+
+            if i < len(repro_result.mating_pairs):
+                offspring_to_parent[child_id] = repro_result.mating_pairs[i].alpha_id
+            elif i - len(repro_result.mating_pairs) < len(repro_result.elite_ids):
+                offspring_to_parent[child_id] = repro_result.elite_ids[
+                    i - len(repro_result.mating_pairs)
+                ]
+            elif repro_result.alpha_ids:
+                offspring_to_parent[child_id] = repro_result.alpha_ids[0]
+            else:
+                offspring_to_parent[child_id] = next(iter(current_chromosomes))
+
+        # 4. Offspring Fitness Evaluation
+        if offspring_fitness is not None:
+            if len(offspring_fitness) != n:
+                raise LifecycleError(
+                    f"offspring_fitness length ({len(offspring_fitness)}) must match population size ({n})"
+                )
+            evaluated_offspring = tuple(offspring_fitness)
+        else:
+            assert evaluator is not None
+            eval_res = evaluator(mutated_offspring_map)
+            if len(eval_res) != n:
+                raise LifecycleError(
+                    f"evaluator returned {len(eval_res)} fitness records, expected {n}"
+                )
+            evaluated_offspring = tuple(eval_res)
+
+        # 5. Form Joint Pool U_t = P_t \cup Q_t (|U_t| = 2N)
+        joint_fitness = tuple(current_fitness) + evaluated_offspring
+        joint_chromosomes: dict[str, StrategyChromosome] = dict(current_chromosomes)
+        joint_chromosomes.update(mutated_offspring_map)
+
+        offspring_ids_in_map = list(mutated_offspring_map.keys())
+        for idx, off_fit in enumerate(evaluated_offspring):
+            if off_fit.candidate_id not in joint_chromosomes:
+                joint_chromosomes[off_fit.candidate_id] = mutated_offspring_map[
+                    offspring_ids_in_map[idx]
+                ]
+                old_id = offspring_ids_in_map[idx]
+                if old_id in offspring_to_parent:
+                    offspring_to_parent[off_fit.candidate_id] = offspring_to_parent[old_id]
+
+        # 6. Multi-Objective Pareto Ranking on U_t
+        joint_ranking = self._rvea_ranker.rank_population(
+            list(joint_fitness),
+            generation=next_gen_idx,
+            max_generations=max_generations,
+            auto_admit=True,
+        )
+
+        # 7. (mu + lambda) Environmental Selection: select top N survivors by APD
+        surviving_ids: list[str] = []
+        for front in joint_ranking.fronts:
+            for cid in front.candidate_ids:
+                surviving_ids.append(cid)
+                if len(surviving_ids) == n:
+                    break
+            if len(surviving_ids) == n:
+                break
+
+        if len(surviving_ids) < n:
+            for inf_id in joint_ranking.infeasible_ids:
+                surviving_ids.append(inf_id)
+                if len(surviving_ids) == n:
+                    break
+
+        fitness_lookup = {f.candidate_id: f for f in joint_fitness}
+        surviving_fitness_tuple = tuple(fitness_lookup[cid] for cid in surviving_ids)
+        next_chromosomes = {cid: joint_chromosomes[cid] for cid in surviving_ids}
+
+        surviving_front_1 = (
+            set(joint_ranking.fronts[0].candidate_ids) if joint_ranking.fronts else set()
+        )
+        front_1_count = sum(1 for cid in surviving_ids if cid in surviving_front_1)
+
+        # 8. Rechenberg Volatility Adaptation
+        instantaneous_success_ratio = self._mutator.compute_apd_success_ratio(
+            offspring_to_parent, joint_ranking
+        )
+        new_step_size, new_smoothed_ratio = self._mutator.adapt_step_size(
+            current_step_size=current_state.active_step_size,
+            current_smoothed_ratio=current_state.smoothed_success_ratio,
+            instantaneous_success_ratio=instantaneous_success_ratio,
+        )
+
+        # 9. Dual-Space Stagnation Monitoring
+        surviving_chrom_list = [next_chromosomes[cid] for cid in surviving_ids]
+        stagnation_report = self._stagnation_detector.evaluate(
+            chromosomes=surviving_chrom_list,
+            residuals_or_fitnesses=surviving_fitness_tuple,
+            current_stagnation_count=current_state.stagnation_count,
+        )
+
+        # 10. Construct next GenerationalState
+        next_state = GenerationalState(
+            generation_index=next_gen_idx,
+            population_size=n,
+            active_step_size=new_step_size,
+            smoothed_success_ratio=new_smoothed_ratio,
+            phenotypic_diversity=stagnation_report.phenotypic_diversity,
+            mean_residual_correlation=stagnation_report.mean_residual_correlation,
+            stagnation_count=stagnation_report.stagnation_count,
+            is_cataclysm_triggered=stagnation_report.is_cataclysm_triggered,
+            surviving_candidate_ids=tuple(surviving_ids),
+            front_1_count=front_1_count,
+        )
+
+        # Cache survivor ranking for next generation to eliminate redundant parent ranking
+        surviving_id_set = set(surviving_ids)
+        surv_fronts: list[ParetoFront] = []
+        for front in joint_ranking.fronts:
+            surv_pairs = [
+                (cid, score)
+                for cid, score in zip(front.candidate_ids, front.apd_scores, strict=True)
+                if cid in surviving_id_set
+            ]
+            if surv_pairs:
+                surv_cands = tuple(p[0] for p in surv_pairs)
+                surv_scores = tuple(p[1] for p in surv_pairs)
+                surv_fronts.append(
+                    ParetoFront(
+                        rank=front.rank,
+                        candidate_ids=surv_cands,
+                        apd_scores=surv_scores,
+                    )
+                )
+        surv_infeasible = tuple(
+            cid for cid in joint_ranking.infeasible_ids if cid in surviving_id_set
+        )
+        survivor_ranking = RankingResult(
+            fronts=tuple(surv_fronts),
+            infeasible_ids=surv_infeasible,
+            active_reference_rays=joint_ranking.active_reference_rays,
+            archive_size=joint_ranking.archive_size,
+            subspace_rank=joint_ranking.subspace_rank,
+        )
+        self._cached_ranking = (tuple(surviving_ids), survivor_ranking)
+
+        return LifecycleStepResult(
+            next_chromosomes=next_chromosomes,
+            surviving_fitness=surviving_fitness_tuple,
+            ranking=joint_ranking,
+            state=next_state,
         )

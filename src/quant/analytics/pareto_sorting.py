@@ -248,6 +248,7 @@ class SVDSubspaceOrthogonalArchive:
         residual_series: np.ndarray,
         novelty_score: float,
         dsr: float,
+        recompute: bool = True,
     ) -> bool:
         """Admit a candidate into the historical elite archive.
 
@@ -260,6 +261,7 @@ class SVDSubspaceOrthogonalArchive:
             residual_series: 1D contiguous array of prediction residuals.
             novelty_score: Evaluated orthogonal novelty score.
             dsr: Certified Deflated Sharpe Ratio.
+            recompute: Flag whether to immediately recompute basis vectors.
 
         Returns:
             True if admitted, False if candidate had zero-variance residuals.
@@ -275,7 +277,8 @@ class SVDSubspaceOrthogonalArchive:
 
         self._elite_ids.append(candidate_id)
         self._residuals.append(standardized)
-        self._recompute_basis()
+        if recompute:
+            self._recompute_basis()
         return True
 
     def compute_novelty(
@@ -641,12 +644,38 @@ class DependentNonDominatedSorter:
 
         return math.sqrt(max(0.0, asymptotic_var))
 
+    @staticmethod
+    def _compute_dependent_dsr_variance_precomputed(
+        dsr_a: float,
+        dsr_b: float,
+        dev_a: np.ndarray,
+        dev_b: np.ndarray,
+        norm_a: float,
+        norm_b: float,
+        t_bars: int,
+    ) -> float:
+        """Fast path computing asymptotic standard error using precomputed deviation vectors."""
+        if t_bars < 2:
+            return 0.0
+        if norm_a < 1e-12 or norm_b < 1e-12:
+            rho = 0.0
+        else:
+            rho = float(np.dot(dev_a, dev_b) / (norm_a * norm_b))
+
+        rho = max(-0.9999, min(0.9999, rho))
+        diff_term = 2.0 * (1.0 - rho)
+        squared_term = 0.5 * (dsr_a**2 + dsr_b**2 - 2.0 * (rho**2) * dsr_a * dsr_b)
+        asymptotic_var = (diff_term + squared_term) / float(t_bars)
+        return math.sqrt(max(0.0, asymptotic_var))
+
     def dominates(
         self,
         candidate_a: CandidateFitness,
         candidate_b: CandidateFitness,
         objective_a: np.ndarray,
         objective_b: np.ndarray,
+        precomputed_a: tuple[np.ndarray, float] | None = None,
+        precomputed_b: tuple[np.ndarray, float] | None = None,
     ) -> bool:
         """Evaluate if candidate_a statistically dominates candidate_b under tau-dominance.
 
@@ -658,6 +687,8 @@ class DependentNonDominatedSorter:
             candidate_b: Candidate B fitness record.
             objective_a: Uniform minimization objective vector [-DSR, Regret, -Novelty].
             objective_b: Uniform minimization objective vector [-DSR, Regret, -Novelty].
+            precomputed_a: Optional precomputed (return_dev, return_norm) tuple for candidate A.
+            precomputed_b: Optional precomputed (return_dev, return_norm) tuple for candidate B.
 
         Returns:
             True if candidate_a dominates candidate_b, False otherwise.
@@ -670,21 +701,37 @@ class DependentNonDominatedSorter:
         if not candidate_a.is_feasible and not candidate_b.is_feasible:
             return False
 
+        # Fast rejection: weak condition on regret and novelty
+        if objective_a[1] > objective_b[1] + 1e-9:
+            return False
+        if objective_a[2] > objective_b[2] + 1e-9:
+            return False
+
+        strict_regret = objective_a[1] < objective_b[1] - self._eps_regret
+        strict_novelty = objective_a[2] < objective_b[2] - self._eps_novelty
+        if not (strict_regret or strict_novelty) and objective_a[0] >= objective_b[0]:
+            return False
+
         # Both candidates are feasible: evaluate dependent statistical dominance
-        se_diff = self.compute_dependent_dsr_variance(
-            candidate_a.dsr,
-            candidate_b.dsr,
-            candidate_a.return_series,
-            candidate_b.return_series,
-        )
+        if precomputed_a is not None and precomputed_b is not None:
+            dev_a, norm_a = precomputed_a
+            dev_b, norm_b = precomputed_b
+            t_bars = min(len(dev_a), len(dev_b))
+            se_diff = self._compute_dependent_dsr_variance_precomputed(
+                candidate_a.dsr, candidate_b.dsr, dev_a, dev_b, norm_a, norm_b, t_bars
+            )
+        else:
+            se_diff = self.compute_dependent_dsr_variance(
+                candidate_a.dsr,
+                candidate_b.dsr,
+                candidate_a.return_series,
+                candidate_b.return_series,
+            )
         delta_dsr_tol = self._tau * se_diff
 
-        # Weak condition (no worse across all 3 objectives)
+        # Weak condition on DSR
         cond_dsr = objective_a[0] <= objective_b[0] + delta_dsr_tol
-        cond_regret = objective_a[1] <= objective_b[1] + 1e-9
-        cond_novelty = objective_a[2] <= objective_b[2] + 1e-9
-
-        if not (cond_dsr and cond_regret and cond_novelty):
+        if not cond_dsr:
             return False
 
         # Strict condition (strictly superior in at least one objective)
@@ -727,6 +774,13 @@ class DependentNonDominatedSorter:
         if not feasible_indices:
             return [], infeasible_indices
 
+        # Precompute return deviations and norms for all feasible candidates: O(N) once
+        cache: dict[int, tuple[np.ndarray, float]] = {}
+        for idx in feasible_indices:
+            ret = candidates[idx].return_series
+            dev = ret - np.mean(ret)
+            cache[idx] = (dev, float(np.linalg.norm(dev)))
+
         # Sort feasible candidates ascending by primary objective (-DSR, highest DSR first)
         sorted_feasible = sorted(feasible_indices, key=lambda idx: float(objective_matrix[idx, 0]))
 
@@ -735,14 +789,22 @@ class DependentNonDominatedSorter:
 
         for cand_idx in sorted_feasible:
             placed = False
+            pre_cand = cache[cand_idx]
             for front in fronts:
                 is_dominated = False
                 for member_idx in front:
-                    if self.dominates(
-                        candidates[member_idx],
-                        candidates[cand_idx],
-                        objective_matrix[member_idx],
-                        objective_matrix[cand_idx],
+                    # Fast rejection: weak condition on regret and novelty
+                    if (
+                        objective_matrix[member_idx, 1] <= objective_matrix[cand_idx, 1] + 1e-9
+                        and objective_matrix[member_idx, 2] <= objective_matrix[cand_idx, 2] + 1e-9
+                        and self.dominates(
+                            candidates[member_idx],
+                            candidates[cand_idx],
+                            objective_matrix[member_idx],
+                            objective_matrix[cand_idx],
+                            cache[member_idx],
+                            pre_cand,
+                        )
                     ):
                         is_dominated = True
                         break
@@ -876,12 +938,20 @@ class BoundaryAnchoredRVEARanker:
         # Auto-admit Front-1 elites into the SVD subspace archive
         if auto_admit and fronts:
             id_to_idx = {c.candidate_id: i for i, c in enumerate(candidates)}
+            admitted_any = False
             for cand_id in fronts[0].candidate_ids:
                 idx = id_to_idx[cand_id]
                 cand = candidates[idx]
-                self._archive.admit(
-                    cand.candidate_id, cand.residual_series, novelties[idx], cand.dsr
-                )
+                if self._archive.admit(
+                    cand.candidate_id,
+                    cand.residual_series,
+                    novelties[idx],
+                    cand.dsr,
+                    recompute=False,
+                ):
+                    admitted_any = True
+            if admitted_any:
+                self._archive._recompute_basis()
 
         # Adapt interior reference rays toward active solution clusters
         if generation > 0 and generation % self._lattice._adaptation_interval == 0:

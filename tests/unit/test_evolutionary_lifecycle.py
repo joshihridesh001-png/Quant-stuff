@@ -1,19 +1,24 @@
-"""Unit tests for Phase 4, Step 4: (mu + lambda) APD-Adaptive Evolutionary Lifecycle Engine."""
+from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 
 import pytest
 
+from quant.analytics.chromosomes import ChromosomeVectorCodec, StrategyChromosome
 from quant.analytics.evolutionary_lifecycle import (
     AdaptiveVolatilityMutator,
+    GenerationalLifecycleEngine,
     GenerationalState,
     InvalidGenerationalStateException,
     LifecycleError,
+    LifecycleStepResult,
     MutationConfig,
     StagnationDetector,
     StagnationException,
     StagnationReport,
 )
+from quant.analytics.hypergamic_selection import HypergamicConfig
+from quant.analytics.pareto_sorting import CandidateFitness
 
 
 class TestDomainEntitiesAndInvariants:
@@ -528,3 +533,402 @@ class TestStagnationDetector:
         # Length mismatch
         with pytest.raises(StagnationException, match="(?i)count mismatch"):
             detector.evaluate([c, c], [r], current_stagnation_count=0)
+
+
+class TestGenerationalLifecycleEngine:
+    """Test Master (mu + lambda) Generational Lifecycle Engine."""
+
+    def _make_population(
+        self, n: int, t_bars: int = 100, base_dsr: float = 1.0, seed: int = 42
+    ) -> tuple[dict[str, StrategyChromosome], list[CandidateFitness]]:
+        import numpy as np
+
+        from quant.analytics.chromosomes import StrategyChromosome
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        rng = np.random.default_rng(seed)
+        chrom_map: dict[str, StrategyChromosome] = {}
+        fitness_list: list[CandidateFitness] = []
+
+        for i in range(n):
+            cid = f"cand_{i}"
+            ret = rng.normal(0.001, 0.02, t_bars)
+            res = rng.normal(0.0, 0.01, t_bars)
+            c = CandidateFitness(
+                candidate_id=cid,
+                dsr=base_dsr + 0.05 * i,
+                minimax_regret=0.05 + 0.01 * (i % 3),
+                return_series=ret,
+                residual_series=res,
+                backtest_length=t_bars,
+                is_feasible=True,
+            )
+            fitness_list.append(c)
+            chrom_map[cid] = StrategyChromosome()
+
+        return chrom_map, fitness_list
+
+    def test_lifecycle_step_conserves_population_size(self) -> None:
+        """Population size strictly conserved (INV-LIFE-001): N_{t+1} == N_t == 10."""
+        import numpy as np
+
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        n = 10
+        chrom_map, fitness_list = self._make_population(n=n, seed=42)
+        engine = GenerationalLifecycleEngine()
+        state0 = engine.initialize_state(chrom_map, fitness_list)
+
+        def mock_evaluator(
+            offspring_map: dict[str, StrategyChromosome],
+        ) -> list[CandidateFitness]:
+            rng = np.random.default_rng(123)
+            out = []
+            for cid in offspring_map:
+                ret = rng.normal(0.001, 0.02, 100)
+                res = rng.normal(0.0, 0.01, 100)
+                out.append(
+                    CandidateFitness(
+                        candidate_id=cid,
+                        dsr=1.2,
+                        minimax_regret=0.06,
+                        return_series=ret,
+                        residual_series=res,
+                        backtest_length=100,
+                        is_feasible=True,
+                    )
+                )
+            return out
+
+        result = engine.step_generation(
+            current_chromosomes=chrom_map,
+            current_fitness=fitness_list,
+            current_state=state0,
+            evaluator=mock_evaluator,
+            seed=42,
+        )
+
+        assert isinstance(result, LifecycleStepResult)
+        assert len(result.next_chromosomes) == n
+        assert len(result.surviving_fitness) == n
+        assert result.state.population_size == n
+        assert result.state.generation_index == 1
+
+    def test_mu_plus_lambda_preserves_monotonic_pareto_frontier(self) -> None:
+        """Monotonic frontier preservation (INV-LIFE-003): inferior offspring never displace elite parents."""
+        import numpy as np
+
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        n = 8
+        # High DSR parents
+        chrom_map, fitness_list = self._make_population(n=n, base_dsr=3.0, seed=99)
+        engine = GenerationalLifecycleEngine()
+        state0 = engine.initialize_state(chrom_map, fitness_list)
+
+        # Inferior offspring with very low DSR and high regret
+        def terrible_evaluator(
+            offspring_map: dict[str, StrategyChromosome],
+        ) -> list[CandidateFitness]:
+            rng = np.random.default_rng(777)
+            out = []
+            for cid in offspring_map:
+                ret = rng.normal(0.0001, 0.05, 100)
+                res = rng.normal(0.0, 0.05, 100)
+                out.append(
+                    CandidateFitness(
+                        candidate_id=cid,
+                        dsr=0.10,
+                        minimax_regret=5.0,
+                        return_series=ret,
+                        residual_series=res,
+                        backtest_length=100,
+                        is_feasible=True,
+                    )
+                )
+            return out
+
+        result = engine.step_generation(
+            current_chromosomes=chrom_map,
+            current_fitness=fitness_list,
+            current_state=state0,
+            evaluator=terrible_evaluator,
+            seed=99,
+        )
+
+        # All surviving candidates must be the high-performing parents
+        parent_ids = set(chrom_map.keys())
+        surviving_ids = set(result.next_chromosomes.keys())
+        assert surviving_ids == parent_ids
+
+    def test_multi_generational_evolution_closed_loop(self) -> None:
+        """5 complete generations run in closed loop with consistent state propagation."""
+        import numpy as np
+
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        n = 8
+        curr_chroms, curr_fitness = self._make_population(n=n, seed=10)
+        engine = GenerationalLifecycleEngine()
+        curr_state = engine.initialize_state(curr_chroms, curr_fitness)
+
+        def mock_evaluator(
+            offspring_map: dict[str, StrategyChromosome],
+        ) -> list[CandidateFitness]:
+            rng = np.random.default_rng(20)
+            out = []
+            for cid in offspring_map:
+                ret = rng.normal(0.002, 0.02, 100)
+                res = rng.normal(0.0, 0.01, 100)
+                out.append(
+                    CandidateFitness(
+                        candidate_id=cid,
+                        dsr=1.5,
+                        minimax_regret=0.04,
+                        return_series=ret,
+                        residual_series=res,
+                        backtest_length=100,
+                        is_feasible=True,
+                    )
+                )
+            return out
+
+        for gen in range(5):
+            res = engine.step_generation(
+                current_chromosomes=curr_chroms,
+                current_fitness=curr_fitness,
+                current_state=curr_state,
+                evaluator=mock_evaluator,
+                seed=gen,
+            )
+            curr_chroms = res.next_chromosomes
+            curr_fitness = res.surviving_fitness
+            curr_state = res.state
+
+            assert curr_state.generation_index == gen + 1
+            assert curr_state.population_size == n
+            assert 0.005 <= curr_state.active_step_size <= 0.25
+            assert len(curr_chroms) == n
+
+    def test_lifecycle_benchmark_sub_35ms(self) -> None:
+        """100 individuals take < 35ms per generation (INV-LIFE-006)."""
+        import time
+
+        import numpy as np
+
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        n = 100
+        chrom_map, fitness_list = self._make_population(n=n, seed=77)
+        engine = GenerationalLifecycleEngine()
+        state0 = engine.initialize_state(chrom_map, fitness_list)
+
+        def fast_evaluator(
+            offspring_map: dict[str, StrategyChromosome],
+        ) -> list[CandidateFitness]:
+            rng = np.random.default_rng(88)
+            ret_matrix = rng.normal(0.001, 0.02, (len(offspring_map), 100))
+            res_matrix = rng.normal(0.0, 0.01, (len(offspring_map), 100))
+            out = []
+            for i, cid in enumerate(offspring_map):
+                out.append(
+                    CandidateFitness(
+                        candidate_id=cid,
+                        dsr=1.2 + 0.001 * i,
+                        minimax_regret=0.05,
+                        return_series=ret_matrix[i],
+                        residual_series=res_matrix[i],
+                        backtest_length=100,
+                        is_feasible=True,
+                    )
+                )
+            return out
+
+        # Warm-up run
+        res = engine.step_generation(
+            chrom_map, fitness_list, state0, evaluator=fast_evaluator, seed=1
+        )
+
+        import gc
+
+        gc.collect()
+        gc.disable()
+        try:
+            t0 = time.perf_counter()
+            _ = engine.step_generation(
+                res.next_chromosomes,
+                res.surviving_fitness,
+                res.state,
+                evaluator=fast_evaluator,
+                seed=2,
+            )
+            elapsed = time.perf_counter() - t0
+        finally:
+            gc.enable()
+
+        assert elapsed < 0.035, f"Lifecycle step took {elapsed * 1000:.2f}ms, exceeding 35ms limit"
+
+    def test_engine_initializes_state_defensively(self) -> None:
+        """initialize_state creates valid state and verifies defensive boundary checks."""
+        engine = GenerationalLifecycleEngine()
+        chrom_map, fitness_list = self._make_population(n=6, seed=1)
+
+        state = engine.initialize_state(chrom_map, fitness_list)
+        assert state.generation_index == 0
+        assert state.population_size == 6
+        assert state.active_step_size == 0.05
+
+        # Mismatch chromosome vs fitness count
+        with pytest.raises(LifecycleError, match="Mismatch between chromosomes count"):
+            engine.initialize_state({"c1": StrategyChromosome()}, fitness_list)
+
+        # Candidate ID missing from chromosomes
+        with pytest.raises(LifecycleError, match="in fitness not found in chromosomes"):
+            engine.initialize_state(
+                {f"wrong_{i}": StrategyChromosome() for i in range(len(fitness_list))},
+                fitness_list,
+            )
+
+    def test_mutation_config_and_generational_state_defensive_checks(self) -> None:
+        """Comprehensive verification of boundary guards for MutationConfig and GenerationalState."""
+        for kw, val in [
+            ("cauchy_clipping_bound", 0.0),
+            ("risk_gene_scale", -1.0),
+            ("game_gene_scale", 0.0),
+            ("search_gene_scale", -0.5),
+            ("stagnation_diversity_threshold", 0.0),
+            ("stagnation_correlation_threshold", 1.5),
+            ("cataclysmic_step_size", -0.1),
+        ]:
+            with pytest.raises(LifecycleError):
+                MutationConfig(**{kw: val})
+
+        base_state_kwargs: dict[str, object] = {
+            "generation_index": 0,
+            "population_size": 10,
+            "active_step_size": 0.05,
+            "smoothed_success_ratio": 0.2,
+            "phenotypic_diversity": 0.1,
+            "mean_residual_correlation": 0.1,
+            "stagnation_count": 0,
+            "is_cataclysm_triggered": False,
+            "surviving_candidate_ids": tuple(f"c_{i}" for i in range(10)),
+            "front_1_count": 5,
+        }
+        for kw, val in [
+            ("population_size", 0),
+            ("active_step_size", -0.1),
+            ("smoothed_success_ratio", 1.5),
+            ("phenotypic_diversity", -0.1),
+            ("mean_residual_correlation", 1.5),
+            ("stagnation_count", -1),
+            ("front_1_count", -1),
+        ]:
+            bad_kwargs = dict(base_state_kwargs)
+            bad_kwargs[kw] = val
+            with pytest.raises(InvalidGenerationalStateException):
+                GenerationalState(**bad_kwargs)  # type: ignore[arg-type]
+
+    def test_lifecycle_mutator_and_engine_properties_and_error_branches(self) -> None:
+        """Test mutator and engine properties, adaptation bounds, and step_generation guards."""
+        mutator = AdaptiveVolatilityMutator()
+        assert isinstance(mutator.config, MutationConfig)
+        assert isinstance(mutator.codec, ChromosomeVectorCodec)
+
+        detector = StagnationDetector()
+        assert isinstance(detector.config, MutationConfig)
+        assert isinstance(detector.codec, ChromosomeVectorCodec)
+
+        engine = GenerationalLifecycleEngine()
+        assert isinstance(engine.mutation_config, MutationConfig)
+        assert isinstance(engine.hypergamic_config, HypergamicConfig)
+
+        # Invalid step size in mutator
+        with pytest.raises(LifecycleError, match="step_size must be positive"):
+            mutator.mutate(StrategyChromosome(), step_size=-0.5)
+
+        # Invalid step size and ratios in adapt_step_size
+        with pytest.raises(LifecycleError, match="current_step_size must be positive"):
+            mutator.adapt_step_size(
+                current_step_size=-0.1, current_smoothed_ratio=0.2, instantaneous_success_ratio=0.2
+            )
+        with pytest.raises(LifecycleError, match="current_smoothed_ratio must be in"):
+            mutator.adapt_step_size(
+                current_step_size=0.05, current_smoothed_ratio=1.5, instantaneous_success_ratio=0.2
+            )
+        with pytest.raises(LifecycleError, match="instantaneous_success_ratio must be in"):
+            mutator.adapt_step_size(
+                current_step_size=0.05, current_smoothed_ratio=0.2, instantaneous_success_ratio=1.5
+            )
+
+        # Step generation error branches
+        chrom_map, fitness_list = self._make_population(n=4, seed=5)
+        state0 = engine.initialize_state(chrom_map, fitness_list)
+
+        # Missing evaluator and offspring_fitness
+        with pytest.raises(
+            LifecycleError, match="Either evaluator or offspring_fitness must be provided"
+        ):
+            engine.step_generation(chrom_map, fitness_list, state0)
+
+        # Population size mismatch between chromosomes and state
+        mismatched_state = GenerationalState(
+            generation_index=0,
+            population_size=10,
+            active_step_size=0.05,
+            smoothed_success_ratio=0.2,
+            phenotypic_diversity=0.1,
+            mean_residual_correlation=0.1,
+            stagnation_count=0,
+            is_cataclysm_triggered=False,
+            surviving_candidate_ids=tuple(f"c_{i}" for i in range(10)),
+            front_1_count=3,
+        )
+        with pytest.raises(InvalidGenerationalStateException, match="State population size"):
+            engine.step_generation(
+                chrom_map, fitness_list, mismatched_state, evaluator=lambda m: fitness_list
+            )
+
+        # Mismatched offspring_fitness length
+        with pytest.raises(LifecycleError, match="offspring_fitness length"):
+            engine.step_generation(
+                chrom_map, fitness_list, state0, offspring_fitness=fitness_list[:2]
+            )
+
+        # Evaluator returning wrong count
+        with pytest.raises(
+            LifecycleError, match="evaluator returned 2 fitness records, expected 4"
+        ):
+            engine.step_generation(
+                chrom_map, fitness_list, state0, evaluator=lambda m: fitness_list[:2]
+            )
+
+    def test_lifecycle_engine_with_offspring_fitness_and_infeasible_survivors(self) -> None:
+        """Test step_generation using precomputed offspring_fitness and fallback with infeasible candidates."""
+        engine = GenerationalLifecycleEngine()
+        chrom_map, fitness_list = self._make_population(n=4, seed=12)
+        state0 = engine.initialize_state(chrom_map, fitness_list)
+
+        # Provide precomputed offspring fitness where all offspring are infeasible
+        import numpy as np
+
+        rng = np.random.default_rng(99)
+        infeasible_offspring = [
+            CandidateFitness(
+                candidate_id=f"off_{i}",
+                dsr=0.1,
+                minimax_regret=0.5,
+                return_series=rng.normal(0.001, 0.02, 100),
+                residual_series=rng.normal(0.0, 0.01, 100),
+                backtest_length=100,
+                is_feasible=False,
+            )
+            for i in range(4)
+        ]
+
+        res = engine.step_generation(
+            chrom_map, fitness_list, state0, offspring_fitness=infeasible_offspring, seed=7
+        )
+        assert len(res.next_chromosomes) == 4
+        assert len(res.surviving_fitness) == 4
+        assert res.state.generation_index == 1

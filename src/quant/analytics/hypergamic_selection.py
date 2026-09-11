@@ -16,7 +16,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from quant.analytics.chromosomes import ChromosomeVectorCodec, StrategyChromosome
+from quant.analytics.chromosomes import (
+    GENE_REGISTRY,
+    ChromosomeVectorCodec,
+    StrategyChromosome,
+)
 from quant.analytics.pareto_sorting import CandidateFitness, RankingResult
 
 # =====================================================================
@@ -314,6 +318,22 @@ class ResidualOrthogonalityGate:
 
         return is_accepted, rho
 
+    def evaluate_normalized(
+        self,
+        unit_a: np.ndarray,
+        unit_b: np.ndarray,
+        relaxation_level: int = 0,
+    ) -> tuple[bool, float]:
+        """Fast-path evaluation using pre-normalized unit residual vectors."""
+        if len(unit_a) < 2 or len(unit_b) < 2:
+            return False, 1.0
+        rho = float(np.dot(unit_a, unit_b))
+        rho = max(-1.0, min(1.0, rho))
+        factor = self._config.relaxation_factor ** max(0, relaxation_level)
+        delta_eff = self._config.orthogonality_threshold * factor
+        unexplained_variance = 1.0 - abs(rho)
+        return bool(unexplained_variance >= delta_eff), rho
+
 
 # =====================================================================
 # 3. Assortative Hypergamic Partner Matcher
@@ -396,9 +416,18 @@ class HypergamicPartnerMatcher:
         total_rejections = 0
         total_relaxations = 0
 
+        unit_res_cache: dict[str, np.ndarray] = {}
+        for c in alphas + aspirants:
+            if c.candidate_id not in unit_res_cache:
+                res = c.residual_series
+                dev = res - np.mean(res)
+                norm = float(np.linalg.norm(dev))
+                unit_res_cache[c.candidate_id] = dev / norm if norm >= 1e-12 else np.zeros_like(dev)
+
         for pair_idx in range(target_pair_count):
             # Select Alpha parent via round-robin
             alpha = alphas[pair_idx % n_alphas]
+            u_alpha_res = unit_res_cache[alpha.candidate_id]
 
             accepted = False
             attempts = 0
@@ -418,7 +447,9 @@ class HypergamicPartnerMatcher:
                 aspirant = aspirants[best_idx]
 
                 # Evaluate through gate
-                is_accepted, rho = self._gate.evaluate(alpha, aspirant, relaxation_level=level)
+                is_accepted, rho = self._gate.evaluate_normalized(
+                    u_alpha_res, unit_res_cache[aspirant.candidate_id], relaxation_level=level
+                )
 
                 if is_accepted:
                     accepted = True
@@ -502,10 +533,51 @@ class AsymmetricLatentCrossover:
         config: HypergamicConfig | None = None,
         codec: ChromosomeVectorCodec | None = None,
     ) -> None:
-        """Initialize crossover operator with configuration and vector codec."""
+        """Initialize crossover operator with hyperparameter configuration."""
         self._config = config or HypergamicConfig()
         self._codec = codec or ChromosomeVectorCodec()
-        self._registry = self._codec.registry
+        self._registry = GENE_REGISTRY
+        self._is_risk_or_game = np.array(
+            [spec.block in ("risk", "game") for spec in self._registry], dtype=bool
+        )
+        self._inv_eta = 1.0 / (self._config.crossover_distribution_index + 1.0)
+
+    def cross_vectors(
+        self,
+        u_a: np.ndarray,
+        u_b: np.ndarray,
+        rng: np.random.Generator | None = None,
+    ) -> StrategyChromosome:
+        """Cross encoded Alpha and Aspirant vectors to produce a valid offspring."""
+        if rng is None:
+            rng = np.random.default_rng()
+
+        p_alpha = self._config.alpha_risk_inheritance_prob
+        p_aspirant = self._config.aspirant_repr_inheritance_prob
+        n_dim = len(self._registry)
+
+        # Vectorized Simulated Binary Crossover (SBX) spread calculation
+        r = rng.uniform(1e-7, 1.0 - 1e-7, size=n_dim)
+        beta = np.where(
+            r <= 0.5,
+            (2.0 * r) ** self._inv_eta,
+            (1.0 / (2.0 * (1.0 - r))) ** self._inv_eta,
+        )
+
+        # Candidate offspring genes: u1 is centered on Alpha, u2 is centered on Aspirant
+        u1 = 0.5 * ((1.0 + beta) * u_a + (1.0 - beta) * u_b)
+        u2 = 0.5 * ((1.0 - beta) * u_a + (1.0 + beta) * u_b)
+
+        # Asymmetric role-biased selection
+        coin = rng.uniform(0.0, 1.0, size=n_dim)
+        chosen = np.where(
+            self._is_risk_or_game,
+            np.where(coin < p_alpha, u1, u2),
+            np.where(coin < p_aspirant, u2, u1),
+        )
+
+        u_child = np.clip(chosen, 0.0, 1.0)
+        return self._codec.decode(u_child)
 
     def cross(
         self,
@@ -523,49 +595,9 @@ class AsymmetricLatentCrossover:
         Returns:
             New decoded StrategyChromosome offspring satisfying domain invariants.
         """
-        if rng is None:
-            rng = np.random.default_rng()
-
         u_a = self._codec.encode(alpha)
         u_b = self._codec.encode(aspirant)
-
-        eta_c = self._config.crossover_distribution_index
-        p_alpha = self._config.alpha_risk_inheritance_prob
-        p_aspirant = self._config.aspirant_repr_inheritance_prob
-
-        n_dim = len(self._registry)
-        u_child = np.empty(n_dim, dtype=np.float64)
-
-        for d in range(n_dim):
-            spec = self._registry[d]
-            u_ad = u_a[d]
-            u_bd = u_b[d]
-
-            is_risk_or_game = spec.block in ("risk", "game")
-
-            # Simulated Binary Crossover (SBX) spread calculation
-            # Safe uniform draw bounded away from 0.0 and 1.0 to prevent division by zero
-            r = float(rng.uniform(1e-7, 1.0 - 1e-7))
-            if r <= 0.5:
-                beta = (2.0 * r) ** (1.0 / (eta_c + 1.0))
-            else:
-                beta = (1.0 / (2.0 * (1.0 - r))) ** (1.0 / (eta_c + 1.0))
-
-            # Candidate offspring genes: u1 is centered on Alpha, u2 is centered on Aspirant
-            u1 = 0.5 * ((1.0 + beta) * u_ad + (1.0 - beta) * u_bd)
-            u2 = 0.5 * ((1.0 - beta) * u_ad + (1.0 + beta) * u_bd)
-
-            # Asymmetric role-biased selection
-            coin = float(rng.uniform(0.0, 1.0))
-            if is_risk_or_game:
-                chosen = u1 if coin < p_alpha else u2
-            else:
-                chosen = u2 if coin < p_aspirant else u1
-
-            # Strictly clamp to continuous unit hypercube bounds [0.0, 1.0]
-            u_child[d] = min(max(chosen, 0.0), 1.0)
-
-        return self._codec.decode(u_child)
+        return self.cross_vectors(u_a, u_b, rng=rng)
 
 
 # =====================================================================
@@ -666,6 +698,9 @@ class HypergamicSelectionEngine:
                 seed=seed,
             )
 
+            encoded_cache: dict[str, np.ndarray] = {
+                cid: self._codec.encode(chrom) for cid, chrom in chromosome_map.items()
+            }
             # 4. Asymmetric Crossover
             for pair in mating_pairs:
                 if pair.alpha_id not in chromosome_map:
@@ -676,9 +711,11 @@ class HypergamicSelectionEngine:
                     raise HypergamicSelectionError(
                         f"Aspirant candidate '{pair.aspirant_id}' not found in chromosome_map."
                     )
-                p_alpha = chromosome_map[pair.alpha_id]
-                p_aspirant = chromosome_map[pair.aspirant_id]
-                child = self._crossover.cross(p_alpha, p_aspirant, rng=rng)
+                child = self._crossover.cross_vectors(
+                    encoded_cache[pair.alpha_id],
+                    encoded_cache[pair.aspirant_id],
+                    rng=rng,
+                )
                 crossover_chromosomes.append(child)
 
         all_offspring = tuple(elite_chromosomes + crossover_chromosomes)
