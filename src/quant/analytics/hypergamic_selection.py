@@ -13,13 +13,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Tuple
 
 import numpy as np
 
 from quant.analytics.chromosomes import ChromosomeVectorCodec, StrategyChromosome
 from quant.analytics.pareto_sorting import CandidateFitness, RankingResult
-
 
 # =====================================================================
 # Domain Exceptions
@@ -91,7 +89,10 @@ class HypergamicConfig:
             raise HypergamicSelectionError(
                 f"tournament_size must be >= 1, got {self.tournament_size}"
             )
-        if not (math.isfinite(self.crossover_distribution_index) and self.crossover_distribution_index > 0.0):
+        if not (
+            math.isfinite(self.crossover_distribution_index)
+            and self.crossover_distribution_index > 0.0
+        ):
             raise HypergamicSelectionError(
                 f"crossover_distribution_index must be > 0, got {self.crossover_distribution_index}"
             )
@@ -104,9 +105,7 @@ class HypergamicConfig:
                 f"aspirant_repr_inheritance_prob must be in [0.50, 1.0], got {self.aspirant_repr_inheritance_prob}"
             )
         if self.elitism_count < 0:
-            raise HypergamicSelectionError(
-                f"elitism_count must be >= 0, got {self.elitism_count}"
-            )
+            raise HypergamicSelectionError(f"elitism_count must be >= 0, got {self.elitism_count}")
 
 
 @dataclass(frozen=True)
@@ -142,11 +141,11 @@ class OffspringResult:
         relaxation_count: Total number of adaptive relaxation steps applied across all pairs.
     """
 
-    offspring_chromosomes: Tuple[StrategyChromosome, ...]
-    mating_pairs: Tuple[MatingPair, ...]
-    alpha_ids: Tuple[str, ...]
-    aspirant_ids: Tuple[str, ...]
-    elite_ids: Tuple[str, ...] = ()
+    offspring_chromosomes: tuple[StrategyChromosome, ...]
+    mating_pairs: tuple[MatingPair, ...]
+    alpha_ids: tuple[str, ...]
+    aspirant_ids: tuple[str, ...]
+    elite_ids: tuple[str, ...] = ()
     rejection_count: int = 0
     relaxation_count: int = 0
 
@@ -341,6 +340,18 @@ class HypergamicPartnerMatcher:
         self._config = config or HypergamicConfig()
         self._gate = gate or ResidualOrthogonalityGate(self._config)
         self._codec = ChromosomeVectorCodec()
+        self._last_rejection_count: int = 0
+        self._last_relaxation_count: int = 0
+
+    @property
+    def last_rejection_count(self) -> int:
+        """Total number of candidate rejections during the last match_pairs run."""
+        return self._last_rejection_count
+
+    @property
+    def last_relaxation_count(self) -> int:
+        """Total number of relaxed pairs during the last match_pairs run."""
+        return self._last_relaxation_count
 
     def match_pairs(
         self,
@@ -370,6 +381,8 @@ class HypergamicPartnerMatcher:
         if not aspirants:
             raise InvalidCohortException("Aspirant cohort cannot be empty for partner matching.")
         if target_pair_count <= 0:
+            self._last_rejection_count = 0
+            self._last_relaxation_count = 0
             return []
 
         rng = np.random.default_rng(seed)
@@ -380,6 +393,8 @@ class HypergamicPartnerMatcher:
         exhaustion_limit = 2 * max_attempts
 
         pairs: list[MatingPair] = []
+        total_rejections = 0
+        total_relaxations = 0
 
         for pair_idx in range(target_pair_count):
             # Select Alpha parent via round-robin
@@ -396,7 +411,9 @@ class HypergamicPartnerMatcher:
                     level = attempts - max_attempts + 1
 
                 # Tournament selection among aspirants
-                tourn_indices = rng.choice(n_aspirants, size=k_tourn, replace=(k_tourn > n_aspirants))
+                tourn_indices = rng.choice(
+                    n_aspirants, size=k_tourn, replace=(k_tourn > n_aspirants)
+                )
                 best_idx = int(max(tourn_indices, key=lambda idx: aspirants[idx].dsr))
                 aspirant = aspirants[best_idx]
 
@@ -414,6 +431,7 @@ class HypergamicPartnerMatcher:
                     )
                 else:
                     attempts += 1
+                    total_rejections += 1
 
             # Fallback upon retry exhaustion
             if not accepted or best_pair is None:
@@ -453,9 +471,224 @@ class HypergamicPartnerMatcher:
                     relaxation_level=max(1, attempts),
                 )
 
+            if best_pair.is_relaxed:
+                total_relaxations += 1
+
             pairs.append(best_pair)
 
+        self._last_rejection_count = total_rejections
+        self._last_relaxation_count = total_relaxations
         return pairs
 
 
+# =====================================================================
+# Asymmetric Latent Unit-Hypercube Crossover
+# =====================================================================
 
+
+class AsymmetricLatentCrossover:
+    """Asymmetric Latent Unit-Hypercube Simulated Binary Crossover (SBX).
+
+    Performs continuous genetic recombination strictly in the scale-free unit hypercube
+    u in [0, 1]^20. Applies asymmetric inheritance bias:
+    - Risk & Game Theory genes are biased toward Alpha parent (P_alpha >= 0.75).
+    - Representation & Inference genes are biased toward Aspirant parent (P_aspirant >= 0.65).
+    Decodes via ChromosomeVectorCodec, ensuring domain invariants (tau_fast < tau_slow,
+    regime simplex normalization) are strictly satisfied by construction.
+    """
+
+    def __init__(
+        self,
+        config: HypergamicConfig | None = None,
+        codec: ChromosomeVectorCodec | None = None,
+    ) -> None:
+        """Initialize crossover operator with configuration and vector codec."""
+        self._config = config or HypergamicConfig()
+        self._codec = codec or ChromosomeVectorCodec()
+        self._registry = self._codec.registry
+
+    def cross(
+        self,
+        alpha: StrategyChromosome,
+        aspirant: StrategyChromosome,
+        rng: np.random.Generator | None = None,
+    ) -> StrategyChromosome:
+        """Cross an Alpha and Aspirant chromosome to produce a valid offspring.
+
+        Args:
+            alpha: Alpha parent chromosome.
+            aspirant: Aspirant parent chromosome.
+            rng: Optional NumPy random generator for deterministic sampling.
+
+        Returns:
+            New decoded StrategyChromosome offspring satisfying domain invariants.
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+
+        u_a = self._codec.encode(alpha)
+        u_b = self._codec.encode(aspirant)
+
+        eta_c = self._config.crossover_distribution_index
+        p_alpha = self._config.alpha_risk_inheritance_prob
+        p_aspirant = self._config.aspirant_repr_inheritance_prob
+
+        n_dim = len(self._registry)
+        u_child = np.empty(n_dim, dtype=np.float64)
+
+        for d in range(n_dim):
+            spec = self._registry[d]
+            u_ad = u_a[d]
+            u_bd = u_b[d]
+
+            is_risk_or_game = spec.block in ("risk", "game")
+
+            # Simulated Binary Crossover (SBX) spread calculation
+            # Safe uniform draw bounded away from 0.0 and 1.0 to prevent division by zero
+            r = float(rng.uniform(1e-7, 1.0 - 1e-7))
+            if r <= 0.5:
+                beta = (2.0 * r) ** (1.0 / (eta_c + 1.0))
+            else:
+                beta = (1.0 / (2.0 * (1.0 - r))) ** (1.0 / (eta_c + 1.0))
+
+            # Candidate offspring genes: u1 is centered on Alpha, u2 is centered on Aspirant
+            u1 = 0.5 * ((1.0 + beta) * u_ad + (1.0 - beta) * u_bd)
+            u2 = 0.5 * ((1.0 - beta) * u_ad + (1.0 + beta) * u_bd)
+
+            # Asymmetric role-biased selection
+            coin = float(rng.uniform(0.0, 1.0))
+            if is_risk_or_game:
+                chosen = u1 if coin < p_alpha else u2
+            else:
+                chosen = u2 if coin < p_aspirant else u1
+
+            # Strictly clamp to continuous unit hypercube bounds [0.0, 1.0]
+            u_child[d] = min(max(chosen, 0.0), 1.0)
+
+        return self._codec.decode(u_child)
+
+
+# =====================================================================
+# Master Evolutionary Selection Engine Facade
+# =====================================================================
+
+
+class HypergamicSelectionEngine:
+    """Master facade orchestrating hypergamic selection, gating, and reproduction.
+
+    End-to-end evolutionary mating pipeline:
+    1. Pareto Cohort Stratification (Alpha and Aspirant cohorts).
+    2. Monotonic Elitism preservation of top Front-1 champions.
+    3. Bidirectional Residual Orthogonality Gating with adaptive relaxation.
+    4. Bounded tournament matching with phenotypic hypercube fallback.
+    5. Asymmetric Latent Unit-Hypercube Crossover preserving risk controls.
+    """
+
+    def __init__(
+        self,
+        config: HypergamicConfig | None = None,
+        stratifier: ParetoCohortStratifier | None = None,
+        gate: ResidualOrthogonalityGate | None = None,
+        matcher: HypergamicPartnerMatcher | None = None,
+        crossover: AsymmetricLatentCrossover | None = None,
+        codec: ChromosomeVectorCodec | None = None,
+    ) -> None:
+        """Initialize reproduction engine facade with modular components."""
+        self._config = config or HypergamicConfig()
+        self._codec = codec or ChromosomeVectorCodec()
+        self._stratifier = stratifier or ParetoCohortStratifier(self._config)
+        self._gate = gate or ResidualOrthogonalityGate(self._config)
+        self._matcher = matcher or HypergamicPartnerMatcher(self._gate, self._config)
+        self._crossover = crossover or AsymmetricLatentCrossover(self._config, codec=self._codec)
+
+    def reproduce(
+        self,
+        candidates: list[CandidateFitness] | tuple[CandidateFitness, ...],
+        ranking: RankingResult,
+        chromosome_map: dict[str, StrategyChromosome] | dict[str, StrategyChromosome],
+        target_population_size: int,
+        seed: int | None = None,
+    ) -> OffspringResult:
+        """Execute one complete evolutionary reproduction cycle.
+
+        Args:
+            candidates: Sequence of evaluated CandidateFitness records.
+            ranking: Multi-objective RankingResult from Pareto sorting.
+            chromosome_map: Mapping of candidate_id -> StrategyChromosome.
+            target_population_size: Desired total offspring population size (N_target > 0).
+            seed: Optional PRNG seed for deterministic reproduction.
+
+        Returns:
+            OffspringResult containing generated offspring chromosomes, mating pairs,
+            cohort allocations, elitism IDs, and rejection/relaxation counters.
+
+        Raises:
+            HypergamicSelectionError: If target_population_size <= 0 or chromosomes are missing.
+            InvalidCohortException: If cohorts cannot be stratified.
+        """
+        if target_population_size <= 0:
+            raise HypergamicSelectionError(
+                f"target_population_size must be positive, got {target_population_size}"
+            )
+
+        rng = np.random.default_rng(seed)
+
+        # 1. Stratify candidates into Alpha and Aspirant cohorts
+        alphas, aspirants = self._stratifier.stratify(list(candidates), ranking)
+        alpha_ids = tuple(a.candidate_id for a in alphas)
+        aspirant_ids = tuple(asp.candidate_id for asp in aspirants)
+
+        # 2. Elitism: preserve top N_elite Front-1 champions bitwise identical
+        front_1 = next((f for f in ranking.fronts if f.rank == 1), None)
+        front_1_cands = front_1.candidate_ids if front_1 is not None else ()
+        n_elite = min(self._config.elitism_count, len(front_1_cands), target_population_size)
+        elite_ids = tuple(front_1_cands[:n_elite])
+
+        elite_chromosomes: list[StrategyChromosome] = []
+        for eid in elite_ids:
+            if eid not in chromosome_map:
+                raise HypergamicSelectionError(
+                    f"Elite candidate '{eid}' not found in chromosome_map."
+                )
+            elite_chromosomes.append(chromosome_map[eid])
+
+        # 3. Match remaining required pairs via HypergamicPartnerMatcher
+        needed_pairs = target_population_size - n_elite
+        mating_pairs: list[MatingPair] = []
+        crossover_chromosomes: list[StrategyChromosome] = []
+
+        if needed_pairs > 0:
+            mating_pairs = self._matcher.match_pairs(
+                alphas=alphas,
+                aspirants=aspirants,
+                target_pair_count=needed_pairs,
+                chromosome_map=dict(chromosome_map),
+                seed=seed,
+            )
+
+            # 4. Asymmetric Crossover
+            for pair in mating_pairs:
+                if pair.alpha_id not in chromosome_map:
+                    raise HypergamicSelectionError(
+                        f"Alpha candidate '{pair.alpha_id}' not found in chromosome_map."
+                    )
+                if pair.aspirant_id not in chromosome_map:
+                    raise HypergamicSelectionError(
+                        f"Aspirant candidate '{pair.aspirant_id}' not found in chromosome_map."
+                    )
+                p_alpha = chromosome_map[pair.alpha_id]
+                p_aspirant = chromosome_map[pair.aspirant_id]
+                child = self._crossover.cross(p_alpha, p_aspirant, rng=rng)
+                crossover_chromosomes.append(child)
+
+        all_offspring = tuple(elite_chromosomes + crossover_chromosomes)
+
+        return OffspringResult(
+            offspring_chromosomes=all_offspring,
+            mating_pairs=tuple(mating_pairs),
+            alpha_ids=alpha_ids,
+            aspirant_ids=aspirant_ids,
+            elite_ids=elite_ids,
+            rejection_count=self._matcher.last_rejection_count,
+            relaxation_count=self._matcher.last_relaxation_count,
+        )
