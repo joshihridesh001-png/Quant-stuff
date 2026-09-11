@@ -20,6 +20,7 @@ from quant.analytics.circuit_breakers import (
     CircuitBreakerState,
     CircuitBreakerTier,
     DegenerateCircuitBreakerException,
+    EpistemicEntropyCalculator,
     InvalidCircuitBreakerInputException,
 )
 
@@ -635,3 +636,359 @@ class TestCircuitBreakerDecision:
                 is_throttled=False,
                 state=valid_state,
             )
+
+
+class TestEpistemicEntropyCalculator:
+    """Validate EpistemicEntropyCalculator directional consensus and entropy dynamics."""
+
+    def test_init_defaults_and_properties(self) -> None:
+        """Verify institutional defaults and property accessors."""
+        calc = EpistemicEntropyCalculator()
+        assert calc.sign_threshold == 1e-4
+        assert calc.epsilon_log == 1e-30
+
+        # Custom initialization
+        custom_calc = EpistemicEntropyCalculator(sign_threshold=1e-3, epsilon_log=1e-20)
+        assert custom_calc.sign_threshold == 1e-3
+        assert custom_calc.epsilon_log == 1e-20
+
+    def test_from_config_factory(self) -> None:
+        """Verify factory construction from CircuitBreakerConfig."""
+        cfg = CircuitBreakerConfig(sign_threshold=5e-4)
+        calc = EpistemicEntropyCalculator.from_config(cfg)
+        assert calc.sign_threshold == 5e-4
+        assert calc.epsilon_log == 1e-30
+
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            EpistemicEntropyCalculator.from_config("invalid_config")  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "bad_threshold,expected_exc",
+        [
+            (float("nan"), DegenerateCircuitBreakerException),
+            (float("inf"), DegenerateCircuitBreakerException),
+            (-1e-4, InvalidCircuitBreakerInputException),
+            (-0.1, InvalidCircuitBreakerInputException),
+            ("1e-4", InvalidCircuitBreakerInputException),
+        ],
+    )
+    def test_init_sign_threshold_validation(
+        self, bad_threshold: object, expected_exc: type[Exception]
+    ) -> None:
+        """Verify invalid sign_threshold inputs raise appropriate exceptions."""
+        with pytest.raises(expected_exc):
+            EpistemicEntropyCalculator(sign_threshold=bad_threshold)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "bad_epsilon,expected_exc",
+        [
+            (float("nan"), DegenerateCircuitBreakerException),
+            (float("inf"), DegenerateCircuitBreakerException),
+            (0.0, InvalidCircuitBreakerInputException),
+            (-1e-30, InvalidCircuitBreakerInputException),
+            ("1e-30", InvalidCircuitBreakerInputException),
+        ],
+    )
+    def test_init_epsilon_log_validation(
+        self, bad_epsilon: object, expected_exc: type[Exception]
+    ) -> None:
+        """Verify invalid epsilon_log inputs raise appropriate exceptions."""
+        with pytest.raises(expected_exc):
+            EpistemicEntropyCalculator(epsilon_log=bad_epsilon)  # type: ignore[arg-type]
+
+    def test_directional_consensus_balanced_partition(self) -> None:
+        """Verify 3-bucket partitioning into positive, negative, and neutral consensus."""
+        calc = EpistemicEntropyCalculator(sign_threshold=1e-4)
+        predictions = np.array([0.05, -0.02, 0.00001, 0.08, -0.01], dtype=np.float64)
+        weights = np.array([0.2, 0.2, 0.2, 0.2, 0.2], dtype=np.float64)
+
+        probs = calc.compute_directional_consensus(predictions, weights)
+
+        # Expected: pos=[0.05, 0.08] (0.4), neg=[-0.02, -0.01] (0.4), neu=[0.00001] (0.2)
+        assert probs.shape == (3,)
+        assert probs.dtype == np.float64
+        assert np.allclose(probs, [0.4, 0.4, 0.2], atol=1e-12)
+        assert math.isclose(float(np.sum(probs)), 1.0, abs_tol=1e-10)
+
+    def test_directional_consensus_single_model(self) -> None:
+        """Verify directional consensus with a single model K=1."""
+        calc = EpistemicEntropyCalculator(sign_threshold=1e-4)
+        probs_pos = calc.compute_directional_consensus(
+            np.array([0.01], dtype=np.float64), np.array([1.0], dtype=np.float64)
+        )
+        assert np.allclose(probs_pos, [1.0, 0.0, 0.0])
+
+        probs_neg = calc.compute_directional_consensus(
+            np.array([-0.01], dtype=np.float64), np.array([1.0], dtype=np.float64)
+        )
+        assert np.allclose(probs_neg, [0.0, 1.0, 0.0])
+
+        probs_neu = calc.compute_directional_consensus(
+            np.array([0.0], dtype=np.float64), np.array([1.0], dtype=np.float64)
+        )
+        assert np.allclose(probs_neu, [0.0, 0.0, 1.0])
+
+    def test_directional_consensus_exact_boundary(self) -> None:
+        """Verify deadband boundary conditions |y_k| <= delta_sign are assigned to neutral."""
+        calc = EpistemicEntropyCalculator(sign_threshold=1e-4)
+        predictions = np.array([1e-4, -1e-4, 1.0001e-4, -1.0001e-4], dtype=np.float64)
+        weights = np.array([0.25, 0.25, 0.25, 0.25], dtype=np.float64)
+
+        probs = calc.compute_directional_consensus(predictions, weights)
+        # 1e-4 and -1e-4 are <= 1e-4 (neutral) -> 0.50
+        # 1.0001e-4 > 1e-4 (positive) -> 0.25
+        # -1.0001e-4 < -1e-4 (negative) -> 0.25
+        assert np.allclose(probs, [0.25, 0.25, 0.50], atol=1e-12)
+
+    def test_directional_consensus_inv_cb_004_compliance(self) -> None:
+        """Verify strict INV-CB-004 simplex compliance across heterogeneous weights."""
+        calc = EpistemicEntropyCalculator(sign_threshold=1e-4)
+        rng = np.random.default_rng(42)
+        for _ in range(50):
+            k = rng.integers(1, 101)
+            raw_w = rng.uniform(0.01, 1.0, size=k)
+            w = raw_w / np.sum(raw_w)
+            # Re-normalize to guarantee sum within 1e-15
+            w = w / np.sum(w)
+            preds = rng.normal(0.0, 0.05, size=k)
+
+            probs = calc.compute_directional_consensus(preds, w)
+            assert probs.shape == (3,)
+            assert probs.dtype == np.float64
+            assert np.all(probs >= 0.0)
+            assert abs(float(np.sum(probs)) - 1.0) <= 1e-10
+
+    def test_directional_consensus_defensive_failures(self) -> None:
+        """Verify defensive failures on malformed or non-finite inputs."""
+        calc = EpistemicEntropyCalculator()
+
+        # Non-ndarray
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_directional_consensus([0.1, -0.1], [0.5, 0.5])  # type: ignore[arg-type]
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_directional_consensus(
+                np.array([0.1, -0.1]),
+                [0.5, 0.5],  # type: ignore[arg-type]
+            )
+
+        # Wrong dimensionality (2D)
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_directional_consensus(np.array([[0.1], [-0.1]]), np.array([[0.5], [0.5]]))
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_directional_consensus(np.array([0.1, -0.1]), np.array([[0.5], [0.5]]))
+
+        # Length mismatch
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_directional_consensus(np.array([0.1, 0.2, 0.3]), np.array([0.5, 0.5]))
+
+        # Empty array K=0
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_directional_consensus(np.array([]), np.array([]))
+
+        # INV-CB-005: Non-finite values in predictions
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_directional_consensus(np.array([0.1, float("nan")]), np.array([0.5, 0.5]))
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_directional_consensus(np.array([0.1, float("inf")]), np.array([0.5, 0.5]))
+
+        # INV-CB-005: Non-finite values in weights
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_directional_consensus(np.array([0.1, 0.2]), np.array([float("nan"), 0.5]))
+
+        # Negative weights
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_directional_consensus(np.array([0.1, 0.2]), np.array([-0.1, 1.1]))
+
+        # Weights sum != 1.0
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_directional_consensus(np.array([0.1, 0.2]), np.array([0.4, 0.4]))
+
+    def test_directional_entropy_unanimous_consensus(self) -> None:
+        """Verify unanimous consensus yields normalized directional entropy exactly 0.0."""
+        calc = EpistemicEntropyCalculator()
+
+        # All positive
+        assert calc.compute_directional_entropy(np.array([1.0, 0.0, 0.0])) == 0.0
+        # All negative
+        assert calc.compute_directional_entropy(np.array([0.0, 1.0, 0.0])) == 0.0
+        # All neutral
+        assert calc.compute_directional_entropy(np.array([0.0, 0.0, 1.0])) == 0.0
+
+    def test_directional_entropy_maximum_confusion(self) -> None:
+        """Verify maximum confusion [1/3, 1/3, 1/3] yields normalized entropy exactly 1.0."""
+        calc = EpistemicEntropyCalculator()
+        p_uniform = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float64)
+        entropy = calc.compute_directional_entropy(p_uniform)
+        assert math.isclose(entropy, 1.0, rel_tol=1e-12)
+        assert 0.0 <= entropy <= 1.0
+
+    def test_directional_entropy_50_50_polarization(self) -> None:
+        """Verify 50/50 polarization yields ln(2)/ln(3) ≈ 0.63092975."""
+        calc = EpistemicEntropyCalculator()
+        p_bipolar = np.array([0.5, 0.5, 0.0], dtype=np.float64)
+        entropy = calc.compute_directional_entropy(p_bipolar)
+        expected = math.log(2.0) / math.log(3.0)
+        assert math.isclose(entropy, expected, rel_tol=1e-10)
+        assert math.isclose(entropy, 0.6309297535714574, rel_tol=1e-10)
+
+        # Bull vs neutral
+        p_bull_neu = np.array([0.5, 0.0, 0.5], dtype=np.float64)
+        assert math.isclose(calc.compute_directional_entropy(p_bull_neu), expected, rel_tol=1e-10)
+
+    def test_directional_entropy_defensive_failures(self) -> None:
+        """Verify directional entropy rejects non-finite or non-simplex vectors."""
+        calc = EpistemicEntropyCalculator()
+
+        # Non-ndarray
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_directional_entropy([1.0, 0.0, 0.0])  # type: ignore[arg-type]
+
+        # Wrong shape
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_directional_entropy(np.array([0.5, 0.5]))
+
+        # INV-CB-005: Non-finite probabilities
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_directional_entropy(np.array([float("nan"), 0.5, 0.5]))
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_directional_entropy(np.array([float("inf"), 0.0, 0.0]))
+
+        # Negative probability
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_directional_entropy(np.array([-0.1, 0.6, 0.5]))
+
+        # Sum != 1.0
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_directional_entropy(np.array([0.3, 0.3, 0.3]))
+
+    def test_epistemic_ratio_mathematical_bounds(self) -> None:
+        """Verify epistemic uncertainty ratio bounds and monotonicity in [0.0, 1.0)."""
+        calc = EpistemicEntropyCalculator()
+
+        # Zero epistemic variance -> rho = 0.0
+        assert calc.compute_epistemic_ratio(aleatoric_variance=0.01, epistemic_variance=0.0) == 0.0
+
+        # Equal variances -> rho = 0.5
+        assert math.isclose(
+            calc.compute_epistemic_ratio(aleatoric_variance=0.04, epistemic_variance=0.04),
+            0.5,
+            rel_tol=1e-12,
+        )
+
+        # Dominant epistemic variance -> rho approaches 1.0 but strictly < 1.0
+        rho_high = calc.compute_epistemic_ratio(aleatoric_variance=1e-6, epistemic_variance=1.0)
+        assert 0.9999 < rho_high < 1.0
+
+        # Monotonicity with respect to epistemic variance
+        r1 = calc.compute_epistemic_ratio(0.01, 0.005)
+        r2 = calc.compute_epistemic_ratio(0.01, 0.01)
+        r3 = calc.compute_epistemic_ratio(0.01, 0.02)
+        assert r1 < r2 < r3
+
+    def test_epistemic_ratio_defensive_failures(self) -> None:
+        """Verify epistemic ratio validates positivity and finiteness."""
+        calc = EpistemicEntropyCalculator()
+
+        # Aleatoric <= 0.0
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_epistemic_ratio(aleatoric_variance=0.0, epistemic_variance=0.01)
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_epistemic_ratio(aleatoric_variance=-0.01, epistemic_variance=0.01)
+
+        # Epistemic < 0.0
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_epistemic_ratio(aleatoric_variance=0.01, epistemic_variance=-0.001)
+
+        # INV-CB-005: Non-finite inputs
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_epistemic_ratio(aleatoric_variance=float("nan"), epistemic_variance=0.01)
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_epistemic_ratio(aleatoric_variance=0.01, epistemic_variance=float("nan"))
+        with pytest.raises(DegenerateCircuitBreakerException):
+            calc.compute_epistemic_ratio(aleatoric_variance=float("inf"), epistemic_variance=0.01)
+
+        # Invalid type
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_epistemic_ratio("0.01", 0.01)  # type: ignore[arg-type]
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_epistemic_ratio(0.01, "0.01")  # type: ignore[arg-type]
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_epistemic_ratio(True, 0.01)  # type: ignore[arg-type]
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            calc.compute_epistemic_ratio(0.01, False)  # type: ignore[arg-type]
+
+    def test_composite_epistemic_entropy_dynamics(self) -> None:
+        """Verify composite epistemic entropy H_epistemic = H_dir * sqrt(rho)."""
+        calc = EpistemicEntropyCalculator(sign_threshold=1e-4)
+
+        # Case 1: Unanimous consensus -> H_epistemic = 0.0 even if epistemic variance is huge
+        preds_unanimous = np.array([0.05, 0.04, 0.06], dtype=np.float64)
+        weights = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float64)
+        h_epi, h_dir, rho, probs = calc.compute_epistemic_entropy(
+            preds_unanimous, weights, aleatoric_variance=0.001, epistemic_variance=1.0
+        )
+        assert h_epi == 0.0
+        assert h_dir == 0.0
+        assert rho > 0.99
+        assert np.allclose(probs, [1.0, 0.0, 0.0])
+
+        # Case 2: Maximum disagreement, but epistemic variance is 0.0 -> H_epistemic = 0.0
+        preds_disagree = np.array([0.05, -0.05, 0.0], dtype=np.float64)
+        h_epi, h_dir, rho, probs = calc.compute_epistemic_entropy(
+            preds_disagree, weights, aleatoric_variance=0.01, epistemic_variance=0.0
+        )
+        assert h_epi == 0.0
+        assert math.isclose(h_dir, 1.0, rel_tol=1e-12)
+        assert rho == 0.0
+        assert np.allclose(probs, [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0])
+
+        # Case 3: 50/50 polarization with equal variances (rho = 0.5)
+        preds_polar = np.array([0.05, -0.05], dtype=np.float64)
+        w_polar = np.array([0.5, 0.5], dtype=np.float64)
+        h_epi, h_dir, rho, probs = calc.compute_epistemic_entropy(
+            preds_polar, w_polar, aleatoric_variance=0.02, epistemic_variance=0.02
+        )
+        expected_h_dir = math.log(2.0) / math.log(3.0)
+        expected_h_epi = expected_h_dir * math.sqrt(0.5)
+        assert math.isclose(h_dir, expected_h_dir, rel_tol=1e-10)
+        assert math.isclose(rho, 0.5, rel_tol=1e-10)
+        assert math.isclose(h_epi, expected_h_epi, rel_tol=1e-10)
+        assert 0.0 <= h_epi <= 1.0
+
+        # Case 4: Output contracts
+        assert isinstance(h_epi, float)
+        assert isinstance(h_dir, float)
+        assert isinstance(rho, float)
+        assert isinstance(probs, np.ndarray)
+        assert probs.shape == (3,)
+        assert probs.dtype == np.float64
+
+    def test_state_construction_from_calculator_outputs(self) -> None:
+        """Verify seamless downstream integration into CircuitBreakerState."""
+        calc = EpistemicEntropyCalculator(sign_threshold=1e-4)
+        preds = np.array([0.02, -0.03, 0.00001], dtype=np.float64)
+        weights = np.array([0.5, 0.3, 0.2], dtype=np.float64)
+
+        h_epi, h_dir, rho, probs = calc.compute_epistemic_entropy(
+            predictions=preds,
+            weights=weights,
+            aleatoric_variance=0.01,
+            epistemic_variance=0.005,
+        )
+
+        state = CircuitBreakerState(
+            tier=CircuitBreakerTier.NORMAL,
+            active_bars_in_tier=1,
+            continuous_haircut=0.85,
+            epistemic_entropy=h_epi,
+            directional_entropy=h_dir,
+            epistemic_ratio=rho,
+            composite_shock_score=0.25,
+            directional_probabilities=probs,
+            step_index=1,
+        )
+
+        assert state.epistemic_entropy == h_epi
+        assert state.directional_entropy == h_dir
+        assert state.epistemic_ratio == rho
+        assert np.array_equal(state.directional_probabilities, probs)

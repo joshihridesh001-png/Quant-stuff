@@ -377,3 +377,251 @@ class CircuitBreakerDecision:
             is_throttled=(action_tier == CircuitBreakerTier.CAUTION),
             state=state,
         )
+
+
+class EpistemicEntropyCalculator:
+    """Calculates directional consensus, normalized Shannon entropy, and epistemic uncertainty ratio.
+
+    Implements:
+    - 3-simplex directional consensus probabilities (p_+, p_-, p_0)
+    - Normalized Shannon directional entropy:
+        H_dir = -sum_{s in {+, -, 0}} p_s ln(p_s + epsilon)
+        H_dir_tilde = clip(H_dir / ln(3), 0.0, 1.0)
+    - Epistemic uncertainty ratio:
+        rho_epistemic = sigma^2_epistemic / (sigma^2_aleatoric + sigma^2_epistemic)
+    - Composite epistemic entropy:
+        H_epistemic = H_dir_tilde * sqrt(rho_epistemic)
+
+    Enforces Invariants:
+    - INV-CB-004: Strict simplex conservation on directional probabilities.
+    - INV-CB-005: Immediate defensive failure on non-finite data (NaN/Inf).
+    """
+
+    def __init__(self, sign_threshold: float = 1e-4, epsilon_log: float = 1e-30) -> None:
+        """Initialize EpistemicEntropyCalculator with defensive hyperparameter validation.
+
+        Args:
+            sign_threshold: Directional deadband threshold delta_sign >= 0.0 (default 1e-4).
+            epsilon_log: Numerical regularization constant epsilon_log > 0.0 (default 1e-30).
+        """
+        if not isinstance(sign_threshold, (int, float)) or isinstance(sign_threshold, bool):
+            raise InvalidCircuitBreakerInputException(
+                f"sign_threshold must be a float, got {type(sign_threshold)}"
+            )
+        if not math.isfinite(sign_threshold):
+            raise DegenerateCircuitBreakerException(
+                f"sign_threshold must be a finite float, got {sign_threshold}"
+            )
+        if sign_threshold < 0.0:
+            raise InvalidCircuitBreakerInputException(
+                f"sign_threshold must be non-negative (>= 0.0), got {sign_threshold}"
+            )
+
+        if not isinstance(epsilon_log, (int, float)) or isinstance(epsilon_log, bool):
+            raise InvalidCircuitBreakerInputException(
+                f"epsilon_log must be a float, got {type(epsilon_log)}"
+            )
+        if not math.isfinite(epsilon_log):
+            raise DegenerateCircuitBreakerException(
+                f"epsilon_log must be a finite float, got {epsilon_log}"
+            )
+        if epsilon_log <= 0.0:
+            raise InvalidCircuitBreakerInputException(
+                f"epsilon_log must be strictly positive (> 0.0), got {epsilon_log}"
+            )
+
+        self._sign_threshold: float = float(sign_threshold)
+        self._epsilon_log: float = float(epsilon_log)
+
+    @property
+    def sign_threshold(self) -> float:
+        """Directional deadband threshold delta_sign."""
+        return self._sign_threshold
+
+    @property
+    def epsilon_log(self) -> float:
+        """Logarithmic numerical regularization epsilon_log."""
+        return self._epsilon_log
+
+    @classmethod
+    def from_config(
+        cls, config: CircuitBreakerConfig, epsilon_log: float = 1e-30
+    ) -> EpistemicEntropyCalculator:
+        """Create an EpistemicEntropyCalculator from a CircuitBreakerConfig instance."""
+        if not isinstance(config, CircuitBreakerConfig):
+            raise InvalidCircuitBreakerInputException(
+                f"config must be an instance of CircuitBreakerConfig, got {type(config)}"
+            )
+        return cls(sign_threshold=config.sign_threshold, epsilon_log=epsilon_log)
+
+    def compute_directional_consensus(
+        self, predictions: np.ndarray, weights: np.ndarray
+    ) -> np.ndarray:
+        """Vectorized evaluation of model predictions partitioned into 3 directional buckets.
+
+        Positive: y_k > delta_sign ==> p_+ = sum_{k in pos} w_k
+        Negative: y_k < -delta_sign ==> p_- = sum_{k in neg} w_k
+        Neutral: |y_k| <= delta_sign ==> p_0 = sum_{k in neu} w_k
+
+        Guarantees INV-CB-004:
+            Returns a 1D float64 array of shape (3,), non-negative, summing to 1.0 +/- 1e-10.
+        """
+        if not isinstance(predictions, np.ndarray):
+            raise InvalidCircuitBreakerInputException(
+                f"predictions must be a NumPy array, got {type(predictions)}"
+            )
+        if not isinstance(weights, np.ndarray):
+            raise InvalidCircuitBreakerInputException(
+                f"weights must be a NumPy array, got {type(weights)}"
+            )
+
+        if predictions.ndim != 1:
+            raise InvalidCircuitBreakerInputException(
+                f"predictions must be 1D, got ndim={predictions.ndim}"
+            )
+        if weights.ndim != 1:
+            raise InvalidCircuitBreakerInputException(
+                f"weights must be 1D, got ndim={weights.ndim}"
+            )
+
+        if len(predictions) != len(weights):
+            raise InvalidCircuitBreakerInputException(
+                f"predictions length ({len(predictions)}) must match weights length ({len(weights)})"
+            )
+        if len(predictions) == 0:
+            raise InvalidCircuitBreakerInputException(
+                "predictions and weights cannot be empty (K >= 1 required)"
+            )
+
+        # INV-CB-005 non-finite validation
+        if not np.all(np.isfinite(predictions)):
+            raise DegenerateCircuitBreakerException(
+                "predictions contains non-finite values (NaN or Inf)"
+            )
+        if not np.all(np.isfinite(weights)):
+            raise DegenerateCircuitBreakerException(
+                "weights contains non-finite values (NaN or Inf)"
+            )
+
+        if np.any(weights < 0.0):
+            raise InvalidCircuitBreakerInputException("weights must be non-negative")
+
+        weights_sum = float(np.sum(weights))
+        if abs(weights_sum - 1.0) > 1e-10:
+            raise InvalidCircuitBreakerInputException(
+                f"weights must sum to 1.0 +/- 1e-10, got {weights_sum}"
+            )
+
+        pos_mask = predictions > self._sign_threshold
+        neg_mask = predictions < -self._sign_threshold
+        neu_mask = np.abs(predictions) <= self._sign_threshold
+
+        p_pos = max(0.0, float(np.sum(weights[pos_mask])))
+        p_neg = max(0.0, float(np.sum(weights[neg_mask])))
+        p_neu = max(0.0, float(np.sum(weights[neu_mask])))
+
+        return np.array([p_pos, p_neg, p_neu], dtype=np.float64)
+
+    def compute_directional_entropy(self, directional_probs: np.ndarray) -> float:
+        """Calculates normalized Shannon directional entropy in [0.0, 1.0].
+
+        H_dir = -sum_{s in {+, -, 0}} p_s ln(p_s + epsilon_log)
+        H_dir_tilde = clip(H_dir / ln(3), 0.0, 1.0)
+
+        Guarantees:
+            Unanimous consensus [1, 0, 0] ==> 0.0
+            Maximum confusion [1/3, 1/3, 1/3] ==> 1.0
+            50/50 polarization [0.5, 0.5, 0.0] ==> ln(2)/ln(3) ~= 0.6309
+        """
+        if not isinstance(directional_probs, np.ndarray):
+            raise InvalidCircuitBreakerInputException(
+                f"directional_probs must be a NumPy array, got {type(directional_probs)}"
+            )
+        if directional_probs.shape != (3,):
+            raise InvalidCircuitBreakerInputException(
+                f"directional_probs must have shape (3,), got {directional_probs.shape}"
+            )
+        if not np.all(np.isfinite(directional_probs)):
+            raise DegenerateCircuitBreakerException(
+                "directional_probs contains non-finite values (NaN or Inf)"
+            )
+        if np.any(directional_probs < 0.0):
+            raise InvalidCircuitBreakerInputException(
+                "directional_probs components must be non-negative"
+            )
+        prob_sum = float(np.sum(directional_probs))
+        if abs(prob_sum - 1.0) > 1e-10:
+            raise InvalidCircuitBreakerInputException(
+                f"directional_probs must sum to 1.0 +/- 1e-10, got {prob_sum}"
+            )
+
+        raw_entropy = -float(
+            np.sum(directional_probs * np.log(directional_probs + self._epsilon_log))
+        )
+        normalized_entropy = raw_entropy / math.log(3.0)
+        return float(np.clip(normalized_entropy, 0.0, 1.0)) + 0.0
+
+    def compute_epistemic_ratio(
+        self, aleatoric_variance: float, epistemic_variance: float
+    ) -> float:
+        """Calculates fraction of predictive variance from epistemic uncertainty in [0.0, 1.0).
+
+        rho_epistemic = sigma^2_epistemic / (sigma^2_aleatoric + sigma^2_epistemic)
+
+        Guarantees:
+            When sigma^2_epistemic == 0.0 ==> rho_epistemic == 0.0
+            As sigma^2_epistemic >> sigma^2_aleatoric ==> rho_epistemic -> 1.0
+        """
+        if not isinstance(aleatoric_variance, (int, float)) or isinstance(aleatoric_variance, bool):
+            raise InvalidCircuitBreakerInputException(
+                f"aleatoric_variance must be a float, got {type(aleatoric_variance)}"
+            )
+        if not isinstance(epistemic_variance, (int, float)) or isinstance(epistemic_variance, bool):
+            raise InvalidCircuitBreakerInputException(
+                f"epistemic_variance must be a float, got {type(epistemic_variance)}"
+            )
+
+        if not (math.isfinite(aleatoric_variance) and math.isfinite(epistemic_variance)):
+            raise DegenerateCircuitBreakerException(
+                f"Variances must be finite floats, got aleatoric={aleatoric_variance}, epistemic={epistemic_variance}"
+            )
+
+        if aleatoric_variance <= 0.0:
+            raise InvalidCircuitBreakerInputException(
+                f"aleatoric_variance must be strictly positive (> 0.0), got {aleatoric_variance}"
+            )
+        if epistemic_variance < 0.0:
+            raise InvalidCircuitBreakerInputException(
+                f"epistemic_variance must be non-negative (>= 0.0), got {epistemic_variance}"
+            )
+
+        total_var = aleatoric_variance + epistemic_variance
+        ratio = epistemic_variance / total_var
+        return float(np.clip(ratio, 0.0, 1.0)) + 0.0
+
+    def compute_epistemic_entropy(
+        self,
+        predictions: np.ndarray,
+        weights: np.ndarray,
+        aleatoric_variance: float,
+        epistemic_variance: float,
+    ) -> tuple[float, float, float, np.ndarray]:
+        """Calculates composite epistemic entropy combining directional consensus and epistemic ratio.
+
+        H_epistemic = H_dir_tilde * sqrt(rho_epistemic) in [0.0, 1.0]
+
+        Returns:
+            Tuple of:
+            - composite_epistemic_entropy: float in [0.0, 1.0]
+            - directional_entropy: float in [0.0, 1.0]
+            - epistemic_ratio: float in [0.0, 1.0)
+            - directional_probabilities: np.ndarray of shape (3,) summing to 1.0 +/- 1e-10
+        """
+        directional_probs = self.compute_directional_consensus(predictions, weights)
+        directional_entropy = self.compute_directional_entropy(directional_probs)
+        epistemic_ratio = self.compute_epistemic_ratio(aleatoric_variance, epistemic_variance)
+
+        composite_entropy = directional_entropy * math.sqrt(epistemic_ratio)
+        bounded_composite = float(np.clip(composite_entropy, 0.0, 1.0)) + 0.0
+
+        return bounded_composite, directional_entropy, epistemic_ratio, directional_probs
