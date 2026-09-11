@@ -755,3 +755,142 @@ class DependentNonDominatedSorter:
                 fronts.append([cand_idx])
 
         return fronts, infeasible_indices
+
+
+class BoundaryAnchoredRVEARanker:
+    """High-level facade executing multi-objective Pareto ranking (BA-ARVEA-SO).
+
+    Functional Purpose:
+        Coordinates SVDSubspaceOrthogonalArchive, AdaptiveReferenceLattice, and
+        DependentNonDominatedSorter to evaluate population trade-offs, execute
+        ENS-SS sorting under Memmel-Ledoit-Wolf covariance, compute APD diversity rankings,
+        and manage historical memory.
+    """
+
+    def __init__(
+        self,
+        archive: SVDSubspaceOrthogonalArchive | None = None,
+        lattice: AdaptiveReferenceLattice | None = None,
+        sorter: DependentNonDominatedSorter | None = None,
+    ) -> None:
+        """Initialize ranker with component instances or default implementations.
+
+        Args:
+            archive: SVD subspace orthogonal archive instance.
+            lattice: Boundary-anchored adaptive reference lattice instance.
+            sorter: Dependent non-dominated sorter instance.
+        """
+        self._archive = archive if archive is not None else SVDSubspaceOrthogonalArchive()
+        self._lattice = lattice if lattice is not None else AdaptiveReferenceLattice()
+        self._sorter = sorter if sorter is not None else DependentNonDominatedSorter()
+
+    def rank_population(
+        self,
+        candidates: list[CandidateFitness],
+        generation: int,
+        max_generations: int,
+        auto_admit: bool = True,
+    ) -> RankingResult:
+        """Execute complete multi-objective Pareto ranking across a population generation.
+
+        Functional Purpose:
+            Evaluates orthogonal novelty via thin SVD projection, constructs 3D objective
+            space, runs ENS-SS with Memmel-Ledoit-Wolf dependent dominance, normalizes
+            feasible fronts, computes APD metrics, and auto-admits Front-1 elites.
+
+        Args:
+            candidates: Sequence of CandidateFitness records for current generation.
+            generation: Current generation index (0-based or 1-based).
+            max_generations: Total number of planned evolutionary generations.
+            auto_admit: Flag whether to automatically admit Front-1 candidates to SVD archive.
+
+        Returns:
+            RankingResult bundle with sorted fronts, infeasible cohort, and active rays.
+        """
+        n_cand = len(candidates)
+        if n_cand == 0:
+            return RankingResult(
+                fronts=(),
+                infeasible_ids=(),
+                active_reference_rays=self._lattice.rays,
+                archive_size=self._archive.archive_size,
+                subspace_rank=self._archive.subspace_rank,
+            )
+
+        # Extract residual series and viability mask
+        residual_batch = np.vstack([c.residual_series for c in candidates])
+        viability_mask = np.array(
+            [bool(c.is_feasible and c.dsr >= 0.50) for c in candidates], dtype=bool
+        )
+
+        # Compute SVD subspace orthogonal novelty (1 - R^2)
+        novelties = self._archive.compute_novelty(residual_batch, viability_mask)
+
+        # Construct raw uniform minimization objective matrix in R^{N x 3}
+        # f_1 = -DSR, f_2 = Minimax Regret, f_3 = -Novelty
+        raw_objectives = np.zeros((n_cand, 3), dtype=np.float64)
+        for i in range(n_cand):
+            raw_objectives[i, 0] = -candidates[i].dsr
+            raw_objectives[i, 1] = candidates[i].minimax_regret
+            raw_objectives[i, 2] = -novelties[i]
+
+        # Partition into non-dominated Pareto fronts using ENS-SS
+        front_indices, infeasible_indices = self._sorter.sort(candidates, raw_objectives)
+        infeasible_ids = tuple(candidates[idx].candidate_id for idx in infeasible_indices)
+
+        if not front_indices:
+            return RankingResult(
+                fronts=(),
+                infeasible_ids=infeasible_ids,
+                active_reference_rays=self._lattice.rays,
+                archive_size=self._archive.archive_size,
+                subspace_rank=self._archive.subspace_rank,
+            )
+
+        # Extract feasible solutions and compute ideal/nadir points for normalization
+        feasible_indices: list[int] = [idx for front in front_indices for idx in front]
+        feas_objs = raw_objectives[feasible_indices]
+
+        z_min = np.min(feas_objs, axis=0)
+        z_max = np.max(feas_objs, axis=0)
+        spread = np.maximum(z_max - z_min, 1e-12)
+
+        # Normalized objective coordinates in [0, 1]^3
+        norm_objectives = np.zeros((n_cand, 3), dtype=np.float64)
+        norm_objectives[feasible_indices] = (feas_objs - z_min) / spread
+
+        # Compute APD scores and ray associations for feasible candidates
+        gen_ratio = float(generation) / max(1.0, float(max_generations))
+        associations, _, apd_scores = self._lattice.associate_and_penalize(
+            norm_objectives, gen_ratio
+        )
+
+        # Construct ParetoFront objects, sorting each front by APD ascending
+        fronts: list[ParetoFront] = []
+        for rank_num, front_list in enumerate(front_indices, start=1):
+            sorted_front = sorted(front_list, key=lambda idx: float(apd_scores[idx]))
+            c_ids = tuple(candidates[idx].candidate_id for idx in sorted_front)
+            c_apds = tuple(float(apd_scores[idx]) for idx in sorted_front)
+            fronts.append(ParetoFront(rank=rank_num, candidate_ids=c_ids, apd_scores=c_apds))
+
+        # Auto-admit Front-1 elites into the SVD subspace archive
+        if auto_admit and fronts:
+            id_to_idx = {c.candidate_id: i for i, c in enumerate(candidates)}
+            for cand_id in fronts[0].candidate_ids:
+                idx = id_to_idx[cand_id]
+                cand = candidates[idx]
+                self._archive.admit(cand.candidate_id, cand.residual_series, novelties[idx], cand.dsr)
+
+        # Adapt interior reference rays toward active solution clusters
+        if generation > 0 and generation % self._lattice._adaptation_interval == 0:
+            self._lattice.adapt_interior_rays(
+                norm_objectives[feasible_indices], associations[feasible_indices]
+            )
+
+        return RankingResult(
+            fronts=tuple(fronts),
+            infeasible_ids=infeasible_ids,
+            active_reference_rays=self._lattice.rays,
+            archive_size=self._archive.archive_size,
+            subspace_rank=self._archive.subspace_rank,
+        )
