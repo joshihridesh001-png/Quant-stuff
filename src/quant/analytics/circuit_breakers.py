@@ -21,6 +21,8 @@ from enum import IntEnum
 
 import numpy as np
 
+from quant.analytics.ensemble import EnsemblePrediction
+
 
 class CircuitBreakerError(Exception):
     """Base exception for all circuit breaker overlay errors and invariant violations."""
@@ -1150,3 +1152,74 @@ class CircuitBreakerOverlayEngine:
 
         # 8. Return (decision, new_state)
         return decision, new_state
+
+    def evaluate_prediction(
+        self,
+        prediction: EnsemblePrediction,
+        predictions: np.ndarray,
+        ambiguity_beta: float,
+        state: CircuitBreakerState,
+        cusum_shock: bool = False,
+        regime_is_panic: bool | None = None,
+    ) -> tuple[CircuitBreakerDecision, CircuitBreakerState]:
+        """Evaluate circuit breaker overlays directly from an upstream EnsemblePrediction payload.
+
+        Consumes an EnsemblePrediction from Phase 5 Step 1 (quant.analytics.ensemble) alongside
+        the raw model prediction vector, extracting posterior model weights, aleatoric variance,
+        epistemic disagreement variance, and automatically deriving panic regime status if unspecified.
+
+        Args:
+            prediction: EnsemblePrediction emitted by RegimeConditionedDMAEngine.
+            predictions: Model forecast vector of shape (K,).
+            ambiguity_beta: Macroeconomic ambiguity parameter beta > 0.0.
+            state: Preceding CircuitBreakerState snapshot.
+            cusum_shock: Boolean flag indicating exogenous CUSUM jump detection.
+            regime_is_panic: Optional boolean flag indicating panic volatility regime.
+                If None (default), derived from prediction.regime_probabilities via
+                argmax == 2 (Crisis / Panic regime).
+
+        Returns:
+            Tuple of (CircuitBreakerDecision, updated CircuitBreakerState).
+
+        Raises:
+            InvalidCircuitBreakerInputException: On schema, type mismatches, or invalid prediction instance.
+            DegenerateCircuitBreakerException: On non-finite values (INV-CB-005).
+        """
+        if not isinstance(prediction, EnsemblePrediction):
+            raise InvalidCircuitBreakerInputException(
+                f"prediction must be an instance of EnsemblePrediction, got {type(prediction)}"
+            )
+
+        if regime_is_panic is None:
+            panic_flag = bool(np.argmax(prediction.regime_probabilities) == 2)
+        elif isinstance(regime_is_panic, bool) and type(regime_is_panic) is bool:
+            panic_flag = regime_is_panic
+        else:
+            raise InvalidCircuitBreakerInputException(
+                f"regime_is_panic must be a boolean or None, got {type(regime_is_panic)}"
+            )
+
+        return self.evaluate(
+            predictions=predictions,
+            weights=prediction.model_weights,
+            aleatoric_variance=prediction.aleatoric_variance,
+            epistemic_variance=prediction.epistemic_variance,
+            ambiguity_beta=ambiguity_beta,
+            state=state,
+            cusum_shock=cusum_shock,
+            regime_is_panic=panic_flag,
+        )
+
+
+__all__ = [
+    "CircuitBreakerConfig",
+    "CircuitBreakerDecision",
+    "CircuitBreakerError",
+    "CircuitBreakerOverlayEngine",
+    "CircuitBreakerState",
+    "CircuitBreakerTier",
+    "ContinuousHaircutCalculator",
+    "DegenerateCircuitBreakerException",
+    "EpistemicEntropyCalculator",
+    "InvalidCircuitBreakerInputException",
+]

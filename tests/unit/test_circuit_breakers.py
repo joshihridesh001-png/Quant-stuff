@@ -2070,3 +2070,573 @@ class TestCircuitBreakerOverlayEngine:
         ]
         assert history_tiers == expected_sequence
         assert state.step_index == 16
+
+
+class TestCircuitBreakerMasterIntegration:
+    """Master integration tests for Circuit Breaker Overlays subsystem (Phase 5 Step 2 Task 5).
+
+    Covers:
+    - evaluate_prediction integration with synthetic and real EnsemblePrediction.
+    - Automatic panic regime derivation and explicit override.
+    - Strict input validation and defensive error trapping.
+    - 50-bar rolling multi-regime simulation validating invariant preservation:
+      * INV-CB-001: continuous_haircut and execution_haircut in [0.0, 1.0].
+      * INV-CB-002: action_tier is strictly a CircuitBreakerTier.
+      * INV-CB-003: Hysteresis dwell-time and recovery barriers enforced.
+      * INV-CB-004: Directional consensus probabilities strictly sum to 1.0.
+      * INV-CB-005: Non-finite inputs trap.
+      * Lookahead-free causal flow: step_index incrementing monotonically.
+    - Cross-subsystem end-to-end pipeline with RegimeConditionedDMAEngine.
+    - Benchmark SLA: K=100 models evaluation latency <= 0.20ms (INV-CB-006).
+    - Public export of all 10 domain symbols in quant.analytics.__init__.py and __all__.
+    """
+
+    def test_public_symbol_exports(self) -> None:
+        """Verify all 10 circuit breaker domain symbols are exported in quant.analytics.__init__ and __all__."""
+        import quant.analytics as qa
+
+        expected_symbols = [
+            "CircuitBreakerTier",
+            "CircuitBreakerConfig",
+            "CircuitBreakerState",
+            "CircuitBreakerDecision",
+            "CircuitBreakerError",
+            "DegenerateCircuitBreakerException",
+            "InvalidCircuitBreakerInputException",
+            "EpistemicEntropyCalculator",
+            "ContinuousHaircutCalculator",
+            "CircuitBreakerOverlayEngine",
+        ]
+
+        for sym in expected_symbols:
+            assert hasattr(qa, sym), f"quant.analytics is missing exported symbol '{sym}'"
+            assert sym in qa.__all__, f"quant.analytics.__all__ is missing symbol '{sym}'"
+            exported_obj = getattr(qa, sym)
+            assert exported_obj is not None
+
+    def test_evaluate_prediction_with_synthetic_ensemble_prediction(self) -> None:
+        """Verify evaluate_prediction extracts properties and matches direct evaluate output."""
+        from quant.analytics.ensemble import EnsemblePrediction
+
+        engine = CircuitBreakerOverlayEngine()
+        state = engine.initialize_state()
+
+        weights = np.array([0.4, 0.4, 0.2], dtype=np.float64)
+        preds = np.array([0.02, -0.01, 0.00005], dtype=np.float64)
+        aleatoric = 0.0004
+        epistemic = 0.0001
+
+        prediction = EnsemblePrediction(
+            point_prediction=0.005,
+            aleatoric_variance=aleatoric,
+            epistemic_variance=epistemic,
+            total_variance=aleatoric + epistemic,
+            model_weights=weights,
+            regime_probabilities=np.array([0.8, 0.1, 0.1], dtype=np.float64),
+            effective_models=2.8,
+            volatility_forgetting_factor=0.96,
+            ambiguity_shrinkage_weight=0.05,
+        )
+
+        dec, next_state = engine.evaluate_prediction(
+            prediction=prediction,
+            predictions=preds,
+            ambiguity_beta=1.5,
+            state=state,
+            cusum_shock=False,
+            regime_is_panic=None,
+        )
+
+        # Direct evaluation comparison
+        expected_dec, expected_state = engine.evaluate(
+            predictions=preds,
+            weights=weights,
+            aleatoric_variance=aleatoric,
+            epistemic_variance=epistemic,
+            ambiguity_beta=1.5,
+            state=state,
+            cusum_shock=False,
+            regime_is_panic=False,  # argmax([0.8, 0.1, 0.1]) == 0 != 2
+        )
+
+        assert dec.action_tier == expected_dec.action_tier
+        assert dec.execution_haircut == expected_dec.execution_haircut
+        assert dec.is_halted == expected_dec.is_halted
+        assert dec.is_throttled == expected_dec.is_throttled
+        assert next_state.tier == expected_state.tier
+        assert next_state.active_bars_in_tier == expected_state.active_bars_in_tier
+        assert math.isclose(next_state.continuous_haircut, expected_state.continuous_haircut)
+        assert math.isclose(next_state.epistemic_entropy, expected_state.epistemic_entropy)
+        assert math.isclose(next_state.directional_entropy, expected_state.directional_entropy)
+        assert math.isclose(next_state.epistemic_ratio, expected_state.epistemic_ratio)
+        assert math.isclose(next_state.composite_shock_score, expected_state.composite_shock_score)
+        assert np.allclose(
+            next_state.directional_probabilities, expected_state.directional_probabilities
+        )
+        assert next_state.step_index == expected_state.step_index
+        assert next_state.step_index == 1
+        assert 0.0 <= dec.execution_haircut <= 1.0
+
+    def test_evaluate_prediction_panic_derivation_from_regime_probabilities(self) -> None:
+        """Verify automatic derivation of panic regime from regime_probabilities argmax == 2."""
+        from quant.analytics.ensemble import EnsemblePrediction
+
+        engine = CircuitBreakerOverlayEngine()
+        state = engine.initialize_state()
+
+        weights = np.array([0.5, 0.5], dtype=np.float64)
+        preds = np.array([0.001, 0.001], dtype=np.float64)
+
+        # 1. Regime 2 dominant -> panic derived as True; with cusum_shock=True triggers emergency HALT
+        pred_panic = EnsemblePrediction(
+            point_prediction=0.001,
+            aleatoric_variance=0.0004,
+            epistemic_variance=0.0001,
+            total_variance=0.0005,
+            model_weights=weights,
+            regime_probabilities=np.array([0.1, 0.1, 0.8], dtype=np.float64),
+            effective_models=2.0,
+            volatility_forgetting_factor=0.95,
+            ambiguity_shrinkage_weight=0.1,
+        )
+        dec_panic, state_panic = engine.evaluate_prediction(
+            prediction=pred_panic,
+            predictions=preds,
+            ambiguity_beta=1.0,
+            state=state,
+            cusum_shock=True,
+            regime_is_panic=None,
+        )
+        assert dec_panic.action_tier == CircuitBreakerTier.HALT
+        assert dec_panic.is_halted is True
+        assert state_panic.tier == CircuitBreakerTier.HALT
+
+        # 2. Regime 1 dominant (Volatile, not Crisis) -> panic derived as False; cusum_shock does not force HALT
+        pred_volatile = EnsemblePrediction(
+            point_prediction=0.001,
+            aleatoric_variance=0.0004,
+            epistemic_variance=0.0001,
+            total_variance=0.0005,
+            model_weights=weights,
+            regime_probabilities=np.array([0.1, 0.8, 0.1], dtype=np.float64),
+            effective_models=2.0,
+            volatility_forgetting_factor=0.95,
+            ambiguity_shrinkage_weight=0.1,
+        )
+        dec_vol, state_vol = engine.evaluate_prediction(
+            prediction=pred_volatile,
+            predictions=preds,
+            ambiguity_beta=1.0,
+            state=state,
+            cusum_shock=True,
+            regime_is_panic=None,
+        )
+        assert dec_vol.action_tier == CircuitBreakerTier.NORMAL
+        assert dec_vol.is_halted is False
+
+        # 3. Explicit override: regime_is_panic=False overrides panic regime probabilities
+        dec_override_false, _ = engine.evaluate_prediction(
+            prediction=pred_panic,
+            predictions=preds,
+            ambiguity_beta=1.0,
+            state=state,
+            cusum_shock=True,
+            regime_is_panic=False,
+        )
+        assert dec_override_false.action_tier == CircuitBreakerTier.NORMAL
+
+        # 4. Explicit override: regime_is_panic=True overrides non-panic regime probabilities
+        dec_override_true, _ = engine.evaluate_prediction(
+            prediction=pred_volatile,
+            predictions=preds,
+            ambiguity_beta=1.0,
+            state=state,
+            cusum_shock=True,
+            regime_is_panic=True,
+        )
+        assert dec_override_true.action_tier == CircuitBreakerTier.HALT
+
+    def test_evaluate_prediction_input_validation(self) -> None:
+        """Verify defensive error handling in evaluate_prediction."""
+        from quant.analytics.ensemble import EnsemblePrediction
+
+        engine = CircuitBreakerOverlayEngine()
+        state = engine.initialize_state()
+
+        weights = np.array([0.5, 0.5], dtype=np.float64)
+        preds = np.array([0.001, 0.001], dtype=np.float64)
+        valid_pred = EnsemblePrediction(
+            point_prediction=0.001,
+            aleatoric_variance=0.0004,
+            epistemic_variance=0.0001,
+            total_variance=0.0005,
+            model_weights=weights,
+            regime_probabilities=np.array([0.7, 0.2, 0.1], dtype=np.float64),
+            effective_models=2.0,
+            volatility_forgetting_factor=0.95,
+            ambiguity_shrinkage_weight=0.1,
+        )
+
+        # 1. Invalid prediction object type
+        with pytest.raises(
+            InvalidCircuitBreakerInputException,
+            match="prediction must be an instance of EnsemblePrediction",
+        ):
+            engine.evaluate_prediction(
+                prediction="not_a_prediction",  # type: ignore[arg-type]
+                predictions=preds,
+                ambiguity_beta=1.0,
+                state=state,
+            )
+
+        # 2. Invalid regime_is_panic type
+        with pytest.raises(
+            InvalidCircuitBreakerInputException,
+            match="regime_is_panic must be a boolean or None",
+        ):
+            engine.evaluate_prediction(
+                prediction=valid_pred,
+                predictions=preds,
+                ambiguity_beta=1.0,
+                state=state,
+                regime_is_panic="true",  # type: ignore[arg-type]
+            )
+
+        with pytest.raises(
+            InvalidCircuitBreakerInputException,
+            match="regime_is_panic must be a boolean or None",
+        ):
+            engine.evaluate_prediction(
+                prediction=valid_pred,
+                predictions=preds,
+                ambiguity_beta=1.0,
+                state=state,
+                regime_is_panic=1,  # type: ignore[arg-type]
+            )
+
+        # 3. Shape mismatch between predictions and prediction.model_weights
+        with pytest.raises(
+            InvalidCircuitBreakerInputException,
+            match="must match weights",
+        ):
+            engine.evaluate_prediction(
+                prediction=valid_pred,
+                predictions=np.array([0.001, 0.002, 0.003], dtype=np.float64),
+                ambiguity_beta=1.0,
+                state=state,
+            )
+
+        # 4. Non-finite predictions
+        with pytest.raises(DegenerateCircuitBreakerException, match="non-finite"):
+            engine.evaluate_prediction(
+                prediction=valid_pred,
+                predictions=np.array([np.nan, 0.001], dtype=np.float64),
+                ambiguity_beta=1.0,
+                state=state,
+            )
+
+        # 5. Non-finite ambiguity_beta
+        with pytest.raises(DegenerateCircuitBreakerException, match="INV-CB-005"):
+            engine.evaluate_prediction(
+                prediction=valid_pred,
+                predictions=preds,
+                ambiguity_beta=float("inf"),
+                state=state,
+            )
+
+    def test_evaluate_prediction_with_real_rd_dma_engine(self) -> None:
+        """Verify cross-subsystem integration between RegimeConditionedDMAEngine and evaluate_prediction."""
+        from quant.analytics.ensemble import RegimeConditionedDMAEngine
+
+        dma_engine = RegimeConditionedDMAEngine()
+        cb_engine = CircuitBreakerOverlayEngine()
+
+        K = 5
+        dma_state = dma_engine.initialize_state(n_models=K)
+        cb_state = cb_engine.initialize_state()
+
+        P_trans = np.array(
+            [
+                [0.8, 0.15, 0.05],
+                [0.1, 0.8, 0.1],
+                [0.05, 0.15, 0.8],
+            ],
+            dtype=np.float64,
+        )
+
+        preds = np.array([0.01, 0.012, -0.008, 0.015, -0.005], dtype=np.float64)
+        variances = np.full(K, 0.0004, dtype=np.float64)
+        regime_probs = np.array([0.7, 0.2, 0.1], dtype=np.float64)
+
+        ens_pred, dma_state = dma_engine.predict_and_update(
+            predictions=preds,
+            variances=variances,
+            realized_return=0.005,
+            realized_vol=0.015,
+            regime_probs=regime_probs,
+            transition_matrix=P_trans,
+            ambiguity_beta=1.2,
+            state=dma_state,
+        )
+
+        cb_dec, cb_state = cb_engine.evaluate_prediction(
+            prediction=ens_pred,
+            predictions=preds,
+            ambiguity_beta=1.2,
+            state=cb_state,
+        )
+
+        assert isinstance(cb_dec, CircuitBreakerDecision)
+        assert isinstance(cb_state, CircuitBreakerState)
+        assert cb_state.step_index == 1
+        assert 0.0 <= cb_dec.execution_haircut <= 1.0
+        assert cb_dec.action_tier in (
+            CircuitBreakerTier.NORMAL,
+            CircuitBreakerTier.CAUTION,
+            CircuitBreakerTier.DERISK,
+            CircuitBreakerTier.HALT,
+        )
+        assert math.isclose(float(np.sum(cb_state.directional_probabilities)), 1.0, abs_tol=1e-10)
+
+    def test_rolling_50_bar_simulation_across_regimes(self) -> None:
+        """50-bar rolling simulation across multiple regimes verifying stability, causal flow, and invariants."""
+        from quant.analytics.ensemble import EnsemblePrediction
+
+        engine = CircuitBreakerOverlayEngine(
+            CircuitBreakerConfig(dwell_time_bars=5, recovery_threshold=0.30)
+        )
+        state = engine.initialize_state()
+
+        rng = np.random.default_rng(123)
+        K = 6
+        step_indices: list[int] = []
+        action_tiers: list[CircuitBreakerTier] = []
+
+        for bar in range(1, 51):
+            if bar <= 15:
+                # Regime 0: Quiescent low-vol bull
+                preds = rng.normal(0.01, 0.001, size=K)  # strong positive consensus
+                weights = np.full(K, 1.0 / K)
+                aleatoric = 0.0001
+                epistemic = 0.00001
+                beta = 1.0
+                regime_probs = np.array([0.90, 0.08, 0.02])
+                cusum = False
+            elif bar <= 25:
+                # Regime 1: Moderate volatility surge / disagreement
+                preds = np.array([0.02, -0.02, 0.015, -0.018, 0.005, -0.006])  # polarization
+                weights = np.full(K, 1.0 / K)
+                aleatoric = 0.0005
+                epistemic = 0.0015  # high epistemic ratio
+                beta = 2.5
+                regime_probs = np.array([0.20, 0.70, 0.10])
+                cusum = False
+            elif bar <= 30:
+                # Regime 2: Severe panic crisis
+                preds = rng.normal(-0.05, 0.02, size=K)
+                weights = np.full(K, 1.0 / K)
+                aleatoric = 0.002
+                epistemic = 0.005
+                beta = 4.5
+                regime_probs = np.array([0.05, 0.10, 0.85])  # Panic regime
+                cusum = True  # CUSUM jump shock
+            elif bar <= 42:
+                # Tranquil recovery attempt, but within hysteresis dwell window
+                preds = rng.normal(0.008, 0.0005, size=K)  # strong positive consensus
+                weights = np.full(K, 1.0 / K)
+                aleatoric = 0.0001
+                epistemic = 0.000001
+                beta = 1.0
+                regime_probs = np.array([0.85, 0.10, 0.05])
+                cusum = False
+            else:
+                # Continued tranquil conditions
+                preds = rng.normal(0.008, 0.0005, size=K)
+                weights = np.full(K, 1.0 / K)
+                aleatoric = 0.0001
+                epistemic = 0.000001
+                beta = 1.0
+                regime_probs = np.array([0.90, 0.08, 0.02])
+                cusum = False
+
+            pred_payload = EnsemblePrediction(
+                point_prediction=float(np.mean(preds)),
+                aleatoric_variance=aleatoric,
+                epistemic_variance=epistemic,
+                total_variance=aleatoric + epistemic,
+                model_weights=weights,
+                regime_probabilities=regime_probs,
+                effective_models=float(K),
+                volatility_forgetting_factor=0.95,
+                ambiguity_shrinkage_weight=0.1,
+            )
+
+            dec, state = engine.evaluate_prediction(
+                prediction=pred_payload,
+                predictions=preds,
+                ambiguity_beta=beta,
+                state=state,
+                cusum_shock=cusum,
+            )
+
+            # Invariant checks per bar
+            # INV-CB-001
+            assert 0.0 <= state.continuous_haircut <= 1.0
+            assert 0.0 <= dec.execution_haircut <= 1.0
+            # INV-CB-002
+            assert isinstance(dec.action_tier, CircuitBreakerTier)
+            assert isinstance(state.tier, CircuitBreakerTier)
+            assert dec.action_tier == state.tier
+            # INV-CB-004
+            assert state.directional_probabilities.shape == (3,)
+            assert math.isclose(float(np.sum(state.directional_probabilities)), 1.0, abs_tol=1e-10)
+            assert np.all(state.directional_probabilities >= 0.0)
+            # INV-CB-005
+            assert math.isfinite(state.epistemic_entropy)
+            assert math.isfinite(state.directional_entropy)
+            assert math.isfinite(state.epistemic_ratio)
+            assert math.isfinite(state.composite_shock_score)
+            assert math.isfinite(dec.execution_haircut)
+            # Strict causal ordering (no lookahead, monotonic step_index)
+            assert state.step_index == bar
+
+            step_indices.append(state.step_index)
+            action_tiers.append(dec.action_tier)
+
+        assert step_indices == list(range(1, 51))
+        # Bar 26 was crisis with cusum shock and panic -> must be HALT
+        assert action_tiers[25] == CircuitBreakerTier.HALT
+        # Bars 26 to 30 were in crisis -> HALT sustained
+        for b in range(25, 30):
+            assert action_tiers[b] == CircuitBreakerTier.HALT
+        # Hysteresis lockout (INV-CB-003): at bar 31 (bar index 30), quiescent resumes.
+        # But dwell_time_bars is 5, and state was sustained in HALT.
+        # At bar 31: active_bars_in_tier was 5 during crisis (bars 26-30).
+        # At bar 31, dwell requirement (>= 5) is met and shock < 0.30 -> de-escalates to DERISK (not straight to NORMAL!).
+        assert action_tiers[30] == CircuitBreakerTier.DERISK
+        # Locked in DERISK for 5 bars: bars 31 (index 30), 32 (31), 33 (32), 34 (33), 35 (34).
+        for b in range(30, 35):
+            assert action_tiers[b] == CircuitBreakerTier.DERISK
+        # At bar 36 (index 35), steps down to CAUTION
+        assert action_tiers[35] == CircuitBreakerTier.CAUTION
+        # At bar 37 (index 36), CAUTION de-escalates to NORMAL
+        assert action_tiers[36] == CircuitBreakerTier.NORMAL
+
+    def test_cross_subsystem_rolling_pipeline_with_dma_engine(self) -> None:
+        """50-bar end-to-end rolling pipeline integration with RegimeConditionedDMAEngine."""
+        from quant.analytics.ensemble import RegimeConditionedDMAEngine
+
+        dma_engine = RegimeConditionedDMAEngine()
+        cb_engine = CircuitBreakerOverlayEngine(
+            CircuitBreakerConfig(dwell_time_bars=3, recovery_threshold=0.30)
+        )
+
+        K = 4
+        dma_state = dma_engine.initialize_state(n_models=K)
+        cb_state = cb_engine.initialize_state()
+
+        P_trans = np.array(
+            [
+                [0.85, 0.10, 0.05],
+                [0.10, 0.80, 0.10],
+                [0.05, 0.15, 0.80],
+            ],
+            dtype=np.float64,
+        )
+
+        rng = np.random.default_rng(999)
+        regime_probs = np.array([0.70, 0.20, 0.10], dtype=np.float64)
+
+        for bar in range(1, 51):
+            preds = rng.normal(0.002, 0.01, size=K)
+            variances = np.full(K, 0.0004)
+            ret = float(rng.normal(0.001, 0.01))
+            vol = float(max(0.001, rng.normal(0.015, 0.002)))
+
+            ens_pred, dma_state = dma_engine.predict_and_update(
+                predictions=preds,
+                variances=variances,
+                realized_return=ret,
+                realized_vol=vol,
+                regime_probs=regime_probs,
+                transition_matrix=P_trans,
+                ambiguity_beta=1.2,
+                state=dma_state,
+            )
+
+            # Update regime_probs using ens_pred forward prior for next bar
+            regime_probs = ens_pred.regime_probabilities
+
+            dec, cb_state = cb_engine.evaluate_prediction(
+                prediction=ens_pred,
+                predictions=preds,
+                ambiguity_beta=1.2,
+                state=cb_state,
+            )
+
+            assert cb_state.step_index == bar
+            assert 0.0 <= dec.execution_haircut <= 1.0
+            assert dec.action_tier in CircuitBreakerTier
+            assert math.isclose(
+                float(np.sum(cb_state.directional_probabilities)), 1.0, abs_tol=1e-10
+            )
+
+    def test_benchmark_sla_k100_sub_020ms(self) -> None:
+        """Verify Benchmark SLA: K=100 models evaluation latency <= 0.20ms (INV-CB-006)."""
+        import gc
+        import sys
+        import time
+
+        from quant.analytics.ensemble import EnsemblePrediction
+
+        if sys.gettrace() is not None:
+            pytest.skip("Skipping performance benchmark SLA test under active tracer/profiler")
+
+        engine = CircuitBreakerOverlayEngine()
+        state = engine.initialize_state()
+
+        K = 100
+        rng = np.random.default_rng(42)
+        raw_preds = rng.normal(0.001, 0.005, size=K)
+        weights = rng.uniform(0.1, 1.0, size=K)
+        weights /= np.sum(weights)
+
+        prediction = EnsemblePrediction(
+            point_prediction=float(np.sum(weights * raw_preds)),
+            aleatoric_variance=0.0004,
+            epistemic_variance=0.0002,
+            total_variance=0.0006,
+            model_weights=weights,
+            regime_probabilities=np.array([0.6, 0.3, 0.1], dtype=np.float64),
+            effective_models=float(1.0 / np.sum(weights**2)),
+            volatility_forgetting_factor=0.95,
+            ambiguity_shrinkage_weight=0.1,
+        )
+
+        # Warmup (15 iterations) to prime CPU cache, JIT/interpreter, and branch predictors
+        for _ in range(15):
+            _, state = engine.evaluate_prediction(
+                prediction=prediction,
+                predictions=raw_preds,
+                ambiguity_beta=1.5,
+                state=state,
+            )
+
+        gc.collect()
+
+        # Timed benchmark: 50 iterations
+        latencies = []
+        for _ in range(50):
+            t0 = time.perf_counter()
+            _, state = engine.evaluate_prediction(
+                prediction=prediction,
+                predictions=raw_preds,
+                ambiguity_beta=1.5,
+                state=state,
+            )
+            latencies.append(time.perf_counter() - t0)
+
+        median_latency_ms = float(np.median(latencies)) * 1000.0
+        assert median_latency_ms <= 0.20, (
+            f"INV-CB-006 Benchmark SLA violated: median latency {median_latency_ms:.4f}ms > 0.20ms for K={K}"
+        )
