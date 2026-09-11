@@ -317,3 +317,169 @@ class TestAdaptiveReferenceLattice:
         assert len(assoc) == 1
         assert apd[0] == 0.0
         assert np.isfinite(angles[0])
+
+
+class TestDependentNonDominatedSorter:
+    """Test suite for DependentNonDominatedSorter (Memmel-Ledoit-Wolf & ENS-SS)."""
+
+    def test_memmel_ledoit_wolf_covariance_scales_with_correlation(self) -> None:
+        """Memmel-Ledoit-Wolf SE is strictly lower when returns are strongly correlated."""
+        from quant.analytics.pareto_sorting import DependentNonDominatedSorter
+
+        sorter = DependentNonDominatedSorter()
+        t_bars = 500
+        np.random.seed(42)
+
+        base_returns = np.random.randn(t_bars)
+        # Highly correlated returns (rho ≈ 0.95)
+        r_corr = 0.95 * base_returns + 0.05 * np.random.randn(t_bars)
+        # Independent returns (rho ≈ 0.0)
+        r_indep = np.random.randn(t_bars)
+
+        se_correlated = sorter.compute_dependent_dsr_variance(
+            dsr_a=1.2, dsr_b=1.1, returns_a=base_returns, returns_b=r_corr
+        )
+        se_independent = sorter.compute_dependent_dsr_variance(
+            dsr_a=1.2, dsr_b=1.1, returns_a=base_returns, returns_b=r_indep
+        )
+
+        assert se_correlated < se_independent
+        assert se_correlated > 0.0
+
+    def test_dependent_dominance_detects_real_advantage_when_correlated(self) -> None:
+        """Delta DSR of 0.08 is statistically significant when rho=0.95, but not when rho=0.0."""
+        from quant.analytics.pareto_sorting import (
+            CandidateFitness,
+            DependentNonDominatedSorter,
+        )
+
+        sorter = DependentNonDominatedSorter()
+        t_bars = 300
+        np.random.seed(123)
+
+        r_base = np.random.randn(t_bars)
+        r_high_corr = 0.95 * r_base + 0.05 * np.random.randn(t_bars)
+        r_zero_corr = np.random.randn(t_bars)
+
+        res = np.random.randn(t_bars)
+
+        cand_a = CandidateFitness(
+            candidate_id="cand_a",
+            dsr=1.20,
+            minimax_regret=0.05,
+            return_series=r_base,
+            residual_series=res,
+            backtest_length=t_bars,
+            is_feasible=True,
+        )
+        cand_b_corr = CandidateFitness(
+            candidate_id="cand_b_corr",
+            dsr=1.12,  # Diff = 0.08
+            minimax_regret=0.05,
+            return_series=r_high_corr,
+            residual_series=res,
+            backtest_length=t_bars,
+            is_feasible=True,
+        )
+        cand_b_indep = CandidateFitness(
+            candidate_id="cand_b_indep",
+            dsr=1.12,  # Diff = 0.08
+            minimax_regret=0.05,
+            return_series=r_zero_corr,
+            residual_series=res,
+            backtest_length=t_bars,
+            is_feasible=True,
+        )
+
+        # Uniform minimization: [-DSR, Regret, -Novelty]
+        obj_a = np.array([-1.20, 0.05, -0.80])
+        obj_b_corr = np.array([-1.12, 0.05, -0.80])
+        obj_b_indep = np.array([-1.12, 0.05, -0.80])
+
+        # Under high correlation, delta DSR of 0.08 is statistically significant -> A dominates B
+        assert sorter.dominates(cand_a, cand_b_corr, obj_a, obj_b_corr) is True
+
+        # Under independence, delta DSR of 0.08 is swallowed by noise -> A does not dominate B
+        assert sorter.dominates(cand_a, cand_b_indep, obj_a, obj_b_indep) is False
+
+    def test_deb_feasibility_rule(self) -> None:
+        """Feasible candidate dominates infeasible candidate regardless of objective values."""
+        from quant.analytics.pareto_sorting import (
+            CandidateFitness,
+            DependentNonDominatedSorter,
+        )
+
+        sorter = DependentNonDominatedSorter()
+        t_bars = 150
+        r = np.random.randn(t_bars)
+
+        cand_feasible = CandidateFitness(
+            candidate_id="cand_feas",
+            dsr=0.60,
+            minimax_regret=0.10,
+            return_series=r,
+            residual_series=r,
+            backtest_length=t_bars,
+            is_feasible=True,
+        )
+        cand_infeasible = CandidateFitness(
+            candidate_id="cand_infeas",
+            dsr=2.50,  # Huge DSR, but violates constraints!
+            minimax_regret=0.001,
+            return_series=r,
+            residual_series=r,
+            backtest_length=t_bars,
+            is_feasible=False,
+        )
+
+        obj_feas = np.array([-0.60, 0.10, -0.50])
+        obj_infeas = np.array([-2.50, 0.001, -0.99])
+
+        # Feasible strictly dominates infeasible
+        assert sorter.dominates(cand_feasible, cand_infeasible, obj_feas, obj_infeas) is True
+        assert sorter.dominates(cand_infeasible, cand_feasible, obj_infeas, obj_feas) is False
+
+    def test_ens_ss_sorting_partition_conservation(self) -> None:
+        """INV-PAR-005: All candidates are partitioned into fronts or infeasible cohort."""
+        from quant.analytics.pareto_sorting import (
+            CandidateFitness,
+            DependentNonDominatedSorter,
+        )
+
+        sorter = DependentNonDominatedSorter()
+        t_bars = 100
+        np.random.seed(99)
+
+        candidates: list[CandidateFitness] = []
+        obj_list: list[list[float]] = []
+
+        for i in range(10):
+            r = np.random.randn(t_bars)
+            is_feas = i != 8  # 1 candidate is infeasible
+            dsr_val = 1.0 + float(i) * 0.1
+            fit = CandidateFitness(
+                candidate_id=f"cand_{i}",
+                dsr=dsr_val,
+                minimax_regret=0.05 + float(i) * 0.01,
+                return_series=r,
+                residual_series=r,
+                backtest_length=t_bars,
+                is_feasible=is_feas,
+            )
+            candidates.append(fit)
+            obj_list.append([-dsr_val, fit.minimax_regret, -0.5])
+
+        obj_matrix = np.array(obj_list)
+        fronts, infeasible = sorter.sort(candidates, obj_matrix)
+
+        # Infeasible candidate cand_8 must be in infeasible list
+        assert 8 in infeasible
+
+        # Partition conservation: union of fronts and infeasible set equals all 10 indices
+        partitioned = set(infeasible)
+        for f in fronts:
+            for idx in f:
+                assert idx not in partitioned, f"Duplicate candidate {idx} across fronts"
+                partitioned.add(idx)
+
+        assert partitioned == set(range(10))
