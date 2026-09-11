@@ -43,6 +43,7 @@ from quant.analytics.ensemble import (
     InvalidPredictionException,
 )
 
+
 class TestDomainEntitiesAndInvariants:
     def test_ensemble_config_defaults_and_validation(self) -> None:
         cfg = EnsembleConfig()
@@ -107,7 +108,9 @@ class TestDomainEntitiesAndInvariants:
             ambiguity_shrinkage_weight=0.0,
         )
         # Invariant INV-ENS-002: total == aleatoric + epistemic
-        assert pred.total_variance == pytest.approx(pred.aleatoric_variance + pred.epistemic_variance)
+        assert pred.total_variance == pytest.approx(
+            pred.aleatoric_variance + pred.epistemic_variance
+        )
 
         with pytest.raises(DegenerateEnsembleException):
             EnsemblePrediction(
@@ -164,7 +167,7 @@ class TestAdaptiveForgettingAndMarkovTransitions:
     def test_adaptive_forgetting_scales_with_volatility(self) -> None:
         cfg = EnsembleConfig()
         vaf = VolatilityAdaptiveForgetting(cfg, initial_mean_vol=0.01)
-        
+
         # In calm market (sigma < mean): alpha expands toward alpha_max
         alpha_calm = vaf.compute_alpha(realized_vol=0.005)
         assert alpha_calm > cfg.base_forgetting_factor
@@ -177,16 +180,20 @@ class TestAdaptiveForgettingAndMarkovTransitions:
 
     def test_predictive_forward_markov_transitions(self) -> None:
         # P_trans: 3x3 row-stochastic matrix
-        P_trans = np.array([
-            [0.80, 0.15, 0.05],
-            [0.10, 0.70, 0.20],
-            [0.05, 0.05, 0.90],
-        ])
+        P_trans = np.array(
+            [
+                [0.80, 0.15, 0.05],
+                [0.10, 0.70, 0.20],
+                [0.05, 0.05, 0.90],
+            ]
+        )
         p_current = np.array([0.1, 0.8, 0.1])  # Mostly Momentum
         # Forward prediction: p_{t+1|t} = P_trans^T * p_current
         p_next = predict_forward_regime_prior(p_current, P_trans)
         assert np.isclose(np.sum(p_next), 1.0)
-        assert p_next[2] > p_current[2]  # Panic probability increased due to momentum transition risk
+        assert (
+            p_next[2] > p_current[2]
+        )  # Panic probability increased due to momentum transition risk
 ```
 
 - [ ] **Step 2: Run test to verify failure**
@@ -228,22 +235,22 @@ git commit -m "feat(ensemble): implement volatility-adaptive forgetting and forw
 class TestAsymmetricDownsideLossScorer:
     def test_asymmetric_loss_penalizes_drawdowns_heavily(self) -> None:
         scorer = AsymmetricDownsideLossScorer(downside_penalty=2.50)
-        
+
         # Realized return is negative: market crashed -3%
         realized_return = -0.03
-        
+
         # Model 1 predicted positive: +2% (false long during crash)
         pred_false_long = np.array([0.02])
         loss_false_long = scorer.compute_losses(pred_false_long, realized_return)[0]
-        
+
         # Model 2 predicted negative: -2% (correct directional hedge)
         pred_hedge = np.array([-0.02])
         loss_hedge = scorer.compute_losses(pred_hedge, realized_return)[0]
-        
+
         # Model 1 must be penalized exponentially worse due to gamma_down cross-term
         assert loss_false_long > loss_hedge
         # Explicit formula verification: (y - y_hat)^2 + gamma * max(0, -y * y_hat)
-        expected_loss = (-0.03 - 0.02)**2 + 2.50 * (-(-0.03 * 0.02))
+        expected_loss = (-0.03 - 0.02) ** 2 + 2.50 * (-(-0.03 * 0.02))
         assert loss_false_long == pytest.approx(expected_loss)
 
     def test_downside_semi_variance_computation(self) -> None:
@@ -253,7 +260,7 @@ class TestAsymmetricDownsideLossScorer:
         semi_var = scorer.compute_downside_semi_variance(returns)
         assert semi_var > 0.0
         # Only negative deviations contribute
-        expected = np.mean(np.minimum(0.0, returns)**2)
+        expected = np.mean(np.minimum(0.0, returns) ** 2)
         assert semi_var == pytest.approx(expected)
 ```
 
@@ -298,12 +305,14 @@ class TestCorrelationAndMirrorDescentSolver:
     def test_tikhonov_correlation_regularizer_with_zero_variance_model(self) -> None:
         estimator = TikhonovCorrelationEstimator(ridge_shrinkage=0.05)
         # Model 0 and Model 1 normal, Model 2 flat zeros (inactive)
-        preds = np.array([
-            [0.01, -0.01, 0.0],
-            [0.02, -0.02, 0.0],
-            [0.00, 0.01, 0.0],
-            [0.03, -0.03, 0.0],
-        ])
+        preds = np.array(
+            [
+                [0.01, -0.01, 0.0],
+                [0.02, -0.02, 0.0],
+                [0.00, 0.01, 0.0],
+                [0.03, -0.03, 0.0],
+            ]
+        )
         C = estimator.compute_correlation_matrix(preds)
         assert C.shape == (3, 3)
         assert not np.isnan(C).any()
@@ -320,15 +329,17 @@ class TestCorrelationAndMirrorDescentSolver:
         K = 3
         # Model 0 and Model 1 are identical clones (corr = 1.0)
         # Model 2 is an independent orthogonal model (corr = 0.0 with both)
-        C = np.array([
-            [1.0, 0.95, 0.0],
-            [0.95, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ])
+        C = np.array(
+            [
+                [1.0, 0.95, 0.0],
+                [0.95, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
         # Equal loss scores for all three models
         scores = np.array([1.0, 1.0, 1.0])
         initial_w = np.full(K, 1.0 / K)
-        
+
         w_star = solver.solve(scores=scores, correlation_matrix=C, current_weights=initial_w)
         assert np.isclose(np.sum(w_star), 1.0)
         assert np.all(w_star > 0.0)
@@ -392,7 +403,7 @@ class TestRegimeConditionedDMAEngine:
         K = 5
         state = engine.initialize_state(n_models=K)
         P_trans = np.eye(3) * 0.8 + 0.0667
-        
+
         # Run 20 online steps
         for step in range(20):
             preds = np.random.normal(0.001, 0.005, K)
@@ -400,7 +411,7 @@ class TestRegimeConditionedDMAEngine:
             realized_return = 0.002
             realized_vol = 0.015
             regime_probs = np.array([0.6, 0.3, 0.1])
-            
+
             prediction, state = engine.predict_and_update(
                 predictions=preds,
                 variances=variances,
@@ -422,15 +433,16 @@ class TestRegimeConditionedDMAEngine:
         K = 100
         state = engine.initialize_state(n_models=K)
         P_trans = np.eye(3) * 0.8 + 0.0667
-        
+
         preds = np.random.normal(0.001, 0.005, K)
         variances = np.full(K, 0.0004)
         regime_probs = np.array([0.5, 0.3, 0.2])
-        
+
         import time
+
         # Warmup
         engine.predict_and_update(preds, variances, 0.001, 0.015, regime_probs, P_trans, 1.0, state)
-        
+
         # Timed benchmark
         times = []
         for _ in range(50):
@@ -439,7 +451,7 @@ class TestRegimeConditionedDMAEngine:
                 preds, variances, 0.001, 0.015, regime_probs, P_trans, 1.0, state
             )
             times.append(time.perf_counter() - t0)
-        
+
         mean_time_ms = np.mean(times) * 1000.0
         assert mean_time_ms <= 2.0, f"Benchmark SLA violated: {mean_time_ms:.3f}ms > 2.0ms"
 ```

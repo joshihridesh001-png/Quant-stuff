@@ -1153,9 +1153,7 @@ class TestAsymmetricDownsideLossScorer:
         # Normalized predictions: [0.04/1, 0.08/2, 0.12/3] = [0.04, 0.04, 0.04]
         y_realized = 0.04
 
-        losses = scorer.compute_losses(
-            nominal_predictions, y_realized, forecast_horizons=horizons
-        )
+        losses = scorer.compute_losses(nominal_predictions, y_realized, forecast_horizons=horizons)
         assert losses.shape == (3,)
         # All models have scaled prediction matching realized return exactly -> 0 loss
         assert np.allclose(losses, np.zeros(3))
@@ -1211,13 +1209,9 @@ class TestAsymmetricDownsideLossScorer:
         with pytest.raises(InvalidPredictionException, match="forecast_horizons"):
             scorer.compute_losses(valid_preds, valid_y, forecast_horizons=[1.0, 1.0, 1.0])  # type: ignore[arg-type]
         with pytest.raises(InvalidPredictionException, match="forecast_horizons"):
-            scorer.compute_losses(
-                valid_preds, valid_y, forecast_horizons=np.array([1.0, 2.0])
-            )
+            scorer.compute_losses(valid_preds, valid_y, forecast_horizons=np.array([1.0, 2.0]))
         with pytest.raises(InvalidPredictionException, match="forecast_horizons"):
-            scorer.compute_losses(
-                valid_preds, valid_y, forecast_horizons=np.array([1.0, 0.5, 2.0])
-            )
+            scorer.compute_losses(valid_preds, valid_y, forecast_horizons=np.array([1.0, 0.5, 2.0]))
         with pytest.raises(DegenerateEnsembleException, match="forecast_horizons"):
             scorer.compute_losses(
                 valid_preds, valid_y, forecast_horizons=np.array([1.0, np.nan, 2.0])
@@ -1341,4 +1335,3 @@ class TestAsymmetricDownsideLossScorer:
             bad_mat = np.copy(valid_mat)
             bad_mat[0, 0] = np.nan
             scorer.compute_cohort_downside_variances(bad_mat)
-

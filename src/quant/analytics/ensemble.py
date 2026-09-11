@@ -491,13 +491,9 @@ class AsymmetricDownsideLossScorer:
             EnsembleError: If downside_penalty < 0.0 or is non-finite / invalid.
         """
         if not (isinstance(downside_penalty, (int, float)) and math.isfinite(downside_penalty)):
-            raise EnsembleError(
-                f"downside_penalty must be a finite float, got {downside_penalty}"
-            )
+            raise EnsembleError(f"downside_penalty must be a finite float, got {downside_penalty}")
         if downside_penalty < 0.0:
-            raise EnsembleError(
-                f"downside_penalty must be >= 0.0, got {downside_penalty}"
-            )
+            raise EnsembleError(f"downside_penalty must be >= 0.0, got {downside_penalty}")
         self._downside_penalty: float = float(downside_penalty)
 
     @property
@@ -596,19 +592,15 @@ class AsymmetricDownsideLossScorer:
                 f"target_return must be a finite float, got {target_return}"
             )
 
-        if not (
-            isinstance(min_variance_floor, (int, float)) and math.isfinite(min_variance_floor)
-        ):
+        if not (isinstance(min_variance_floor, (int, float)) and math.isfinite(min_variance_floor)):
             raise DegenerateEnsembleException(
                 f"min_variance_floor must be a finite float, got {min_variance_floor}"
             )
         if min_variance_floor <= 0.0:
-            raise EnsembleError(
-                f"min_variance_floor must be > 0.0, got {min_variance_floor}"
-            )
+            raise EnsembleError(f"min_variance_floor must be > 0.0, got {min_variance_floor}")
 
         deviations = np.minimum(0.0, returns - target_return)
-        semi_variance = float(np.mean(deviations ** 2))
+        semi_variance = float(np.mean(deviations**2))
         return float(max(semi_variance, float(min_variance_floor)))
 
     def compute_cohort_downside_variances(
@@ -647,19 +639,15 @@ class AsymmetricDownsideLossScorer:
                 f"target_return must be a finite float, got {target_return}"
             )
 
-        if not (
-            isinstance(min_variance_floor, (int, float)) and math.isfinite(min_variance_floor)
-        ):
+        if not (isinstance(min_variance_floor, (int, float)) and math.isfinite(min_variance_floor)):
             raise DegenerateEnsembleException(
                 f"min_variance_floor must be a finite float, got {min_variance_floor}"
             )
         if min_variance_floor <= 0.0:
-            raise EnsembleError(
-                f"min_variance_floor must be > 0.0, got {min_variance_floor}"
-            )
+            raise EnsembleError(f"min_variance_floor must be > 0.0, got {min_variance_floor}")
 
         deviations = np.minimum(0.0, return_matrix - target_return)
-        col_vars: np.ndarray = np.mean(deviations ** 2, axis=0)
+        col_vars: np.ndarray = np.mean(deviations**2, axis=0)
         clamped_vars = np.maximum(col_vars, float(min_variance_floor))
         return cast(np.ndarray, clamped_vars.astype(np.float64))
 
