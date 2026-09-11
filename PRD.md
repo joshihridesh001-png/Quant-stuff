@@ -38,11 +38,11 @@ graph TD
 | :--- | :--- | :--- |
 | **Market Data Subsystem** | High-throughput columnar ingestion; immutable `PriceBar` with boundary invariants; embedded DuckDB/PyArrow storage; zero-copy 1D array views (`MarketDataBatch`); rolling realized volatility ($\sigma_t$). | P0 (Complete) |
 | **News Ingestion Layer** | Asynchronous batch ingestion; dense transformer vectorization; tri-axial sentiment scoring (polarity, subjectivity, novelty); causal DAG; hybrid dual-decay kernel ($\tau_{\text{fast}}, \tau_{\text{slow}}$). | P0 (Complete) |
-| **Econometric Rig** | Memory-preserving fractional differentiation $(1-B)^d$; dynamic volatility Triple-Barrier labeling; Two-stage Meta-Labeling architecture. | P0 (Sprint 2) |
-| **Validation Framework** | Combinatorial Purged Cross-Validation (CPCV) with boundary purging and post-test embargoing; Deflated Sharpe Ratio (DSR) controlling for non-normality and selection bias. | P0 (Sprint 2) |
-| **Scenario Matrix (Game Theory)** | Bayesian game formulation against Nature/Counterparties; adversarial scenarios (Immediate Reversal, Momentum Cascade, Liquidity Squeeze); Minimax Regret payoff optimization. | P1 (Sprint 3) |
-| **Evolutionary Manager** | Modular genotype chromosomes ($\mathbf{g}_{\text{repr}}, \mathbf{g}_{\text{game}}, \mathbf{g}_{\text{infer}}, \mathbf{g}_{\text{risk}}$); Boundary-Anchored Adaptive RVEA Pareto sorting with SVD subspace orthogonality ($\rho_{\text{ortho}}$) and Memmel–Ledoit–Wolf dependent dominance; hypergamic assortative mating gated by residual orthogonality. | P1 (Sprint 4) |
-| **Ensemble Aggregator** | Regime-conditioned Bayesian model averaging; predictive variance estimation; disagreement entropy circuit breaker. | P1 (Sprint 5) |
+| **Econometric Rig** | Memory-preserving fractional differentiation $(1-B)^d$; dynamic volatility Triple-Barrier labeling; Two-stage Meta-Labeling architecture. | P0 (Complete) |
+| **Validation Framework** | Combinatorial Purged Cross-Validation (CPCV) with boundary purging and post-test embargoing; Deflated Sharpe Ratio (DSR) controlling for non-normality and selection bias. | P0 (Complete) |
+| **Scenario Matrix (Game Theory)** | Bayesian game formulation against Nature/Counterparties; adversarial scenarios (Immediate Reversal, Momentum Cascade, Liquidity Squeeze); Minimax Regret payoff optimization. | P1 (Complete) |
+| **Evolutionary Manager** | Modular genotype chromosomes ($\mathbf{g}_{\text{repr}}, \mathbf{g}_{\text{game}}, \mathbf{g}_{\text{infer}}, \mathbf{g}_{\text{risk}}$); Boundary-Anchored Adaptive RVEA Pareto sorting with SVD subspace orthogonality ($\rho_{\text{ortho}}$) and Memmel–Ledoit–Wolf dependent dominance; hypergamic assortative mating gated by residual orthogonality; adaptive Cauchy volatility mutation; Rechenberg APD progress adaptation; dual-space stagnation monitoring; closed-loop $(\mu + \lambda)$ generational lifecycle engine. | P1 (Complete) |
+| **Ensemble Aggregator** | Regime-conditioned Bayesian model averaging; predictive variance estimation; disagreement entropy circuit breaker. | P1 (Sprint 5 - Next) |
 
 ---
 

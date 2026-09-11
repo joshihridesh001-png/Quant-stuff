@@ -16,11 +16,11 @@ gantt
     Step 5: Two-Stage Meta-Labeling         :done, s2_5, 2026-09-12, 2d
     Step 6: Deflated Sharpe Ratio (DSR)     :done, s2_6, 2026-09-13, 2d
     section Phase 3: Game Theory
-    Scenario Matrix & Adversarial Payoffs   :active, p3, 2026-09-22, 5d
+    Scenario Matrix & Adversarial Payoffs   :done, p3, 2026-09-22, 5d
     section Phase 4: Evolution
-    Hypergamic Selection & Population Engine :p4, 2026-09-29, 5d
+    Hypergamic Selection & Population Engine :done, p4, 2026-09-29, 5d
     section Phase 5: Productionization
-    Ensemble Aggregation & Risk Overlays    :p5, 2026-10-06, 5d
+    Ensemble Aggregation & Risk Overlays    :active, p5, 2026-10-06, 5d
 ```
 
 ---
@@ -142,7 +142,7 @@ Decomposed into 4 sequential micro-steps implementing the Entropic Distributiona
 
 ---
 
-### Phase 4: Evolutionary Population & Hypergamy Dynamics [ACTIVE]
+### Phase 4: Evolutionary Population & Hypergamy Dynamics [COMPLETE]
 
 #### Step 1: Chromosome Architecture & Vector Encoding Engine [COMPLETE]
 * **Deliverables:**
@@ -175,11 +175,20 @@ Decomposed into 4 sequential micro-steps implementing the Entropic Distributiona
   * Exported all domain entities, configuration, and facades in `src/quant/analytics/__init__.py`.
   * 20 unit tests (340 total project tests) passing with **95% line coverage** on `hypergamic_selection.py` and benchmark reproduction latency well under 25ms.
 
-#### Step 4: Adaptive Volatility Mutation & Generational Lifecycle Engine [PLANNED]
+#### Step 4: Adaptive Volatility Mutation & Generational Lifecycle Engine [COMPLETE]
+* **Deliverables:**
+  * Self-Adaptive Truncated Cauchy Mutation (`AdaptiveVolatilityMutator`) in latent unit-hypercube space $\mathbf{u} \in [0, 1]^{20}$ with clipping bound $c = 2.0$, delivering exploratory heavy-tailed leap jumps out of local optima.
+  * Continuous Mirror Boundary Reflection ($u_{\text{refl}} = -u$ if $u < 0$, $2 - u$ if $u > 1$), preserving ergodic parameter exploration and eliminating sticky boundary clumping.
+  * Gene-family differential sensitivity scaling: conservative $\kappa_{\text{risk}} = 0.50$, intermediate $\kappa_{\text{game}} = 0.75$, and exploratory $\kappa_{\text{search}} = 1.00$.
+  * Continuous APD-Progress Rechenberg Volatility Adaptation (`adapt_step_size`) with exponential smoothing ($\alpha_{\text{smooth}} = 0.20$), dynamically modulating mutation volatility $\sigma_{\text{mut}}$ within $[\sigma_{\min}, \sigma_{\max}]$.
+  * Dual-Space Stagnation Monitoring (`StagnationDetector`) assessing genotypic hypercube Euclidean dispersion $\bar{D}_{\text{param}}$ via `scipy.spatial.distance.pdist` and phenotypic residual Pearson collinearity $\bar{\rho}_{\text{pop}}$, triggering cataclysmic hyper-mutation ($\sigma_{\text{cataclysm}} = 0.20$) on 5 stagnant generations while preserving Front-1 champions bitwise identical (`INV-LIFE-004`).
+  * Closed-Loop $(\mu + \lambda)$ Generational Lifecycle Engine (`GenerationalLifecycleEngine.step_generation`) evaluating offspring, ranking joint pool $2N$, and truncating strictly to size $N$ (`INV-LIFE-001`), guaranteeing monotonic Pareto frontier preservation (`INV-LIFE-002`) and sub-35ms benchmark SLA (`INV-LIFE-006`).
+  * Exported all domain entities, configuration, and facades in `src/quant/analytics/__init__.py`.
+  * 25 unit tests (345 total project tests) passing in **0.32s** with **95% line coverage** on `evolutionary_lifecycle.py` and benchmark step latency of 30.76ms (under 35ms limit).
 
 ---
 
-### Phase 5: Ensemble Aggregator & Risk Overlays [PLANNED]
+### Phase 5: Ensemble Aggregator & Risk Overlays [ACTIVE]
 * **Scope:**
   * Regime-conditioned Bayesian Model Averaging (BMA) weighting.
   * Predictive return distribution output (mean, variance, quantiles).
