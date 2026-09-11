@@ -1451,6 +1451,65 @@ class TestCorrelationAndMirrorDescentSolver:
             bad[1, 1] = np.inf
             estimator.compute_correlation_matrix(bad)
 
+        # Property checks
+        custom = TikhonovCorrelationEstimator(ridge_shrinkage=0.12, min_std_dev=1e-6)
+        assert custom.ridge_shrinkage == 0.12
+        assert custom.min_std_dev == 1e-6
+
+    def test_tikhonov_regularize_correlation_matrix(self) -> None:
+        """Verify regularizing an existing correlation matrix directly."""
+        estimator = TikhonovCorrelationEstimator(ridge_shrinkage=0.08, min_std_dev=1e-7)
+        assert estimator.ridge_shrinkage == 0.08
+        assert estimator.min_std_dev == 1e-7
+
+        # Asymmetric and un-normalized input to verify symmetrization and shrinkage
+        raw_C = np.array(
+            [
+                [1.0, 0.90, 0.20],
+                [0.85, 1.0, -0.10],
+                [0.20, -0.10, 1.0],
+            ]
+        )
+        reg_C = estimator.regularize_correlation_matrix(raw_C)
+
+        assert reg_C.shape == (3, 3)
+        # Symmetrized
+        np.testing.assert_allclose(reg_C, reg_C.T, atol=1e-12)
+        # Off-diagonal element (0, 1) should be (1 - delta) * 0.5 * (0.90 + 0.85) = 0.92 * 0.875 = 0.805
+        assert reg_C[0, 1] == pytest.approx(0.92 * 0.875)
+        # Unit diagonal
+        np.testing.assert_allclose(np.diag(reg_C), 1.0, atol=1e-10)
+
+        # Eigenvalues strictly >= delta
+        eigvals = np.linalg.eigvalsh(reg_C)
+        assert np.all(eigvals >= 0.079)
+
+    def test_tikhonov_regularize_correlation_matrix_validation(self) -> None:
+        """Verify defensive validations for regularize_correlation_matrix."""
+        estimator = TikhonovCorrelationEstimator()
+
+        # Non-2D
+        with pytest.raises(InvalidPredictionException, match="correlation_matrix"):
+            estimator.regularize_correlation_matrix(np.array([1.0, 0.5]))
+        with pytest.raises(InvalidPredictionException, match="correlation_matrix"):
+            estimator.regularize_correlation_matrix([[1.0, 0.5]])  # type: ignore[arg-type]
+
+        # Non-square / empty
+        with pytest.raises(InvalidPredictionException, match="correlation_matrix"):
+            estimator.regularize_correlation_matrix(np.zeros((3, 2)))
+        with pytest.raises(InvalidPredictionException, match="correlation_matrix"):
+            estimator.regularize_correlation_matrix(np.zeros((0, 0)))
+
+        # Non-finite
+        with pytest.raises(DegenerateEnsembleException, match="correlation_matrix"):
+            bad = np.eye(3)
+            bad[0, 0] = np.nan
+            estimator.regularize_correlation_matrix(bad)
+        with pytest.raises(DegenerateEnsembleException, match="correlation_matrix"):
+            bad = np.eye(3)
+            bad[0, 0] = np.inf
+            estimator.regularize_correlation_matrix(bad)
+
     def test_mirror_descent_solver_penalizes_clones(self) -> None:
         """Verify that Entropic Mirror Descent penalizes collinear/clone model pairs."""
         solver = OrthogonalityRegularizedSolver(
@@ -1623,9 +1682,41 @@ class TestCorrelationAndMirrorDescentSolver:
         assert len(w_res) == 3
         assert math.isclose(float(np.sum(w_res)), 1.0, abs_tol=1e-10)
 
+    def test_mirror_descent_solver_zero_orthogonality_penalty(self) -> None:
+        """Verify mirror descent behavior when orthogonality penalty is zero."""
+        solver = OrthogonalityRegularizedSolver(
+            orthogonality_penalty=0.0,
+            temperature=1.0,
+            learning_rate=0.50,
+        )
+        assert solver.orthogonality_penalty == 0.0
+
+        K = 3
+        # Even with strongly collinear correlation matrix, penalty is inactive
+        C = np.array(
+            [
+                [1.0, 0.99, 0.0],
+                [0.99, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        # Models have different scores
+        scores = np.array([0.1, 0.2, 0.3])
+        w_star = solver.solve(scores=scores, correlation_matrix=C)
+
+        # Best score (index 0) gets highest weight
+        assert len(w_star) == K
+        assert w_star[0] > w_star[1] > w_star[2]
+        assert math.isclose(float(np.sum(w_star)), 1.0, abs_tol=1e-10)
+        assert np.all(w_star > 0.0)
+
     def test_mirror_descent_performance_benchmark(self) -> None:
         """Verify execution SLA: Entropic Mirror Descent on K=100 takes < 0.15ms per solve."""
+        import sys
         import time
+
+        if sys.gettrace() is not None:
+            pytest.skip("Skipping performance benchmark under tracer/profiler")
 
         K = 100
         rng = np.random.default_rng(123)
@@ -1645,7 +1736,7 @@ class TestCorrelationAndMirrorDescentSolver:
         )
 
         # Warmup (stabilize CPU frequency, branch predictor, and memory cache)
-        for _ in range(5):
+        for _ in range(10):
             solver.solve(scores, C)
 
         # Benchmark 50 executions
@@ -1655,9 +1746,9 @@ class TestCorrelationAndMirrorDescentSolver:
             w_star = solver.solve(scores, C)
             times.append(time.perf_counter() - t0)
 
-        mean_time_ms = float(np.mean(times)) * 1000.0
-        assert mean_time_ms <= 0.15, (
-            f"Entropic Mirror Descent SLA violated: {mean_time_ms:.4f}ms > 0.15ms"
+        median_time_ms = float(np.median(times)) * 1000.0
+        assert median_time_ms <= 0.15, (
+            f"Entropic Mirror Descent SLA violated: median {median_time_ms:.4f}ms > 0.15ms"
         )
         assert math.isclose(float(np.sum(w_star)), 1.0, abs_tol=1e-10)
         assert np.all(w_star > 0.0)

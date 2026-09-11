@@ -1188,10 +1188,10 @@ class OrthogonalityRegularizedSolver:
                 np.copyto(v, scaled_scores)
 
             # Mirror step: w_i^{(m+1)} proportional to w_i^{(m)} * exp(scaled_grad_i)
-            v -= np.max(v)
+            v -= v.max()
             np.exp(v, out=v)
             v *= w
-            denom = float(np.sum(v))
+            denom = float(v.sum())
             if not (math.isfinite(denom) and denom > 0.0):
                 raise DegenerateEnsembleException(
                     "Mirror descent step collapsed to non-finite or non-positive denominator"
@@ -1201,7 +1201,7 @@ class OrthogonalityRegularizedSolver:
             # Convergence check: L_infinity norm without temporary array allocations
             np.subtract(v, w, out=cw)
             np.abs(cw, out=cw)
-            diff = float(np.max(cw))
+            diff = float(cw.max())
             np.copyto(w, v)
             if diff < self._tol:
                 break
@@ -1210,14 +1210,12 @@ class OrthogonalityRegularizedSolver:
         # w_k <- (1 - K * eps_floor) * w_k + eps_floor
         eps_floor = self._min_weight_floor
         if eps_floor * float(k_models) >= 1.0:
-            eps_floor = 0.001 / float(k_models)
-        if eps_floor * float(k_models) >= 1.0:
             eps_floor = 0.5 / float(k_models)
 
         w = (1.0 - float(k_models) * eps_floor) * w + eps_floor
 
         # Normalize and enforce INV-ENS-001
-        w_sum = float(np.sum(w))
+        w_sum = float(w.sum())
         if not (math.isfinite(w_sum) and w_sum > 0.0):
             raise DegenerateEnsembleException("Laplace smoothing produced invalid sum")
         w = w / w_sum
