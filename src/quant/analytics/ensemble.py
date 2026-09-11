@@ -1172,7 +1172,7 @@ class OrthogonalityRegularizedSolver:
         has_penalty = penalty > 0.0
 
         scaled_scores = -step_factor * scores
-        scaled_penalty = -step_factor * penalty
+        scaled_C = (-step_factor * penalty) * correlation_matrix if has_penalty else None
 
         cw = np.empty(k_models, dtype=np.float64)
         v = np.empty(k_models, dtype=np.float64)
@@ -1180,9 +1180,8 @@ class OrthogonalityRegularizedSolver:
         # Entropic Mirror Descent loop (exponentiated gradient with Log-Sum-Exp shift)
         for _ in range(self._max_iter):
             # Scaled mirror gradient: - (eta / tau) * (s + lambda_ortho * (C @ w))
-            if has_penalty:
-                np.dot(correlation_matrix, w, out=cw)
-                np.multiply(cw, scaled_penalty, out=v)
+            if has_penalty and scaled_C is not None:
+                np.dot(scaled_C, w, out=v)
                 v += scaled_scores
             else:
                 np.copyto(v, scaled_scores)
@@ -1232,6 +1231,400 @@ class OrthogonalityRegularizedSolver:
         return w.astype(np.float64)
 
 
+class RegimeConditionedDMAEngine:
+    """Master facade for Regime-Conditioned Dynamic Model Averaging (RD-DMA).
+
+    Orchestrates the complete online multi-bar DMA update and prediction cycle:
+    1. Volatility-adaptive memory forgetting factor alpha_t in [alpha_min, alpha_max] (INV-ENS-003).
+    2. Predictive forward-Markov regime projection p_{t+1|t} = P_trans^T * p_t.
+    3. Multi-horizon asymmetric downside prediction loss scoring l_{t, k}.
+    4. Log-sum-exp tempered regime posterior updating and composite prior synthesis bar{pi}_{t+1|t}.
+    5. Pairwise correlation regularization via Tikhonov shrinkage C_t succ 0 (lambda_min >= delta).
+    6. Simplex optimization via Entropic Mirror Descent with SVD orthogonality penalty (INV-ENS-001).
+    7. Thermodynamic ambiguity shrinkage toward entropy-maximizing uniform prior:
+       w^{shrunk} = (1 - lambda_beta) * w^* + lambda_beta * w_{uniform}.
+    8. Turnover damping: w^{final} = (1 - lambda_churn) * w^{shrunk} + lambda_churn * w_{t-1} (INV-ENS-005).
+    9. Probabilistic emission via Law of Total Variance decomposition (INV-ENS-002):
+       sigma^2_total = sigma^2_aleatoric + sigma^2_epistemic.
+    10. Monotonic state progression, cumulative loss tracking, and effective model counting.
+    """
+
+    def __init__(
+        self,
+        config: EnsembleConfig | None = None,
+        beta_min: float = 1.0,
+        beta_max: float = 5.0,
+    ) -> None:
+        """Initialize the RegimeConditionedDMAEngine.
+
+        Args:
+            config: Optional EnsembleConfig hyperparameters. Defaults to EnsembleConfig().
+            beta_min: Lower threshold for thermodynamic temperature beta_t normalization (default 1.0).
+            beta_max: Upper threshold for thermodynamic temperature beta_t normalization (default 5.0).
+
+        Raises:
+            EnsembleError: If config is not EnsembleConfig or beta bounds are invalid.
+            DegenerateEnsembleException: If beta bounds contain NaN or Inf.
+        """
+        if config is not None and not isinstance(config, EnsembleConfig):
+            raise EnsembleError(f"config must be an EnsembleConfig instance, got {type(config)}")
+        self._config: EnsembleConfig = config or EnsembleConfig()
+
+        if not (isinstance(beta_min, (int, float)) and math.isfinite(beta_min)):
+            raise DegenerateEnsembleException(f"beta_min must be a finite float, got {beta_min}")
+        if not (isinstance(beta_max, (int, float)) and math.isfinite(beta_max)):
+            raise DegenerateEnsembleException(f"beta_max must be a finite float, got {beta_max}")
+        if beta_min <= 0.0:
+            raise EnsembleError(f"beta_min must be > 0.0, got {beta_min}")
+        if beta_max <= beta_min:
+            raise EnsembleError(f"beta_max ({beta_max}) must be > beta_min ({beta_min})")
+
+        self._beta_min: float = float(beta_min)
+        self._beta_max: float = float(beta_max)
+
+        self._vaf = VolatilityAdaptiveForgetting(self._config)
+        self._scorer = AsymmetricDownsideLossScorer(self._config.downside_penalty)
+        self._estimator = TikhonovCorrelationEstimator(self._config.ridge_shrinkage)
+        self._solver = OrthogonalityRegularizedSolver(config=self._config)
+
+    @property
+    def config(self) -> EnsembleConfig:
+        """Hyperparameter configuration."""
+        return self._config
+
+    @property
+    def scorer(self) -> AsymmetricDownsideLossScorer:
+        """Asymmetric downside loss scorer instance."""
+        return self._scorer
+
+    @property
+    def estimator(self) -> TikhonovCorrelationEstimator:
+        """Tikhonov correlation estimator instance."""
+        return self._estimator
+
+    @property
+    def solver(self) -> OrthogonalityRegularizedSolver:
+        """Entropic mirror descent solver instance."""
+        return self._solver
+
+    @property
+    def volatility_tracker(self) -> VolatilityAdaptiveForgetting:
+        """Volatility-adaptive forgetting tracker."""
+        return self._vaf
+
+    def initialize_state(
+        self,
+        n_models: int,
+        initial_dsr: np.ndarray | None = None,
+        initial_vol: float = 0.01,
+    ) -> EnsembleState:
+        """Initialize prior state for online DMA filtering.
+
+        Warm-starts composite model weights via Deflated Sharpe Ratio (DSR) softmax,
+        or defaults to uniform Dirichlet prior if initial_dsr is None.
+
+        Args:
+            n_models: Number of constituent model strategies K >= 1.
+            initial_dsr: Optional Deflated Sharpe Ratio (DSR) array of shape (K,) for warm start.
+            initial_vol: Initial rolling baseline volatility sigma_bar > 0.0 (default 0.01).
+
+        Returns:
+            EnsembleState: Immutable initial state snapshot at step_index=0.
+
+        Raises:
+            EnsembleError: If n_models < 1 or initial_vol <= 0.
+            InvalidPredictionException: If initial_dsr shape is invalid.
+            DegenerateEnsembleException: If initial_dsr or initial_vol contains NaN/Inf.
+        """
+        if not isinstance(n_models, int) or n_models < 1:
+            raise EnsembleError(f"n_models must be an integer >= 1, got {n_models}")
+
+        if not (isinstance(initial_vol, (int, float)) and math.isfinite(initial_vol)):
+            raise DegenerateEnsembleException(
+                f"initial_vol must be a finite float, got {initial_vol}"
+            )
+        if initial_vol <= 0.0:
+            raise EnsembleError(f"initial_vol must be > 0.0, got {initial_vol}")
+
+        if initial_dsr is not None:
+            if not isinstance(initial_dsr, np.ndarray) or initial_dsr.ndim != 1:
+                raise InvalidPredictionException("initial_dsr must be a 1D numpy array")
+            if initial_dsr.shape != (n_models,):
+                raise InvalidPredictionException(
+                    f"initial_dsr shape {initial_dsr.shape} must match (n_models,) with n_models={n_models}"
+                )
+            if not np.all(np.isfinite(initial_dsr)):
+                raise DegenerateEnsembleException("initial_dsr must contain only finite values")
+
+            # Softmax warm-start: w_k = exp(DSR_k - max(DSR)) / sum exp(...)
+            # with tau_prior = 1.0 (beta_DSR = 1.0)
+            dsr_shift = initial_dsr - np.max(initial_dsr)
+            exp_dsr = np.exp(dsr_shift)
+            sum_exp = float(np.sum(exp_dsr))
+            init_weights: np.ndarray = exp_dsr / sum_exp
+
+            # Laplace floor smoothing to guarantee INV-ENS-001
+            eps_floor = self._config.min_weight_floor
+            if eps_floor * float(n_models) >= 1.0:
+                eps_floor = 0.5 / float(n_models)
+            init_weights = (1.0 - float(n_models) * eps_floor) * init_weights + eps_floor
+            init_weights /= float(np.sum(init_weights))
+        else:
+            init_weights = np.full(n_models, 1.0 / float(n_models), dtype=np.float64)
+
+        # Ensure exact simplex normalization
+        init_weights /= float(np.sum(init_weights))
+
+        # Regime-conditional posteriors: 3 x K, each row initialized to initial weights
+        posteriors = np.empty((3, n_models), dtype=np.float64)
+        for r in range(3):
+            posteriors[r, :] = init_weights
+
+        cumulative_losses = np.zeros(n_models, dtype=np.float64)
+        k_eff = float(1.0 / np.sum(init_weights**2))
+
+        return EnsembleState(
+            step_index=0,
+            weights=init_weights.astype(np.float64),
+            regime_conditional_posteriors=posteriors,
+            cumulative_losses=cumulative_losses,
+            effective_models=k_eff,
+            mean_realized_volatility=float(initial_vol),
+            last_ambiguity_temperature=1.0,
+        )
+
+    def predict_and_update(
+        self,
+        predictions: np.ndarray,
+        variances: np.ndarray,
+        realized_return: float,
+        realized_vol: float,
+        regime_probs: np.ndarray,
+        transition_matrix: np.ndarray,
+        ambiguity_beta: float,
+        state: EnsembleState,
+        correlation_matrix: np.ndarray | None = None,
+        forecast_horizons: np.ndarray | None = None,
+        beta_min: float | None = None,
+        beta_max: float | None = None,
+    ) -> tuple[EnsemblePrediction, EnsembleState]:
+        """Execute complete online RD-DMA update cycle for time bar t.
+
+        Orchestrates:
+        1. Volatility-adaptive memory forgetting factor alpha_t in [alpha_min, alpha_max].
+        2. Predictive forward-Markov regime projection p_{t+1|t} = P_trans^T * p_t.
+        3. Multi-horizon asymmetric downside prediction loss scoring l_{t, k}.
+        4. Log-sum-exp tempered regime posterior updating and composite prior synthesis bar{pi}_{t+1|t}.
+        5. Pairwise correlation regularization via Tikhonov shrinkage C_t succ 0 (lambda_min >= delta).
+        6. Simplex optimization via Entropic Mirror Descent with SVD orthogonality penalty.
+        7. Thermodynamic ambiguity shrinkage toward entropy-maximizing uniform prior:
+           w^{shrunk} = (1 - lambda_beta) * w^* + lambda_beta * w_{uniform}.
+        8. Turnover damping: w^{final} = (1 - lambda_churn) * w^{shrunk} + lambda_churn * w_{t-1}.
+        9. Probabilistic emission via Law of Total Variance decomposition:
+           sigma^2_total = sigma^2_aleatoric + sigma^2_epistemic.
+        10. Monotonic state progression, cumulative loss tracking, and effective model counting.
+
+        Args:
+            predictions: 1D array of nominal model return forecasts (shape: (K,)).
+            variances: 1D array of expected process variances sigma_k^2 > 0 (shape: (K,)).
+            realized_return: Contemporaneous realized benchmark/market return y_t.
+            realized_vol: Contemporaneous realized volatility observation sigma_t > 0.0.
+            regime_probs: Contemporaneous regime distribution p_t (shape: (3,)).
+            transition_matrix: Markov transition probability matrix P_trans (shape: (3, 3)).
+            ambiguity_beta: Thermodynamic ambiguity temperature beta_t > 0.0.
+            state: Previous bar EnsembleState snapshot at t-1.
+            correlation_matrix: Optional empirical prediction correlation matrix (shape: (K, K)).
+            forecast_horizons: Optional model forecast horizons H_k >= 1.0 (shape: (K,)).
+            beta_min: Optional override for ambiguity lower bound.
+            beta_max: Optional override for ambiguity upper bound.
+
+        Returns:
+            tuple[EnsemblePrediction, EnsembleState]:
+                - prediction: Complete probabilistic prediction payload for bar t.
+                - state: Advanced immutable state snapshot for bar t.
+
+        Raises:
+            InvalidPredictionException: On dimension mismatches or invalid simplex probabilities.
+            DegenerateEnsembleException: On non-finite values (NaN/Inf) or non-positive variances.
+            EnsembleError: On invalid configuration or non-positive inputs.
+        """
+        # Defensive validation on state
+        if not isinstance(state, EnsembleState):
+            raise EnsembleError(f"state must be an EnsembleState instance, got {type(state)}")
+
+        # Defensive validation on predictions
+        if not isinstance(predictions, np.ndarray) or predictions.ndim != 1:
+            raise InvalidPredictionException("predictions must be a 1D numpy array")
+        k_models = len(predictions)
+        if k_models < 1:
+            raise InvalidPredictionException("predictions must contain at least 1 model")
+        if not np.all(np.isfinite(predictions)):
+            raise DegenerateEnsembleException("predictions must contain only finite values")
+
+        # Defensive validation on variances
+        if not isinstance(variances, np.ndarray) or variances.ndim != 1:
+            raise InvalidPredictionException("variances must be a 1D numpy array")
+        if variances.shape != predictions.shape:
+            raise InvalidPredictionException(
+                f"variances shape {variances.shape} must match predictions shape {predictions.shape}"
+            )
+        if not np.all(np.isfinite(variances)):
+            raise DegenerateEnsembleException("variances must contain only finite values")
+        if np.any(variances <= 0.0):
+            raise DegenerateEnsembleException(
+                "variances elements must be strictly positive (> 0.0)"
+            )
+
+        # Dimensional alignment with state weights
+        if len(state.weights) != k_models:
+            raise InvalidPredictionException(
+                f"predictions length ({k_models}) does not match state.weights length ({len(state.weights)})"
+            )
+
+        # Defensive validation on realized_return
+        if not (isinstance(realized_return, (int, float)) and math.isfinite(realized_return)):
+            raise DegenerateEnsembleException(
+                f"realized_return must be a finite float, got {realized_return}"
+            )
+
+        # Defensive validation on realized_vol
+        if not (isinstance(realized_vol, (int, float)) and math.isfinite(realized_vol)):
+            raise DegenerateEnsembleException(
+                f"realized_vol must be a finite float, got {realized_vol}"
+            )
+        if realized_vol <= 0.0:
+            raise EnsembleError(f"realized_vol must be > 0.0, got {realized_vol}")
+
+        # Defensive validation on ambiguity_beta
+        if not (isinstance(ambiguity_beta, (int, float)) and math.isfinite(ambiguity_beta)):
+            raise DegenerateEnsembleException(
+                f"ambiguity_beta must be a finite float, got {ambiguity_beta}"
+            )
+        if ambiguity_beta <= 0.0:
+            raise EnsembleError(f"ambiguity_beta must be > 0.0, got {ambiguity_beta}")
+
+        # Step 1: Compute dynamic volatility-adaptive forgetting factor alpha_t
+        self._vaf._mean_realized_vol = state.mean_realized_volatility
+        alpha_t = self._vaf.compute_alpha(realized_vol)
+        new_mean_vol = self._vaf.mean_realized_volatility
+
+        # Step 2: Predictive forward-Markov regime projection p_{t+1|t} = P_trans^T * p_t
+        p_next = predict_forward_regime_prior(regime_probs, transition_matrix)
+
+        # Step 3: Multi-horizon asymmetric downside loss evaluation
+        losses = self._scorer.compute_losses(
+            predictions=predictions,
+            realized_return=realized_return,
+            forecast_horizons=forecast_horizons,
+        )
+
+        if forecast_horizons is not None:
+            scaled_predictions: np.ndarray = predictions / np.sqrt(forecast_horizons)
+        else:
+            scaled_predictions = predictions
+
+        # Step 4: Tempered regime posterior update and composite prior synthesis
+        updated_posteriors, composite_prior = update_regime_posteriors(
+            posteriors=state.regime_conditional_posteriors,
+            alpha_t=alpha_t,
+            forward_regime_probs=p_next,
+            alpha_min=self._config.min_forgetting_factor,
+            alpha_max=self._config.max_forgetting_factor,
+        )
+
+        # Step 5: Correlation matrix regularization via Tikhonov shrinkage
+        if correlation_matrix is None:
+            c_reg = np.eye(k_models, dtype=np.float64)
+        else:
+            c_reg = self._estimator.regularize_correlation_matrix(correlation_matrix)
+
+        # Step 6: Simplex optimization via Entropic Mirror Descent
+        # Scores vector: s_t = l_t - ln(bar{pi}_{t|t-1})
+        scores = losses - np.log(np.maximum(composite_prior, 1e-30))
+        w_star = self._solver.solve(
+            scores=scores,
+            correlation_matrix=c_reg,
+            current_weights=state.weights,
+        )
+
+        # Step 7: Thermodynamic ambiguity shrinkage toward uniform prior
+        b_min = self._beta_min if beta_min is None else float(beta_min)
+        b_max = self._beta_max if beta_max is None else float(beta_max)
+        if b_max > b_min:
+            beta_norm = float(np.clip((ambiguity_beta - b_min) / (b_max - b_min), 0.0, 1.0))
+        else:
+            beta_norm = 1.0 if ambiguity_beta >= b_max else 0.0
+
+        lambda_beta = beta_norm * self._config.ambiguity_shrinkage_cap
+        w_uniform = np.full(k_models, 1.0 / float(k_models), dtype=np.float64)
+        w_shrunk = (1.0 - lambda_beta) * w_star + lambda_beta * w_uniform
+        w_shrunk /= float(np.sum(w_shrunk))
+
+        # Step 8: Turnover damping: w^{final} = (1 - lambda_churn) * w^{shrunk} + lambda_churn * w_{t-1}
+        lambda_churn = self._config.turnover_damping
+        w_final = (1.0 - lambda_churn) * w_shrunk + lambda_churn * state.weights
+        w_final /= float(np.sum(w_final))
+
+        # Ensure exact positivity and simplex constraint INV-ENS-001
+        eps_floor = self._config.min_weight_floor
+        if eps_floor * float(k_models) >= 1.0:
+            eps_floor = 0.5 / float(k_models)
+        w_final = (1.0 - float(k_models) * eps_floor) * w_final + eps_floor
+        w_final /= float(np.sum(w_final))
+
+        # Step 9: Law of Total Variance decomposition & point prediction
+        mu_hat = float(np.dot(w_final, scaled_predictions))
+        sigma2_aleatoric = float(np.dot(w_final, variances))
+        sigma2_epistemic = float(np.dot(w_final, (scaled_predictions - mu_hat) ** 2))
+        sigma2_total = sigma2_aleatoric + sigma2_epistemic
+        k_eff = float(1.0 / np.sum(w_final**2))
+
+        # Step 10: Advance regime-conditional posteriors for bar t
+        new_posteriors = np.empty((3, k_models), dtype=np.float64)
+        for j in range(3):
+            # Conditioned log-posterior update weighted by regime observation probability
+            log_post = (
+                np.log(np.maximum(updated_posteriors[j, :], 1e-30)) - regime_probs[j] * losses
+            )
+            log_post -= np.max(log_post)
+            row = np.exp(log_post)
+            row_sum = float(np.sum(row))
+            if not (math.isfinite(row_sum) and row_sum > 0.0):
+                row = np.full(k_models, 1.0 / float(k_models), dtype=np.float64)
+            else:
+                row /= row_sum
+
+            # Laplace floor smoothing for state invariants
+            row = (1.0 - float(k_models) * eps_floor) * row + eps_floor
+            row /= float(np.sum(row))
+            new_posteriors[j, :] = row
+
+        # Step 11: Emitted prediction and advanced state payloads
+        prediction = EnsemblePrediction(
+            point_prediction=mu_hat,
+            aleatoric_variance=sigma2_aleatoric,
+            epistemic_variance=sigma2_epistemic,
+            total_variance=sigma2_total,
+            model_weights=w_final.astype(np.float64),
+            regime_probabilities=p_next.astype(np.float64),
+            effective_models=k_eff,
+            volatility_forgetting_factor=alpha_t,
+            ambiguity_shrinkage_weight=lambda_beta,
+        )
+
+        new_state = EnsembleState(
+            step_index=state.step_index + 1,
+            weights=w_final.astype(np.float64),
+            regime_conditional_posteriors=new_posteriors,
+            cumulative_losses=(state.cumulative_losses + losses).astype(np.float64),
+            effective_models=k_eff,
+            mean_realized_volatility=new_mean_vol,
+            last_ambiguity_temperature=ambiguity_beta,
+        )
+
+        return prediction, new_state
+
+
 __all__ = [
     "EnsembleError",
     "DegenerateEnsembleException",
@@ -1245,4 +1638,5 @@ __all__ = [
     "update_regime_posteriors",
     "TikhonovCorrelationEstimator",
     "OrthogonalityRegularizedSolver",
+    "RegimeConditionedDMAEngine",
 ]

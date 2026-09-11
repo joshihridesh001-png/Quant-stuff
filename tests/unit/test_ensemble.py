@@ -21,6 +21,7 @@ from quant.analytics.ensemble import (
     EnsembleState,
     InvalidPredictionException,
     OrthogonalityRegularizedSolver,
+    RegimeConditionedDMAEngine,
     TikhonovCorrelationEstimator,
     VolatilityAdaptiveForgetting,
     predict_forward_regime_prior,
@@ -1736,8 +1737,12 @@ class TestCorrelationAndMirrorDescentSolver:
         )
 
         # Warmup (stabilize CPU frequency, branch predictor, and memory cache)
-        for _ in range(10):
+        for _ in range(15):
             solver.solve(scores, C)
+
+        import gc
+
+        gc.collect()
 
         # Benchmark 50 executions
         times = []
@@ -1752,3 +1757,500 @@ class TestCorrelationAndMirrorDescentSolver:
         )
         assert math.isclose(float(np.sum(w_star)), 1.0, abs_tol=1e-10)
         assert np.all(w_star > 0.0)
+
+
+class TestRegimeConditionedDMAEngine:
+    """Unit tests for RegimeConditionedDMAEngine master facade, lifecycle, and benchmark SLA."""
+
+    def test_initialize_state_with_warm_start_dsr(self) -> None:
+        """Verify warm-start state initialization from Deflated Sharpe Ratio (DSR)."""
+        engine = RegimeConditionedDMAEngine()
+        K = 10
+        dsr_scores = np.linspace(0.8, 1.5, K)
+        state = engine.initialize_state(n_models=K, initial_dsr=dsr_scores, initial_vol=0.015)
+
+        assert state.step_index == 0
+        assert len(state.weights) == K
+        assert math.isclose(float(np.sum(state.weights)), 1.0, abs_tol=1e-10)
+        assert np.all(state.weights > 0.0)
+
+        # Top DSR strategy must have higher initial prior weight than lowest
+        assert state.weights[-1] > state.weights[0]
+
+        # Invariant INV-ENS-001 on regime_conditional_posteriors
+        assert state.regime_conditional_posteriors.shape == (3, K)
+        for r in range(3):
+            assert np.allclose(state.regime_conditional_posteriors[r, :], state.weights)
+            assert math.isclose(
+                float(np.sum(state.regime_conditional_posteriors[r, :])), 1.0, abs_tol=1e-10
+            )
+
+        # Cumulative losses initialized to zero
+        assert state.cumulative_losses.shape == (K,)
+        assert np.all(state.cumulative_losses == 0.0)
+
+        # Effective models in [1, K]
+        assert 1.0 <= state.effective_models <= float(K)
+        assert state.mean_realized_volatility == pytest.approx(0.015)
+        assert state.last_ambiguity_temperature == pytest.approx(1.0)
+
+    def test_initialize_state_defaults_uniform(self) -> None:
+        """Verify state initialization without DSR defaults to uniform simplex prior."""
+        engine = RegimeConditionedDMAEngine()
+        K = 5
+        state = engine.initialize_state(n_models=K)
+
+        assert state.step_index == 0
+        assert len(state.weights) == K
+        np.testing.assert_allclose(state.weights, 1.0 / K, atol=1e-8)
+        assert math.isclose(float(np.sum(state.weights)), 1.0, abs_tol=1e-10)
+        assert state.effective_models == pytest.approx(float(K))
+        assert state.mean_realized_volatility == pytest.approx(0.01)
+        assert state.last_ambiguity_temperature == pytest.approx(1.0)
+        assert np.all(state.cumulative_losses == 0.0)
+
+    def test_initialize_state_validation(self) -> None:
+        """Verify defensive validation on initialize_state arguments."""
+        engine = RegimeConditionedDMAEngine()
+
+        # n_models < 1
+        with pytest.raises(EnsembleError, match="n_models"):
+            engine.initialize_state(n_models=0)
+        with pytest.raises(EnsembleError, match="n_models"):
+            engine.initialize_state(n_models=-5)
+
+        # initial_dsr dimension mismatch
+        with pytest.raises(InvalidPredictionException, match="initial_dsr"):
+            engine.initialize_state(n_models=5, initial_dsr=np.array([1.0, 2.0]))
+        with pytest.raises(InvalidPredictionException, match="initial_dsr"):
+            engine.initialize_state(n_models=3, initial_dsr=np.zeros((3, 1)))
+
+        # initial_dsr non-finite
+        with pytest.raises(DegenerateEnsembleException, match="initial_dsr"):
+            engine.initialize_state(n_models=3, initial_dsr=np.array([1.0, np.nan, 2.0]))
+        with pytest.raises(DegenerateEnsembleException, match="initial_dsr"):
+            engine.initialize_state(n_models=3, initial_dsr=np.array([1.0, np.inf, 2.0]))
+
+        # initial_vol <= 0 or non-finite
+        with pytest.raises(EnsembleError, match="initial_vol"):
+            engine.initialize_state(n_models=5, initial_vol=0.0)
+        with pytest.raises(EnsembleError, match="initial_vol"):
+            engine.initialize_state(n_models=5, initial_vol=-0.01)
+        with pytest.raises(DegenerateEnsembleException, match="initial_vol"):
+            engine.initialize_state(n_models=5, initial_vol=float("nan"))
+
+    def test_multi_bar_online_lifecycle_and_turnover_damping(self) -> None:
+        """Verify online DMA update lifecycle, invariant enforcement, and turnover damping."""
+        cfg = EnsembleConfig(turnover_damping=0.15)
+        engine = RegimeConditionedDMAEngine(config=cfg)
+        K = 5
+        state = engine.initialize_state(n_models=K)
+        P_trans = np.array(
+            [
+                [0.80, 0.15, 0.05],
+                [0.10, 0.70, 0.20],
+                [0.05, 0.05, 0.90],
+            ]
+        )
+
+        rng = np.random.default_rng(42)
+
+        # Run 20 online steps
+        for step in range(20):
+            prev_weights = np.copy(state.weights)
+            preds = rng.normal(0.001, 0.005, size=K)
+            variances = np.full(K, 0.0004)
+            realized_return = float(rng.normal(0.0005, 0.01))
+            realized_vol = 0.012 + 0.004 * math.sin(step)
+            regime_probs = np.array([0.60, 0.30, 0.10])
+
+            prediction, state = engine.predict_and_update(
+                predictions=preds,
+                variances=variances,
+                realized_return=realized_return,
+                realized_vol=realized_vol,
+                regime_probs=regime_probs,
+                transition_matrix=P_trans,
+                ambiguity_beta=1.0,
+                state=state,
+            )
+
+            # Invariant INV-ENS-001 (Strict Simplex Conservation)
+            assert math.isclose(float(np.sum(prediction.model_weights)), 1.0, abs_tol=1e-10)
+            assert np.all(prediction.model_weights > 0.0)
+            assert math.isclose(float(np.sum(state.weights)), 1.0, abs_tol=1e-10)
+            assert np.all(state.weights > 0.0)
+
+            # Invariant INV-ENS-002 (Variance Positivity & Additivity)
+            assert prediction.aleatoric_variance > 0.0
+            assert prediction.epistemic_variance >= 0.0
+            assert prediction.total_variance == pytest.approx(
+                prediction.aleatoric_variance + prediction.epistemic_variance, rel=1e-6
+            )
+
+            # Invariant INV-ENS-003 (Bounded Adaptive Forgetting)
+            assert (
+                cfg.min_forgetting_factor
+                <= prediction.volatility_forgetting_factor
+                <= cfg.max_forgetting_factor
+            )
+
+            # Invariant INV-ENS-004 (Strict Causal Information Flow)
+            assert state.step_index == step + 1
+            assert np.all(state.cumulative_losses >= 0.0)
+
+            # Invariant INV-ENS-005 (Bounded Weight Turnover)
+            # ||w_t - w_{t-1}||_1 <= 2 * (1 - lambda_churn) + numerical epsilon
+            turnover = float(np.sum(np.abs(state.weights - prev_weights)))
+            max_turnover = 2.0 * (1.0 - cfg.turnover_damping) + 1e-6
+            assert turnover <= max_turnover, (
+                f"Step {step}: turnover {turnover} exceeded {max_turnover}"
+            )
+
+    def test_50_bar_simulation_zero_lookahead(self) -> None:
+        """Verify 50-bar rolling sequence without lookahead leakage or numerical collapse."""
+        engine = RegimeConditionedDMAEngine()
+        K = 10
+        state = engine.initialize_state(n_models=K)
+        P_trans = np.eye(3) * 0.85 + 0.05
+
+        rng = np.random.default_rng(999)
+
+        for step in range(50):
+            preds = rng.normal(0.0002, 0.003, size=K)
+            variances = rng.uniform(0.0001, 0.0005, size=K)
+            realized_return = float(rng.normal(0.0, 0.015))
+            realized_vol = float(rng.uniform(0.008, 0.035))
+            rp = rng.uniform(0.1, 0.9, size=3)
+            rp /= np.sum(rp)
+
+            prediction, state = engine.predict_and_update(
+                predictions=preds,
+                variances=variances,
+                realized_return=realized_return,
+                realized_vol=realized_vol,
+                regime_probs=rp,
+                transition_matrix=P_trans,
+                ambiguity_beta=1.5,
+                state=state,
+            )
+
+            assert state.step_index == step + 1
+            assert np.all(np.isfinite(state.weights))
+            assert np.all(np.isfinite(prediction.model_weights))
+            assert prediction.total_variance > 0.0
+            assert math.isclose(float(np.sum(state.weights)), 1.0, abs_tol=1e-10)
+
+    def test_thermodynamic_ambiguity_shrinkage(self) -> None:
+        """Verify elevated ambiguity beta shrinks model weights toward uniform distribution."""
+        cfg = EnsembleConfig(ambiguity_shrinkage_cap=0.50)
+        engine = RegimeConditionedDMAEngine(config=cfg, beta_min=1.0, beta_max=5.0)
+        K = 4
+        P_trans = np.eye(3)
+        regime_probs = np.array([1.0 / 3, 1.0 / 3, 1.0 / 3])
+
+        # Skewed initial state: model 0 has high weight, model 3 low weight
+        state = engine.initialize_state(n_models=K, initial_dsr=np.array([2.5, 1.0, 0.5, 0.1]))
+
+        preds = np.array([0.01, -0.01, 0.005, -0.005])
+        variances = np.full(K, 0.0004)
+        ret = 0.005
+        vol = 0.015
+
+        # Normal ambiguity beta = 1.0 (lambda_beta = 0.0)
+        pred_normal, _ = engine.predict_and_update(
+            predictions=preds,
+            variances=variances,
+            realized_return=ret,
+            realized_vol=vol,
+            regime_probs=regime_probs,
+            transition_matrix=P_trans,
+            ambiguity_beta=1.0,
+            state=state,
+        )
+        assert pred_normal.ambiguity_shrinkage_weight == pytest.approx(0.0)
+
+        # High ambiguity beta = 5.0 (lambda_beta = 0.50)
+        pred_high, _ = engine.predict_and_update(
+            predictions=preds,
+            variances=variances,
+            realized_return=ret,
+            realized_vol=vol,
+            regime_probs=regime_probs,
+            transition_matrix=P_trans,
+            ambiguity_beta=5.0,
+            state=state,
+        )
+        assert pred_high.ambiguity_shrinkage_weight == pytest.approx(0.50)
+
+        # Under high ambiguity, weights must be flatter (closer to uniform 1/K)
+        # Difference between highest and lowest model weight must be smaller
+        spread_normal = float(np.max(pred_normal.model_weights) - np.min(pred_normal.model_weights))
+        spread_high = float(np.max(pred_high.model_weights) - np.min(pred_high.model_weights))
+        assert spread_high < spread_normal
+
+    def test_predict_and_update_with_external_correlation_matrix(self) -> None:
+        """Verify external correlation matrix is regularized and clone models are penalized."""
+        cfg = EnsembleConfig(orthogonality_penalty=0.50)
+        engine = RegimeConditionedDMAEngine(config=cfg)
+        K = 3
+        state = engine.initialize_state(n_models=K)
+        P_trans = np.eye(3)
+        regime_probs = np.array([0.5, 0.3, 0.2])
+
+        # Model 0 and 1 are correlated clones (0.95), Model 2 is orthogonal (0.0)
+        C_external = np.array(
+            [
+                [1.0, 0.95, 0.0],
+                [0.95, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        # All models have identical predictions and variances
+        preds = np.array([0.005, 0.005, 0.005])
+        variances = np.full(K, 0.0004)
+
+        prediction, state = engine.predict_and_update(
+            predictions=preds,
+            variances=variances,
+            realized_return=0.005,
+            realized_vol=0.015,
+            regime_probs=regime_probs,
+            transition_matrix=P_trans,
+            ambiguity_beta=1.0,
+            state=state,
+            correlation_matrix=C_external,
+        )
+
+        # Model 2 (orthogonal) should receive higher weight than clone model 0 or 1
+        w = prediction.model_weights
+        assert w[2] > w[0]
+        assert w[2] > w[1]
+        assert w[0] == pytest.approx(w[1], rel=1e-3)
+
+    def test_predict_and_update_with_forecast_horizons(self) -> None:
+        """Verify multi-horizon standardization via forecast_horizons."""
+        engine = RegimeConditionedDMAEngine()
+        K = 3
+        state = engine.initialize_state(n_models=K)
+        P_trans = np.eye(3)
+        regime_probs = np.array([1.0 / 3, 1.0 / 3, 1.0 / 3])
+
+        preds = np.array([0.02, 0.02, 0.02])
+        variances = np.full(K, 0.0004)
+        horizons = np.array([1.0, 4.0, 16.0])
+
+        pred, _ = engine.predict_and_update(
+            predictions=preds,
+            variances=variances,
+            realized_return=0.01,
+            realized_vol=0.015,
+            regime_probs=regime_probs,
+            transition_matrix=P_trans,
+            ambiguity_beta=1.0,
+            state=state,
+            forecast_horizons=horizons,
+        )
+
+        assert math.isclose(float(np.sum(pred.model_weights)), 1.0, abs_tol=1e-10)
+        assert pred.total_variance > 0.0
+
+    def test_predict_and_update_defensive_validations(self) -> None:
+        """Verify defensive error handling and invariants across all inputs."""
+        engine = RegimeConditionedDMAEngine()
+        K = 4
+        state = engine.initialize_state(n_models=K)
+        P_trans = np.eye(3)
+        regime_probs = np.array([0.5, 0.3, 0.2])
+        valid_preds = np.array([0.001, 0.002, -0.001, 0.003])
+        valid_vars = np.full(K, 0.0004)
+        valid_ret = 0.001
+        valid_vol = 0.015
+        valid_beta = 1.0
+
+        # Dimension mismatches: predictions vs variances
+        with pytest.raises(InvalidPredictionException, match="variances"):
+            engine.predict_and_update(
+                valid_preds,
+                np.full(3, 0.0004),
+                valid_ret,
+                valid_vol,
+                regime_probs,
+                P_trans,
+                valid_beta,
+                state,
+            )
+
+        # Dimension mismatches: predictions vs state.weights
+        with pytest.raises(InvalidPredictionException, match="state"):
+            engine.predict_and_update(
+                np.array([0.001, 0.002]),
+                np.array([0.0004, 0.0004]),
+                valid_ret,
+                valid_vol,
+                regime_probs,
+                P_trans,
+                valid_beta,
+                state,
+            )
+
+        # Non-finite predictions
+        with pytest.raises(DegenerateEnsembleException, match="predictions"):
+            bad_preds = np.copy(valid_preds)
+            bad_preds[0] = np.nan
+            engine.predict_and_update(
+                bad_preds,
+                valid_vars,
+                valid_ret,
+                valid_vol,
+                regime_probs,
+                P_trans,
+                valid_beta,
+                state,
+            )
+
+        # Non-finite variances
+        with pytest.raises(DegenerateEnsembleException, match="variances"):
+            bad_vars = np.copy(valid_vars)
+            bad_vars[0] = np.nan
+            engine.predict_and_update(
+                valid_preds,
+                bad_vars,
+                valid_ret,
+                valid_vol,
+                regime_probs,
+                P_trans,
+                valid_beta,
+                state,
+            )
+
+        # Non-positive variances (variance <= 0)
+        with pytest.raises(DegenerateEnsembleException, match="variances"):
+            bad_vars = np.copy(valid_vars)
+            bad_vars[0] = 0.0
+            engine.predict_and_update(
+                valid_preds,
+                bad_vars,
+                valid_ret,
+                valid_vol,
+                regime_probs,
+                P_trans,
+                valid_beta,
+                state,
+            )
+
+        # Non-finite realized return
+        with pytest.raises(DegenerateEnsembleException, match="realized_return"):
+            engine.predict_and_update(
+                valid_preds,
+                valid_vars,
+                float("nan"),
+                valid_vol,
+                regime_probs,
+                P_trans,
+                valid_beta,
+                state,
+            )
+
+        # Realized vol <= 0 or non-finite
+        with pytest.raises(EnsembleError, match="realized_vol"):
+            engine.predict_and_update(
+                valid_preds,
+                valid_vars,
+                valid_ret,
+                0.0,
+                regime_probs,
+                P_trans,
+                valid_beta,
+                state,
+            )
+        with pytest.raises(DegenerateEnsembleException, match="realized_vol"):
+            engine.predict_and_update(
+                valid_preds,
+                valid_vars,
+                valid_ret,
+                float("nan"),
+                regime_probs,
+                P_trans,
+                valid_beta,
+                state,
+            )
+
+        # Ambiguity beta <= 0 or non-finite
+        with pytest.raises(EnsembleError, match="ambiguity_beta"):
+            engine.predict_and_update(
+                valid_preds,
+                valid_vars,
+                valid_ret,
+                valid_vol,
+                regime_probs,
+                P_trans,
+                0.0,
+                state,
+            )
+        with pytest.raises(DegenerateEnsembleException, match="ambiguity_beta"):
+            engine.predict_and_update(
+                valid_preds,
+                valid_vars,
+                valid_ret,
+                valid_vol,
+                regime_probs,
+                P_trans,
+                float("nan"),
+                state,
+            )
+
+        # Invalid state type
+        with pytest.raises(EnsembleError, match="state"):
+            engine.predict_and_update(
+                valid_preds,
+                valid_vars,
+                valid_ret,
+                valid_vol,
+                regime_probs,
+                P_trans,
+                valid_beta,
+                "not_a_state",  # type: ignore[arg-type]
+            )
+
+    def test_performance_benchmark_sub_2ms(self) -> None:
+        """Verify Benchmark SLA: K=100 models full update and prediction cycle completes in <= 2.0ms."""
+        import sys
+        import time
+
+        if sys.gettrace() is not None:
+            pytest.skip("Skipping performance benchmark under tracer/profiler")
+
+        engine = RegimeConditionedDMAEngine()
+        K = 100
+        state = engine.initialize_state(n_models=K)
+        P_trans = np.eye(3) * 0.8 + 0.2 / 3.0
+
+        rng = np.random.default_rng(42)
+        preds = rng.normal(0.001, 0.005, size=K)
+        variances = np.full(K, 0.0004)
+        regime_probs = np.array([0.5, 0.3, 0.2])
+
+        # Warmup (stabilize CPU frequency, branch predictor, cache)
+        for _ in range(15):
+            engine.predict_and_update(
+                preds, variances, 0.001, 0.015, regime_probs, P_trans, 1.0, state
+            )
+
+        import gc
+
+        gc.collect()
+
+        # Timed benchmark: 50 executions
+        times = []
+        for _ in range(50):
+            t0 = time.perf_counter()
+            _, state = engine.predict_and_update(
+                preds, variances, 0.001, 0.015, regime_probs, P_trans, 1.0, state
+            )
+            times.append(time.perf_counter() - t0)
+
+        median_time_ms = float(np.median(times)) * 1000.0
+        assert median_time_ms <= 2.0, (
+            f"Benchmark SLA violated: median {median_time_ms:.3f}ms > 2.0ms"
+        )
