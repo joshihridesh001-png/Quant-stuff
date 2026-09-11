@@ -11,12 +11,12 @@ gantt
     section Phase 2: Econometrics
     Step 1: Market Data & Columnar Store    :done, s2_1, 2026-09-08, 1d
     Step 2: Fractional Differentiation       :done, s2_2, 2026-09-09, 1d
-    Step 3: Triple-Barrier Labeling         :active, s2_3, 2026-09-10, 2d
-    Step 4: Combinatorial Purged CV (CPCV)  :s2_4, after s2_3, 3d
-    Step 5: Two-Stage Meta-Labeling         :s2_5, after s2_4, 2d
-    Step 6: Deflated Sharpe Ratio (DSR)     :s2_6, after s2_5, 2d
+    Step 3: Triple-Barrier Labeling         :done, s2_3, 2026-09-10, 1d
+    Step 4: Combinatorial Purged CV (CPCV)  :done, s2_4, 2026-09-11, 2d
+    Step 5: Two-Stage Meta-Labeling         :done, s2_5, 2026-09-12, 2d
+    Step 6: Deflated Sharpe Ratio (DSR)     :done, s2_6, 2026-09-13, 2d
     section Phase 3: Game Theory
-    Scenario Matrix & Adversarial Payoffs   :p3, 2026-09-22, 5d
+    Scenario Matrix & Adversarial Payoffs   :active, p3, 2026-09-22, 5d
     section Phase 4: Evolution
     Hypergamic Selection & Population Engine :p4, 2026-09-29, 5d
     section Phase 5: Productionization
@@ -40,7 +40,7 @@ gantt
 
 ---
 
-### Phase 2: Econometric Rig & Feature Engineering [IN PROGRESS]
+### Phase 2: Econometric Rig & Feature Engineering [COMPLETE]
 
 To eliminate cognitive overload and merge conflicts, Phase 2 is decomposed into 6 sequential micro-steps:
 
@@ -57,54 +57,125 @@ To eliminate cognitive overload and merge conflicts, Phase 2 is decomposed into 
   * Real-time `StreamingFracDiffBuffer` with DuckDB repository pre-warming (`hydrate_from_repository`) and sub-millisecond updates.
   * 20 unit tests (73 total) passing with **89.63% coverage** and zero warnings.
 
-#### Step 3: Dynamic Volatility Triple-Barrier Labeling [ACTIVE / UPCOMING]
-* **Scope:**
-  * Path-dependent upper horizontal (profit-taking), lower horizontal (stop-loss), and vertical (expiration) barrier evaluation.
-  * Dynamic horizontal threshold scaling parameterized by instantaneous realized volatility: $pt_t = c_1 \sigma_t$, $sl_t = c_2 \sigma_t$.
-  * Explicit classification of un-hit expiration windows.
-* **Acceptance Criteria:** Property tests ensuring timestamps obey $t_{\text{touch}} \le t_{\text{expiration}}$; zero lookahead leakage.
+#### Step 3: Dynamic Volatility Triple-Barrier Labeling [COMPLETE]
+* **Deliverables:**
+  * Causal Parkinson range volatility estimator ($\sigma_t$) lagged by 1 bar ($t-1$) with zero lookahead bias.
+  * Geometric log-price space horizontal barrier evaluation preserving bilateral random-walk symmetry.
+  * Asymmetrical Long, Short, and Unsigned barrier execution mapping.
+  * Defensive bounds ($\sigma_{\text{floor}}, \sigma_{\text{cap}}$) preventing zero-volatility collapse and runaway barrier blowout.
+  * Opening price gap fill honoring discontinuous auction open levels.
+  * Conservative stop-loss collision policy on dual intra-bar breaches (`pessimistic_collision=True`).
+  * Net return deduction of round-trip bid-ask spread and exchange fee friction.
+  * 24 unit tests (97 total) passing with **90.20% coverage** and zero warnings.
 
-#### Step 4: Combinatorial Purged Cross-Validation (CPCV) [PLANNED]
-* **Scope:**
-  * Chronological partitioning into $N$ blocks generating $\binom{N}{k}$ combinatorial backtest splits.
-  * Temporal boundary purging to remove overlapping event information horizons.
-  * Post-test embargo periods to eliminate autoregressive serial correlation leakage.
-* **Acceptance Criteria:** Vectorized split generator producing empirical distributions of backtest paths; memory footprint bounded $< 2\text{GB}$.
+#### Step 4: Combinatorial Purged Cross-Validation (CPCV) [COMPLETE]
+* **Deliverables:**
+  * Combinatorial partitioning into $N$ contiguous chronological blocks generating $\binom{N}{k}$ out-of-sample backtest folds.
+  * Exact interval intersection purging removing training trades whose lifespan $[t_{\text{entry}}, t_{\text{exit}}]$ overlaps test intervals.
+  * Post-test autoregressive embargoing ($h_{\text{embargo}}$) neutralizing serial correlation leakage.
+  * Deterministic budget bounding (`max_splits`) preventing factorial compute explosion during evolutionary search.
+  * Defensive starvation guard (`min_train_ratio`) rejecting over-purged folds.
+  * Forward-chaining mode strictly enforcing past-to-future temporal causality.
+  * Continuous backtest path reconstruction ($\phi = \binom{N-1}{k-1}$ paths) with greedy positional fold assignment.
+  * Path Sharpe ratio distribution and empirical variance $V[\{SR_k\}]$ evaluation feeding directly into Step 6 (Deflated Sharpe Ratio).
+  * 13 unit tests (110 total) passing with **90.98% coverage** and zero warnings.
 
-#### Step 5: Two-Stage Meta-Labeling Architecture [PLANNED]
-* **Scope:**
-  * Decoupling primary directional model ($\hat{y}_t \in \{-1, 1\}$) from secondary bet-sizing classifier ($z_t \in \{0, 1\}$).
-  * Secondary model trained on feature vectors to predict probability of hitting profit barrier before stop-loss.
-  * Probability calibration (Brier score verification) parameterizing bet size.
-* **Acceptance Criteria:** Demonstrable increase in out-of-sample Sharpe ratio relative to raw directional heuristic.
+#### Step 5: Two-Stage Meta-Labeling Architecture [COMPLETE]
+* **Deliverables:**
+  * Two-stage Continuous-Payoff Kelly Meta-Labeling engine decoupling directional discovery from capital allocation.
+  * Payoff-aware meta-labeling ($\pi_t = \hat{y}_t \cdot R_t^{\text{net}}$) correctly crediting net-profitable vertical timeouts and penalizing fee-eroded trades.
+  * Regularized Platt logistic calibration (Platt scaling) mapping decision margins to smooth, monotonic probabilities with mandatory Brier score validation gate.
+  * Time-Decayed Fractional Kelly Criterion ($f^* = \lambda \cdot \frac{p \cdot b - (1-p)}{b}$) maximizing long-term compound capital growth.
+  * Holding duration discounting ($\sqrt{\tau_t / \tau_{\text{ref}}}$) pricing capital opportunity costs.
+  * Portfolio-level concurrency throttling ($c_t$) normalizing overlapping trade allocations to enforce an aggregate $100\%$ leverage limit ($L_{\text{max}} = 1.0$).
+  * 8 unit tests (118 total) passing with **91.40% coverage** and zero warnings.
 
-#### Step 6: Deflated Sharpe Ratio (DSR) & Statistical Significance [PLANNED]
-* **Scope:**
-  * Adjustment of empirical Sharpe ratio for skewness $\hat{\gamma}_3$, kurtosis $\hat{\gamma}_4$, sample length $T$, trial count $K$, and variance of trials $V[\{SR_k\}]$.
-  * Calculation of Expected Maximum Sharpe Ratio.
-  * Hard strategy rejection threshold ($DSR < 0.95$).
-* **Acceptance Criteria:** Verified against published benchmark datasets; integration with CPCV trial outputs.
+#### Step 6: Deflated Sharpe Ratio (DSR) & Statistical Significance [COMPLETE]
+* **Deliverables:**
+  * Robust higher-moment estimation (`compute_moments`) with two-sided winsorization and Pearson bound clamp $\hat{\gamma}_4 \ge 1 + \hat{\gamma}_3^2$.
+  * Probabilistic Sharpe Ratio (`compute_probabilistic_sharpe_ratio`) adjusting for skewness and excess kurtosis.
+  * Extreme Value Theory selection bias hurdle (`compute_expected_max_sharpe`) with $K=1$ probit singularity guard and Euler-Mascheroni approximation.
+  * Piecewise Minimum Backtest Length (`compute_min_backtest_length`) strictly evaluating to $+\infty$ for losing strategies.
+  * Spectral Frobenius trace participation ratio (`compute_effective_trials`) calculating effective independent trials $K_{\text{eff}} \le K$.
+  * False Discovery Rate controls (`adjust_p_values_fdr`) with Benjamini-Hochberg and Benjamini-Yekutieli algorithms.
+  * Master `DeflatedSharpeEngine` with dual institutional gate: $(\text{DSR} \ge 0.95) \land (T \ge \text{MinBTL})$.
+  * Direct integration with Step 4 CPCV paths (`evaluate_cpcv_results`) and population cohort screening (`evaluate_cohort`).
+  * 10 unit tests (128 total) passing with **91.75% overall coverage** (95% on `deflated_sharpe.py`) and zero warnings.
 
 ---
 
-### Phase 3: Scenario Matrix & Game Theory Engine [PLANNED]
-* **Scope:**
-  * Bayesian game formulation of market price formation against Nature/Counterparties.
-  * Adversarial market response regimes:
-    * $\mathbf{s}_1$: Immediate Absorption / Efficient Reversal
-    * $\mathbf{s}_2$: Momentum Cascade / Stop-Run Continuation
-    * $\mathbf{s}_3$: Adversarial Liquidity Trap / Squeeze
-  * Minimax Regret payoff matrix optimization incorporating square-root market impact and crowding penalties.
+### Phase 3: Scenario Matrix & Game Theory Engine [COMPLETE]
+
+Decomposed into 4 sequential micro-steps implementing the Entropic Distributionally Robust Stackelberg Engine:
+
+#### Step 1: Causal Bayesian Jump-Regime Estimator & Ambiguity Scaling [COMPLETE]
+* **Deliverables:**
+  * Online causal Bayesian filter tracking regime probabilities $\boldsymbol{\pi}_t = [P(\text{Absorption}), P(\text{Momentum}), P(\text{Panic})]^T$ with simplex sum enforcement ($\sum \pi_j = 1$).
+  * Two-sided Cumulative Sum (CUSUM) shock detector ($S_t^+, S_t^-$) with dwell time hysteresis ($\tau_{\text{dwell}} = 3$) preventing regime whip-sawing while instantly triggering emergency panic priors on violent sell-offs.
+  * Oracle Approximating Shrinkage (OAS) covariance estimator with spectral projection enforcing positive definiteness ($\lambda_{\min} \ge 10^{-5}$) under collinear or starved sample windows.
+  * Fournier-Guillin concentration bound calibrating thermodynamic ambiguity temperature $\beta_t \in [\beta_{\min}, \beta_{\max}]$.
+  * 21 unit tests (149 total) passing with **92.38% overall coverage** (99% on `regimes.py`) and zero warnings.
+
+#### Step 2: Microstructure Propagator & Kyle-Obizhaeva Impact [COMPLETE]
+* **Deliverables:**
+  * Huberman-Stanzl Arbitrage-Free Cross-Impact Constructor (`HubermanStanzlCrossImpact`) with symmetric sandwich tensor $\mathbf{\Lambda}_{\text{cross}} \succ 0$ linking asset adverse selection to Phase 2 Step 5's Kelly meta-label $z_t$.
+  * 3/2-power Generalized Pseudo-Huber potential (`GeneralizedPseudoHuber`) modeling the exact universal Square-Root Law of price impact ($\psi'_{3/2}(u) \sim \sqrt{u}$) with guaranteed strict convexity everywhere.
+  * Continuous Bayesian panic asymmetry gate with exact zero gradient at rest ($\nabla \mathcal{C}(\mathbf{0}) = \mathbf{0}$) eliminating artificial drift.
+  * State-space bounded order book depletion buffer with hyperbolic tangent saturation ($\mathbf{B}_t \le B_{\max}$).
+  * 19 unit tests (168 total) passing with **92.40% overall coverage** (93% on `market_impact.py`) and zero warnings.
+
+#### Step 3: Stackelberg Leader-Follower Trajectory [COMPLETE]
+* **Deliverables:**
+  * Discrete Monotone Hyperbolic Propagator (`DiscreteHyperbolicPropagator`) scheduling multi-period execution slices with exact partition of unity ($\sum_{k=1}^H \alpha_k = 1.0$) and overflow-free exponential formulation for all $\kappa \in (0, \infty)$ and $H \ge 1$.
+  * Continuous quadratic-bilinear Stackelberg payoff functional (`StackelbergPayoffEngine`) incorporating market maker predatory quote shading ($\mathbf{M}_{\text{pred}} = \theta_{\text{pred}} \mathbf{\Sigma}_j$), exact analytical gradient $\nabla_{\mathbf{a}} U$, and certified negative-definite Hessian $\mathbf{H}_{\mathbf{a}} U \prec 0$.
+  * Institutional Benchmark Universe (`InstitutionalBenchmarkUniverse`) providing Equal Weight, Risk Parity, Inverse Volatility, and Cash benchmarks with single-asset concentration caps ($b_i \le w_{\max}$) and Friction Parity.
+  * Payoff Tensor and Non-Negative Regret Matrix Constructor (`StackelbergPayoffTensorConstructor`) producing non-negative regret $R_{i, j} \ge 0$ across market regimes.
+  * 70 unit tests (238 total) passing with **93.03% overall coverage** (99% on `payoff_matrix.py`) and zero warnings.
+
+#### Step 4: Closed-Form Boltzmann Dual & Entropic Minimax Regret Solver [COMPLETE]
+* **Deliverables:**
+  * Max-shifted Log-Sum-Exp Boltzmann dual potential evaluator (`EntropicBoltzmannPotential`) with certified overflow immunity and thermally tilted worst-case distributions $\mathbf{q}^* \in \Delta^M$.
+  * Bounded Latent Space Transformation Engine (`LatentSoftmaxTransform`) mapping $[0, w_{\max}]^N$ bijectively to unconstrained coordinates with $O(N)$ diagonal Jacobian.
+  * Sub-millisecond Vectorized Damped Newton-Raphson Solver (`VectorizedNewtonSolver`) with Levenberg-Marquardt regularization, Armijo backtracking, positive-definite Fisher information Hessian, cross-impact caching, and Karush-Kuhn-Tucker (KKT) projected gradient termination.
+  * Certified worst-case regret metric $\Psi(\mathbf{a}^*)$ and multi-bar discrete hyperbolic execution trajectories feeding directly into Phase 4 Genetic Algorithm chromosome fitness.
+  * 21 unit tests (259 total) passing with **93.38% overall coverage** (96% on `minimax_regret.py`) and zero warnings.
 
 ---
 
-### Phase 4: Evolutionary Population & Hypergamy Dynamics [PLANNED]
-* **Scope:**
-  * Algorithmic genotype chromosome encoding ($\mathbf{g}_{\text{repr}}, \mathbf{g}_{\text{game}}, \mathbf{g}_{\text{infer}}, \mathbf{g}_{\text{risk}}$).
-  * Multi-objective fitness function combining Deflated Sharpe, Drawdown penalty, Minimax Regret, and Novelty distance.
-  * Population stratification into Alpha ($20\%$) and Aspirant ($80\%$) cohorts.
-  * Hypergamic assortative mating gated by residual orthogonality threshold ($\text{Corr}(\mathbf{e}_{\text{Alpha}}, \mathbf{e}_{\text{Aspirant}}) < \delta_{\text{ortho}}$).
-  * Entropy-governed adaptive mutation rates scaled by realized volatility.
+### Phase 4: Evolutionary Population & Hypergamy Dynamics [ACTIVE]
+
+#### Step 1: Chromosome Architecture & Vector Encoding Engine [COMPLETE]
+* **Deliverables:**
+  * Declarative Gene Registry (`GENE_REGISTRY`) specifying 20 algorithmic parameters across Representation, Game Theory, Inference, and Risk blocks with scale types (`ScaleType`).
+  * Continuous Unit Hypercube Codec (`ChromosomeVectorCodec`) implementing scale-invariant hybrid logarithmic-linear normalization.
+  * Invariant satisfaction by construction: timescale ordering ($\tau_{\text{fast}} < \tau_{\text{slow}}$) via ratio parameterization and regime scenario simplex ($\sum p_j \equiv 1.0, p_j > 0$) via unconstrained softmax logits with zero-mean gauge fixing.
+  * Bucket midpoint centering $u(k) = (k + 0.5) / K$ eliminating floating-point round-trip drift in discrete parameter quantization.
+  * Gauge-invariant phenotypic distance metric operating on decoded regime probabilities rather than raw logits.
+  * Typed factory adapters (`to_stackelberg_config`, `to_regime_config`, `to_minimax_config`, `to_triple_barrier_config`, `to_meta_label_config`) and backward-compatible dictionary serialization.
+  * 32 unit tests (291 total) passing with **93.71% overall coverage** (98% on `chromosomes.py`) and zero warnings.
+
+#### Step 2: Novelty Distance & Multi-Objective Pareto Sorting [COMPLETE]
+* **Deliverables:**
+  * Boundary-Anchored Adaptive RVEA with SVD Subspace Orthogonality & Memmel–Ledoit–Wolf Dependent Dominance (BA-ARVEA-SO) architecture.
+  * Domain entities `CandidateFitness`, `ParetoFront`, and `RankingResult` enforcing strict defensive invariants (`INV-PAR-001` to `INV-PAR-006`).
+  * `SVDSubspaceOrthogonalArchive` evaluating true orthogonal novelty via thin SVD basis projection ($1 - R^2$), eliminating multi-collinear clones and novelty parasites.
+  * `AdaptiveReferenceLattice` generating Das-Dennis $K=28$ reference rays ($M=3, p=6$) with immutable basis coordinate anchors $[1,0,0], [0,1,0], [0,0,1]$ (`INV-PAR-004`), dynamic interior ray migration with minimum angular separation ($\theta \ge 0.10\text{ rad}$), and generation-escalated Angle-Penalized Distance (APD).
+  * `DependentNonDominatedSorter` computing the exact Memmel–Ledoit–Wolf asymptotic covariance for strategy differences under return correlation $\rho$, eliminating 300% variance inflation of the independence fallacy.
+  * Deb's Feasibility Rule and Efficient Non-dominated Sorting with Sequential Search (ENS-SS) partitioning populations into non-dominated fronts.
+  * Unified facade `BoundaryAnchoredRVEARanker` with auto-admission of Front-1 elites into the SVD archive.
+  * 29 unit tests (320 total project tests) passing with **99% line coverage** on `pareto_sorting.py` and benchmark latency $< 15\text{ms}$.
+
+#### Step 3: Hypergamic Assortative Selection & Residual Orthogonality Gating [COMPLETE]
+* **Deliverables:**
+  * Front-preserving Pareto cohort stratifier (`ParetoCohortStratifier`) partitioning candidate populations into elite Alphas $\mathcal{A}$ and exploratory Aspirants $\mathcal{X}$, preserving Front 1 without truncation and padding from Front 2 (ordered by APD) while strictly excluding infeasible individuals (`INV-HYP-004`).
+  * Bidirectional absolute residual orthogonality gate (`ResidualOrthogonalityGate`) evaluating $1 - |\rho(e_A, e_B)| \ge \delta_{\text{current}}$, eliminating both direct clones and inverse clones ($\rho = -0.95$) with defensive zero-variance residual guards.
+  * Bounded tournament partner matcher (`HypergamicPartnerMatcher`) with adaptive threshold relaxation ($\gamma_{\text{relax}}^k$) and guaranteed zero-deadlock fallback via maximum Euclidean phenotypic distance in unit hypercube space (`INV-HYP-005`).
+  * Asymmetric Latent Unit-Hypercube Crossover (`AsymmetricLatentCrossover`) executing Simulated Binary Crossover (SBX) in scale-free continuous space $\mathbf{u} \in [0, 1]^{20}$ with gene-family role-biased inheritance ($P_\alpha = 0.75$ for risk/game; $P_{\text{asp}} = 0.65$ for repr/infer), guaranteeing ordering ($\tau_{\text{fast}} < \tau_{\text{slow}}$) and simplex ($\sum p_j \equiv 1.0$) by construction (`INV-HYP-002`).
+  * Master facade `HypergamicSelectionEngine` coordinating cohort stratification, partner matching, crossover, and monotonic Front-1 elitism preservation (`INV-HYP-003`), strictly guaranteeing $N_{\text{offspring}} == N_{\text{target}}$ (`INV-HYP-001`).
+  * Exported all domain entities, configuration, and facades in `src/quant/analytics/__init__.py`.
+  * 20 unit tests (340 total project tests) passing with **95% line coverage** on `hypergamic_selection.py` and benchmark reproduction latency well under 25ms.
+
+#### Step 4: Adaptive Volatility Mutation & Generational Lifecycle Engine [PLANNED]
 
 ---
 

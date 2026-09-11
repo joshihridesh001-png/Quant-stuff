@@ -61,33 +61,76 @@ $$\omega_0 = 1, \quad \omega_k = -\omega_{k-1} \frac{d - k + 1}{k}$$
 
 ### 3.2 Dynamic Volatility Triple-Barrier Method
 Defines path-dependent trade exit thresholds standardized across volatility regimes:
-* **Upper Barrier (Take Profit)**: $P_t \cdot (1 + c_1 \sigma_t)$
-* **Lower Barrier (Stop Loss)**: $P_t \cdot (1 - c_2 \sigma_t)$
-* **Vertical Barrier (Expiration)**: $t + \Delta t_{\text{horizon}}$
-* **Label**: $y_t \in \{1, -1, 0\}$ depending on which barrier is touched first.
+* **Causal Range Volatility (Parkinson)**:
+  $$\sigma_t = \sqrt{\frac{1}{4 \ln(2) \cdot W} \sum_{i=0}^{W-1} \left(\ln \frac{H_{t-1-i}}{L_{t-1-i}}\right)^2}$$
+  Strictly lagged to $t-1$ to prevent lookahead bias; clamped to $[\sigma_{\text{floor}}, \sigma_{\text{cap}}]$.
+* **Geometric Log-Price Space Barriers**:
+  $$\ln(\text{Upper}) = \ln(P_{\text{entry}}) + c_1 \sigma_t, \quad \ln(\text{Lower}) = \ln(P_{\text{entry}}) - c_2 \sigma_t$$
+  For Short positions, lower barrier is profit target and upper barrier is stop-loss.
+* **Vertical Barrier (Expiration)**: $t_{\text{entry}} + H$ trading bars.
+* **Discontinuous Opening Gap Fill**: When market opens beyond a barrier, exit price is the actual open ($O_k$) rather than the theoretical barrier line.
+* **Pessimistic Collision Policy**: If both High and Low penetrate barriers within the identical candle, stop-loss execution takes absolute priority.
+* **Net Realized Payoff**: Deducts round-trip friction:
+  $$R_t = \text{side} \cdot \frac{P_{\text{exit}} - P_{\text{entry}}}{P_{\text{entry}}} - 2 \cdot (\text{spread} + \text{fee})$$
+* **Categorical Label**: $y_t \in \{1, -1, 0\}$ depending on first barrier touched.
 
-### 3.3 Two-Stage Meta-Labeling Architecture
-1. **Primary Model (Directional)**: Generates trade recommendation $\hat{y}_t \in \{-1, 1\}$ with high recall.
-2. **Secondary Model (Conviction & Sizing)**: Trains a probability-calibrated binary classifier on feature matrix $\mathbf{X}_t$ to predict:
-   $$z_t = \mathbb{I}(y_t = \hat{y}_t) \in \{0, 1\}$$
-3. **Bet Sizing**: Position size is parameterized by calibrated probability: $p_t = \mathbb{P}(z_t = 1 \mid \mathbf{X}_t)$.
+### 3.3 Two-Stage Continuous-Payoff Kelly Meta-Labeling Architecture
+1. **Primary Model (Directional Recall)**: Generates high-recall directional orientation $\hat{y}_t \in \{-1, 1\}$.
+2. **Payoff-Aware Meta-Labeling**: Evaluates direction-aligned net payoff $\pi_t = \hat{y}_t \cdot R_t^{\text{net}}$, assigning binary success target:
+   $$z_t = \mathbb{I}(\pi_t > 0) \in \{0, 1\}$$
+   Fairly credits net-profitable vertical timeouts while penalizing fee-eroded trades.
+3. **Regularized Platt Calibration**: Maps model margins $m_t$ to monotonic calibrated probability $p_t$:
+   $$p_t = \frac{1}{1 + \exp(A \cdot m_t + B)}, \quad A < 0$$
+   Validated via mandatory Brier score reduction against baseline prior.
+4. **Time-Decayed Fractional Kelly Sizing**: Calculates optimal growth allocation scaled by conservative multiplier $\lambda \in [0.25, 0.50]$:
+   $$f^*_t = \frac{p_t \cdot b_t - (1 - p_t)}{b_t}, \quad s_t = \text{sign}(\hat{y}_t) \cdot \min\left( L_{\text{max}}, \frac{\lambda \cdot \max(0, f^*_t)}{\sqrt{\max(1, \tau_t) / \tau_{\text{ref}}} \cdot \max(1, c_t)} \right)$$
+   where $b_t$ is the net payoff odds ratio, $\tau_t$ is holding duration, and $c_t$ is active concurrent trade count. Zero allocation is enforced when expected value is non-positive ($f^*_t \le 0$).
 
 ---
 
 ## 4. Validation Methodology: Combinatorial Purged CV & Deflated Sharpe
 
 ### 4.1 Combinatorial Purged Cross-Validation (CPCV)
-* Partition $T$ observations into $N$ chronological blocks.
-* Form test splits from $\binom{N}{k}$ combinations, utilizing remaining $N-k$ blocks for training.
-* **Purging**: Drop training observations whose information horizon overlaps with test fold start.
-* **Embargoing**: Drop training observations for duration $h_{\text{embargo}}$ immediately following test split to prevent autoregressive leakage.
+* Partition $T$ observations into $N$ balanced contiguous chronological blocks $G_0, \dots, G_{N-1}$.
+* Form test splits from $\binom{N}{k}$ combinations (or forward-chained causal partitions), utilizing remaining blocks for candidate training.
+* **Exact Interval Intersection Purging**: A candidate training observation $i$ with holding period $[t_{i, \text{entry}}, t_{i, \text{exit}}]$ is purged if it overlaps any test block interval $[T_{\text{test, start}}, T_{\text{test, end}}]$:
+  $$[t_{i, \text{entry}}, t_{i, \text{exit}}] \cap [T_{\text{test, start}}, T_{\text{test, end}}] \ne \emptyset \iff (t_{i, \text{entry}} \le T_{\text{test, end}}) \land (t_{i, \text{exit}} \ge T_{\text{test, start}})$$
+* **Autoregressive Embargoing**: Training observations immediately succeeding test intervals within duration $h_{\text{embargo}} = \lceil T \cdot \text{embargo\_pct} \rceil$ (or explicit bars) are excluded to eliminate residual autoregressive memory leakage.
+* **Starvation Guard**: Splits failing retained sample ratio constraint $\frac{|\text{train\_indices}|}{T} \ge \text{min\_train\_ratio}$ are defensively rejected.
+* **Continuous Backtest Path Reconstruction**: Folds are stitched into $\phi = \binom{N-1}{k-1}$ continuous out-of-sample backtest paths using greedy positional fold assignment: for each block $g$, its $p$-th test fold occurrence fills path $p$.
+* **Empirical Sharpe Variance Vector**: Evaluates empirical Sharpe distribution $\{SR_p\}_{p=1}^\phi$ and its variance $V[\{SR\}] = \frac{1}{\phi - 1} \sum_{p=1}^\phi (SR_p - \overline{SR})^2$, which is supplied directly as the variance parameter to Step 6 (Deflated Sharpe Ratio).
 
-### 4.2 Deflated Sharpe Ratio (DSR)
-Evaluates backtested Sharpe Ratio ($\widehat{SR}$) conditional on skewness $\hat{\gamma}_3$, kurtosis $\hat{\gamma}_4$, sample length $T$, trial count $K$, and variance of trials $V[\{\widehat{SR}_k\}]$:
+### 4.2 Deflated Sharpe Ratio (DSR) & Statistical Significance
+Evaluates backtested Sharpe Ratio ($\widehat{SR}$) conditional on skewness $\hat{\gamma}_3$, Pearson kurtosis $\hat{\gamma}_4$, sample length $T$, effective independent trial count $K_{\text{eff}}$, and cross-trial variance $V[\{\widehat{SR}_k\}]$:
 
-$$E\left[\max_k \{SR_k\}\right] \approx (1-\gamma) Z^{-1}\left(1 - \frac{1}{K}\right) + \gamma Z^{-1}\left(1 - \frac{1}{K e}\right)$$
-$$DSR = \Phi\left( \frac{(\widehat{SR} - E[\max \{SR_k\}]) \sqrt{T-1}}{\sqrt{1 - \hat{\gamma}_3 \widehat{SR} + \frac{\hat{\gamma}_4 - 1}{4} \widehat{SR}^2}} \right)$$
-* **Rejection Rule**: Reject any strategy with $DSR < 0.95$.
+1. **Robust Moment Estimation & Pearson Clamping**:
+   Two-sided winsorization suppresses outlier wicks. Kurtosis is mathematically bounded to prevent negative standard error radicals:
+   $$\hat{\gamma}_4 \ge 1 + \hat{\gamma}_3^2$$
+
+2. **Probabilistic Sharpe Ratio (PSR)**:
+   $$\hat{\sigma}_{SR} = \sqrt{\frac{\max\left(10^{-8}, \; 1 - \hat{\gamma}_3 \widehat{SR} + \frac{\hat{\gamma}_4 - 1}{4} \widehat{SR}^2\right)}{T - 1}}$$
+   $$\text{PSR}(SR^*) = \Phi\left( \frac{\widehat{SR} - SR^*}{\hat{\sigma}_{SR}} \right)$$
+
+3. **Effective Independent Trials via Spectral Decomposition**:
+   Constructs correlation matrix $\mathbf{C} \in \mathbb{R}^{K \times K}$ across candidate models and calculates effective rank:
+   $$K_{\text{eff}} = \frac{(\text{tr}(\mathbf{C}))^2}{\text{tr}(\mathbf{C}^2)} = \frac{K^2}{\sum_{i=1}^K \sum_{j=1}^K C_{ij}^2}$$
+
+4. **Expected Maximum Sharpe Ratio Hurdle**:
+   $$E\left[\max_{k=1\dots K_{\text{eff}}} \{SR_k\}\right] \approx \overline{SR} + \sqrt{V[\{SR\}]} \cdot \left( (1-\gamma) \Phi^{-1}\left(1 - \frac{1}{K_{\text{eff}}}\right) + \gamma \Phi^{-1}\left(1 - \frac{1}{K_{\text{eff}} e}\right) \right)$$
+   where $\gamma \approx 0.5772156649$ is the Euler-Mascheroni constant. Collapses to $\overline{SR}$ when $K_{\text{eff}} \le 1$ or $V \le 0$.
+
+5. **Piecewise Minimum Backtest Length (MinBTL)**:
+   $$\text{MinBTL} = \begin{cases}
+     1 + \left(1 - \hat{\gamma}_3 \widehat{SR} + \frac{\hat{\gamma}_4 - 1}{4} \widehat{SR}^2\right) \left( \frac{\Phi^{-1}(0.95)}{\widehat{SR} - E[\max \{SR\}]} \right)^2 & \text{if } \widehat{SR} > E[\max \{SR\}] \\
+     +\infty & \text{if } \widehat{SR} \le E[\max \{SR\}]
+   \end{cases}$$
+
+6. **Dual Institutional Gate**:
+   $$\text{Certify Strategy} \iff (\text{DSR} \ge 0.95) \land (T \ge \text{MinBTL})$$
+
+7. **Cohort False Discovery Rate (FDR) Controls**:
+   Applies Benjamini-Hochberg (BH) or Benjamini-Yekutieli (BY) stepdown procedures across multi-model genetic populations to guarantee:
+   $$\text{FDR} \le Q^* = 0.05$$
 
 ---
 

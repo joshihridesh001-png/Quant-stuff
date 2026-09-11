@@ -4,6 +4,13 @@ import math
 from typing import Any
 from uuid import UUID
 
+from quant.analytics.chromosomes import (
+    GameTheoryChromosome,
+    InferenceChromosome,
+    RepresentationChromosome,
+    RiskChromosome,
+    StrategyChromosome,
+)
 from quant.domain.interfaces import IGenotypeRepository
 from quant.domain.models import Genotype, GenotypeCohort
 
@@ -187,20 +194,44 @@ class GenotypeService:
 
         for i in range(population_size):
             cohort = GenotypeCohort.ALPHA if i < alpha_count else GenotypeCohort.ASPIRANT
+            chrom = StrategyChromosome(
+                representation=RepresentationChromosome(
+                    tau_slow=86400.0 * (1.0 + (i * 0.05)),
+                    tau_ratio=0.05 + 0.01 * (i % 10),
+                    alpha_decay=0.5,
+                    fractional_d=0.40,
+                ),
+                game_theory=GameTheoryChromosome(
+                    ambiguity_temp=1.0,
+                    risk_aversion=1.0 + (i * 0.05),
+                    predatory_intensity=0.25,
+                    logit_bull=0.0,
+                    logit_bear=0.0,
+                    logit_panic=-1.0,
+                ),
+                inference=InferenceChromosome(
+                    execution_horizon=5 + (i % 5),
+                    hyperbolic_decay=0.50,
+                    profit_take_mult=2.0,
+                    stop_loss_mult=2.0,
+                    holding_period=20,
+                    meta_label_thresh=0.50,
+                ),
+                risk=RiskChromosome(
+                    vol_target=0.15,
+                    max_weight=0.30,
+                    max_drawdown_limit=0.10,
+                    turnover_budget=0.50,
+                ),
+            )
+            cdict = chrom.to_dict()
             genotype = await self.register_genotype(
                 generation=0,
                 cohort=cohort,
-                chromosome_repr={
-                    "tau_fast": 3600.0 * (1.0 + (i * 0.1)),
-                    "tau_slow": 86400.0 * (1.0 + (i * 0.05)),
-                    "alpha": 0.5,
-                },
-                chromosome_game={
-                    "risk_aversion_lambda": 1.0 + (i * 0.05),
-                    "belief_prior": [0.33, 0.33, 0.34],
-                },
-                chromosome_infer={"model_depth": 3, "sensitivity": 0.5},
-                chromosome_risk={"vol_target": 0.15, "max_drawdown_limit": 0.10},
+                chromosome_repr=cdict["chromosome_repr"],
+                chromosome_game=cdict["chromosome_game"],
+                chromosome_infer=cdict["chromosome_infer"],
+                chromosome_risk=cdict["chromosome_risk"],
             )
             created.append(genotype)
 
