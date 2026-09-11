@@ -165,7 +165,16 @@ Decomposed into 4 sequential micro-steps implementing the Entropic Distributiona
   * Unified facade `BoundaryAnchoredRVEARanker` with auto-admission of Front-1 elites into the SVD archive.
   * 29 unit tests (320 total project tests) passing with **99% line coverage** on `pareto_sorting.py` and benchmark latency $< 15\text{ms}$.
 
-#### Step 3: Hypergamic Assortative Selection & Residual Orthogonality Gating [PLANNED]
+#### Step 3: Hypergamic Assortative Selection & Residual Orthogonality Gating [COMPLETE]
+* **Deliverables:**
+  * Front-preserving Pareto cohort stratifier (`ParetoCohortStratifier`) partitioning candidate populations into elite Alphas $\mathcal{A}$ and exploratory Aspirants $\mathcal{X}$, preserving Front 1 without truncation and padding from Front 2 (ordered by APD) while strictly excluding infeasible individuals (`INV-HYP-004`).
+  * Bidirectional absolute residual orthogonality gate (`ResidualOrthogonalityGate`) evaluating $1 - |\rho(e_A, e_B)| \ge \delta_{\text{current}}$, eliminating both direct clones and inverse clones ($\rho = -0.95$) with defensive zero-variance residual guards.
+  * Bounded tournament partner matcher (`HypergamicPartnerMatcher`) with adaptive threshold relaxation ($\gamma_{\text{relax}}^k$) and guaranteed zero-deadlock fallback via maximum Euclidean phenotypic distance in unit hypercube space (`INV-HYP-005`).
+  * Asymmetric Latent Unit-Hypercube Crossover (`AsymmetricLatentCrossover`) executing Simulated Binary Crossover (SBX) in scale-free continuous space $\mathbf{u} \in [0, 1]^{20}$ with gene-family role-biased inheritance ($P_\alpha = 0.75$ for risk/game; $P_{\text{asp}} = 0.65$ for repr/infer), guaranteeing ordering ($\tau_{\text{fast}} < \tau_{\text{slow}}$) and simplex ($\sum p_j \equiv 1.0$) by construction (`INV-HYP-002`).
+  * Master facade `HypergamicSelectionEngine` coordinating cohort stratification, partner matching, crossover, and monotonic Front-1 elitism preservation (`INV-HYP-003`), strictly guaranteeing $N_{\text{offspring}} == N_{\text{target}}$ (`INV-HYP-001`).
+  * Exported all domain entities, configuration, and facades in `src/quant/analytics/__init__.py`.
+  * 20 unit tests (340 total project tests) passing with **95% line coverage** on `hypergamic_selection.py` and benchmark reproduction latency well under 25ms.
+
 #### Step 4: Adaptive Volatility Mutation & Generational Lifecycle Engine [PLANNED]
 
 ---
