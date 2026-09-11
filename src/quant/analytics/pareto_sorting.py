@@ -153,3 +153,178 @@ class RankingResult:
     active_reference_rays: np.ndarray
     archive_size: int
     subspace_rank: int
+
+
+class SVDSubspaceOrthogonalArchive:
+    """Historical elite archive maintaining an orthonormal SVD prediction basis.
+
+    Functional Purpose:
+        Eradicates the 'Novelty Parasite' by evaluating candidate novelty as the
+        fraction of unexplained variance (1 - R²) when projecting out-of-fold
+        residuals onto the orthogonal complement of the elite alpha subspace.
+        Detects multi-collinear redundancy where pairwise correlations fail.
+
+    Defensive Invariants:
+        INV-PAR-006: Output novelty rho_ortho in [0.0, 1.0] for all candidates.
+        Viability Gate: Candidates with viability_mask[i] == False receive rho = 0.0.
+    """
+
+    def __init__(
+        self,
+        max_capacity: int = 500,
+        variance_threshold: float = 0.99,
+        max_basis_rank: int = 50,
+    ) -> None:
+        """Initialize SVDSubspaceOrthogonalArchive with capacity and threshold parameters.
+
+        Args:
+            max_capacity: Maximum number of historical elite models stored in FIFO buffer.
+            variance_threshold: Minimum cumulative singular energy retained in basis.
+            max_basis_rank: Hard ceiling on number of singular vectors retained.
+        """
+        self._max_capacity = max_capacity
+        self._variance_threshold = variance_threshold
+        self._max_basis_rank = max_basis_rank
+
+        # Circular FIFO storage for standardized residual series
+        self._elite_ids: list[str] = []
+        self._residuals: list[np.ndarray] = []
+
+        # Cached orthonormal basis matrix V_K in R^{T x K}
+        self._basis_vt: np.ndarray | None = None
+        self._subspace_rank: int = 0
+
+    @property
+    def archive_size(self) -> int:
+        """Current number of historical elite models stored in the archive."""
+        return len(self._residuals)
+
+    @property
+    def subspace_rank(self) -> int:
+        """Effective rank of the current orthonormal elite prediction basis."""
+        return self._subspace_rank
+
+    def _standardize_residual(self, series: np.ndarray) -> np.ndarray | None:
+        """Center and L2-normalize residual vector, returning None if zero-variance."""
+        dev = series - np.mean(series)
+        norm = float(np.linalg.norm(dev))
+        if norm < 1e-12:
+            return None
+        res: np.ndarray = np.asarray(dev / norm, dtype=np.float64)
+        return res
+
+    def _recompute_basis(self) -> None:
+        """Compute thin SVD on stored residuals and cache orthonormal basis vectors."""
+        if not self._residuals:
+            self._basis_vt = None
+            self._subspace_rank = 0
+            return
+
+        # Stack into matrix A in R^{N_arch x T}
+        matrix = np.vstack(self._residuals)
+
+        # Thin SVD: matrix = U * S * Vt
+        _, s, vt = np.linalg.svd(matrix, full_matrices=False)
+
+        # Retain singular vectors capturing variance_threshold cumulative energy
+        energy = s**2
+        total_energy = float(np.sum(energy))
+        if total_energy < 1e-12:
+            self._basis_vt = None
+            self._subspace_rank = 0
+            return
+
+        cum_ratio = np.cumsum(energy) / total_energy
+        rank_idx = int(np.searchsorted(cum_ratio, self._variance_threshold)) + 1
+        effective_rank = min(rank_idx, self._max_basis_rank, len(s))
+
+        # Rows of Vt are orthonormal vectors in R^T
+        self._basis_vt = vt[:effective_rank, :].copy()
+        self._subspace_rank = effective_rank
+
+    def admit(
+        self,
+        candidate_id: str,
+        residual_series: np.ndarray,
+        novelty_score: float,
+        dsr: float,
+    ) -> bool:
+        """Admit a candidate into the historical elite archive.
+
+        Functional Purpose:
+            Maintains the rolling FIFO memory of elite strategy behaviors,
+            triggering basis recomputation upon insertion.
+
+        Args:
+            candidate_id: Unique identifier for candidate.
+            residual_series: 1D contiguous array of prediction residuals.
+            novelty_score: Evaluated orthogonal novelty score.
+            dsr: Certified Deflated Sharpe Ratio.
+
+        Returns:
+            True if admitted, False if candidate had zero-variance residuals.
+        """
+        standardized = self._standardize_residual(residual_series)
+        if standardized is None:
+            return False
+
+        # Enforce FIFO eviction when capacity is reached
+        if len(self._residuals) >= self._max_capacity:
+            self._elite_ids.pop(0)
+            self._residuals.pop(0)
+
+        self._elite_ids.append(candidate_id)
+        self._residuals.append(standardized)
+        self._recompute_basis()
+        return True
+
+    def compute_novelty(
+        self,
+        residual_batch: np.ndarray,
+        viability_mask: np.ndarray,
+    ) -> np.ndarray:
+        """Compute SVD subspace orthogonal novelty for a batch of candidate residuals.
+
+        Functional Purpose:
+            Evaluates rho_ortho as (1 - R²) via projection onto the orthonormal basis.
+            Clamps novelty to 0.0 for unviable candidates (Viability Gate).
+
+        Args:
+            residual_batch: 2D array of shape (N_cand, T) of prediction residuals.
+            viability_mask: 1D boolean array of shape (N_cand,) indicating viability.
+
+        Returns:
+            1D array of shape (N_cand,) containing novelty scores in [0.0, 1.0].
+        """
+        n_cand = residual_batch.shape[0]
+        novelties = np.zeros(n_cand, dtype=np.float64)
+
+        # Generation 0 or empty archive fallback: all viable candidates receive 1.0
+        if self._basis_vt is None or self._subspace_rank == 0:
+            novelties[viability_mask] = 1.0
+            return novelties
+
+        # Basis Vt has shape (K, T). Transpose is V in R^{T x K}
+        v_basis = self._basis_vt.T
+
+        for i in range(n_cand):
+            # Viability Gate: unviable candidates receive 0.0 novelty
+            if not viability_mask[i]:
+                novelties[i] = 0.0
+                continue
+
+            std_res = self._standardize_residual(residual_batch[i])
+            if std_res is None:
+                # ERR-EVO-PAR-002: Zero-variance residual yields zero novelty
+                novelties[i] = 0.0
+                continue
+
+            # Projection coordinates: c = V^T * e in R^K
+            coords = np.dot(std_res, v_basis)
+            explained_ratio = float(np.sum(coords**2))
+
+            # Fraction of unexplained variance: 1 - R^2
+            ortho_score = max(0.0, min(1.0, 1.0 - explained_ratio))
+            novelties[i] = ortho_score
+
+        return novelties

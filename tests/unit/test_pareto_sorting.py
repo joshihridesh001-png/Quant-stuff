@@ -163,3 +163,89 @@ class TestDomainEntitiesAndInvariants:
         assert result.active_reference_rays.shape == (3, 3)
         assert result.archive_size == 10
         assert result.subspace_rank == 3
+
+
+class TestSVDSubspaceOrthogonalArchive:
+    """Test suite for SVDSubspaceOrthogonalArchive."""
+
+    def test_empty_archive_returns_unit_novelty_for_viable(self) -> None:
+        """Empty archive returns 1.0 for viable candidates and 0.0 for unviable."""
+        from quant.analytics.pareto_sorting import SVDSubspaceOrthogonalArchive
+
+        archive = SVDSubspaceOrthogonalArchive(max_capacity=50)
+        assert archive.archive_size == 0
+        assert archive.subspace_rank == 0
+
+        residuals = np.random.randn(3, 120).astype(np.float64)
+        viability = np.array([True, False, True], dtype=bool)
+
+        novelties = archive.compute_novelty(residuals, viability)
+        assert len(novelties) == 3
+        assert np.isclose(novelties[0], 1.0)
+        assert np.isclose(novelties[1], 0.0)  # Viability gated
+        assert np.isclose(novelties[2], 1.0)
+
+    def test_svd_subspace_detects_multi_collinear_redundancy(self) -> None:
+        """Verifies that a candidate spanned by multiple archive elites yields rho ≈ 0.0."""
+        from quant.analytics.pareto_sorting import SVDSubspaceOrthogonalArchive
+
+        archive = SVDSubspaceOrthogonalArchive(max_capacity=50)
+
+        # Create two orthogonal basis residual series
+        t_bars = 200
+        e1 = np.sin(np.linspace(0, 10 * np.pi, t_bars))
+        e2 = np.cos(np.linspace(0, 10 * np.pi, t_bars))
+
+        archive.admit("elite_1", e1, novelty_score=1.0, dsr=1.5)
+        archive.admit("elite_2", e2, novelty_score=1.0, dsr=1.6)
+        assert archive.archive_size == 2
+        assert archive.subspace_rank == 2
+
+        # Create a candidate that is an exact linear combination: e_cand = 0.6 * e1 + 0.8 * e2
+        e_redundant = 0.6 * e1 + 0.8 * e2
+        # Create a truly orthogonal candidate: independent random noise
+        np.random.seed(42)
+        e_orthogonal = np.random.randn(t_bars)
+        # Ensure exact orthogonality to e1 and e2
+        e_orthogonal -= (np.dot(e_orthogonal, e1) / np.dot(e1, e1)) * e1
+        e_orthogonal -= (np.dot(e_orthogonal, e2) / np.dot(e2, e2)) * e2
+
+        batch = np.vstack([e_redundant, e_orthogonal])
+        viability = np.array([True, True], dtype=bool)
+
+        novelties = archive.compute_novelty(batch, viability)
+
+        # Redundant candidate must have near-zero novelty (spanned by e1 and e2)
+        assert novelties[0] < 1e-4, f"Expected near-zero novelty, got {novelties[0]}"
+        # Orthogonal candidate must have near 1.0 novelty
+        assert novelties[1] > 0.95, f"Expected high novelty, got {novelties[1]}"
+
+    def test_archive_fifo_eviction(self) -> None:
+        """Verifies FIFO buffer eviction when capacity exceeds max_capacity."""
+        from quant.analytics.pareto_sorting import SVDSubspaceOrthogonalArchive
+
+        archive = SVDSubspaceOrthogonalArchive(max_capacity=5)
+        t_bars = 100
+
+        for i in range(7):
+            res = np.random.randn(t_bars)
+            admitted = archive.admit(f"cand_{i}", res, novelty_score=0.8, dsr=1.0 + i * 0.1)
+            assert admitted is True
+
+        assert archive.archive_size == 5
+
+    def test_zero_variance_residuals_clamped_safely(self) -> None:
+        """ERR-EVO-PAR-002: Zero-variance residual series does not trigger divide-by-zero NaN."""
+        from quant.analytics.pareto_sorting import SVDSubspaceOrthogonalArchive
+
+        archive = SVDSubspaceOrthogonalArchive(max_capacity=10)
+        t_bars = 100
+        archive.admit("elite_1", np.random.randn(t_bars), 1.0, 1.2)
+
+        # Candidate with identical constant values (zero variance)
+        zero_var_res = np.ones((1, t_bars), dtype=np.float64) * 42.0
+        viability = np.array([True], dtype=bool)
+
+        novelties = archive.compute_novelty(zero_var_res, viability)
+        assert np.isfinite(novelties[0])
+        assert novelties[0] == 0.0
