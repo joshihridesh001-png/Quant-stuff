@@ -21,7 +21,8 @@ gantt
     Hypergamic Selection & Population Engine :done, p4, 2026-09-29, 5d
     section Phase 5: Productionization
     Step 1: Dynamic Model Averaging (RD-DMA) :done, s5_1, 2026-10-06, 3d
-    Ensemble Aggregation & Risk Overlays    :active, p5, 2026-10-09, 2d
+    Step 2: Circuit Breakers & Overlays     :done, s5_2, 2026-10-09, 2d
+    Risk Overlays & Live Simulator          :active, p5, 2026-10-11, 4d
 ```
 
 ---
@@ -209,8 +210,22 @@ Decomposed into sequential micro-steps implementing the Institutional Dynamic Mo
   * Exported all 13 Phase 5 Step 1 symbols in `src/quant/analytics/__init__.py`.
   * 53 comprehensive unit tests in `tests/unit/test_ensemble.py` (398 total project tests passing) with **95% line coverage** on `ensemble.py`, 100% strict mypy compliance, and zero lint/format deviations.
 
+#### Step 2: Epistemic Disagreement Entropy & Circuit Breaker Overlays [COMPLETE]
+* **Deliverables:**
+  * Master orchestrator `CircuitBreakerOverlayEngine` in `src/quant/analytics/circuit_breakers.py` implementing multi-tier institutional risk overlays and state-machine transitions.
+  * `EpistemicEntropyCalculator` computing 3-simplex directional consensus probabilities $\mathbf{p} \in \Delta^3$ ($p_+, p_-, p_0$) with deadband threshold $\delta_{\text{sign}} = 10^{-4}$ (`INV-CB-004`), normalized Shannon directional consensus entropy $\widetilde{H}_{\text{dir}} \in [0.0, 1.0]$, epistemic uncertainty ratio $\rho_{\text{epistemic}} \in [0.0, 1.0)$, and composite epistemic disagreement entropy $H_{\text{epistemic}} = \widetilde{H}_{\text{dir}} \sqrt{\rho_{\text{epistemic}}}$.
+  * `ContinuousHaircutCalculator` evaluating thermodynamic composite shock score $\Xi_t = \omega_H H_{\text{epistemic}} + \omega_\rho \rho_{\text{epistemic}} + \omega_\beta \tilde{\beta}_t \in [0.0, 1.0]$ integrating normalized macroeconomic ambiguity $\tilde{\beta}_t$, and normalized continuous logistic sigmoid haircut $\kappa_t \in [0.0, 1.0]$ with strict boundary anchors $\kappa_t(0.0) \equiv 1.0000, \kappa_t(1.0) \equiv 0.0000$ and guaranteed monotonicity (`INV-CB-001`).
+  * 4-tier discrete institutional risk hierarchy (`CircuitBreakerTier`): `NORMAL` (0), `CAUTION` (1), `DERISK` (2), `HALT` (3) (`INV-CB-002`).
+  * Anti-chattering hysteresis state machine (`INV-CB-003`) enforcing instantaneous escalation on volatility/entropy spikes, minimum dwell-time cooling lockouts ($\tau_{\text{dwell}} \ge 5$ bars in `HALT`/`DERISK`), and dual-barrier recovery requiring $\Xi_t < \theta_{\text{recovery}} = 0.30$ and single-tier de-escalations.
+  * Exogenous shock coupling: instantaneous single-bar emergency transition to `HALT` upon joint occurrence of Phase 3 CUSUM jump and panic regime (`cusum_shock and regime_is_panic`).
+  * Master integration facade `evaluate_prediction` directly consuming Phase 5 Step 1 `EnsemblePrediction` payloads with automatic panic regime derivation from `regime_probabilities`.
+  * Non-finite data protection throwing `DegenerateCircuitBreakerException` on NaN/Inf inputs (`INV-CB-005`).
+  * Sub-0.20ms benchmark latency SLA (`INV-CB-006`): median evaluation clocked at $\approx 0.04\text{ms}$ for $K=100$ models.
+  * Exported all 10 domain symbols in `src/quant/analytics/__init__.py`.
+  * 121 comprehensive unit tests in `tests/unit/test_circuit_breakers.py` (514 total project tests passing) with **99% line coverage** on `circuit_breakers.py`, 100% strict typing compliance, and zero lint/format deviations.
+
 * **Remaining Scope (Subsequent Steps):**
-  * Step 2: Epistemic Disagreement Entropy & Circuit Breaker Overlays.
   * Step 3: Extreme Tail VaR / Expected Shortfall & Execution Sizing Calibration.
   * Step 4: End-to-End Live Replay Simulator & Institutional Benchmarking.
+
 

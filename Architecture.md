@@ -111,6 +111,7 @@ To achieve institutional-grade throughput while preserving relational integrity,
 | `src/quant/analytics/hypergamic_selection.py` | `HypergamicSelectionEngine`, `ParetoCohortStratifier`, `ResidualOrthogonalityGate`, `HypergamicPartnerMatcher`, `AsymmetricLatentCrossover` | Front-preserving Pareto cohort stratification, bidirectional residual orthogonality gating, adaptive deadlock-free partner matching, and asymmetric latent-hypercube crossover. |
 | `src/quant/analytics/evolutionary_lifecycle.py` | `GenerationalLifecycleEngine`, `AdaptiveVolatilityMutator`, `StagnationDetector`, `MutationConfig`, `GenerationalState` | Adaptive Cauchy volatility mutation with mirror reflection, Rechenberg APD progress adaptation, dual-space stagnation monitoring, and $(\mu + \lambda)$ closed-loop generational lifecycle. |
 | `src/quant/analytics/ensemble.py` | `RegimeConditionedDMAEngine`, `VolatilityAdaptiveForgetting`, `AsymmetricDownsideLossScorer`, `TikhonovCorrelationEstimator`, `OrthogonalityRegularizedSolver` | Regime-Conditioned Dynamic Model Averaging (RD-DMA) with volatility-adaptive forgetting, predictive forward-Markov regime transitions, asymmetric downside loss, Tikhonov correlation regularization, Entropic Mirror Descent on the simplex, thermodynamic ambiguity shrinkage, and total variance risk decomposition. |
+| `src/quant/analytics/circuit_breakers.py` | `CircuitBreakerOverlayEngine`, `EpistemicEntropyCalculator`, `ContinuousHaircutCalculator`, `CircuitBreakerConfig`, `CircuitBreakerDecision`, `CircuitBreakerState` | Epistemic disagreement entropy, directional consensus on 3-simplex, continuous logistic haircutting, 4-tier discrete risk state machine, and anti-chattering hysteresis overlays. |
 | `src/quant/services/event_service.py` | `EventService` | Dual-decay temporal kernel evaluation and multimodal feature projection. |
 | `src/quant/services/genotype_service.py` | `GenotypeService` | Multi-objective fitness calculation, NSGA-II sorting, and crowding distance. |
 | `src/quant/api/v1/endpoints/market_data.py` | `router` (`/api/v1/market-data`) | High-throughput batch ingestion and historical range queries. |
@@ -316,4 +317,95 @@ graph TD
    $$\sigma^2_{\text{total}} = \sigma^2_{\text{aleatoric}} + \sigma^2_{\text{epistemic}}, \quad K_{\text{eff}} = \frac{1}{\sum (w_k^{\text{final}})^2}$$
    satisfying strict variance additivity (`INV-ENS-002`). Updates regime-conditional posteriors $\boldsymbol{\Pi}_{t, j} \propto \boldsymbol{\Pi}_{t-1, j}^{\text{tempered}} \odot \exp(-p_{t, j} \boldsymbol{\ell}_t)$ and advances state monotonically (`INV-ENS-004`), completing the full lifecycle within $\approx 0.18\text{ms} \le 2.0\text{ms}$ (`INV-ENS-006`).
 
+### 4.17 Circuit Breaker Overlays & Epistemic Disagreement Pipeline
 
+```mermaid
+stateDiagram-v2
+    [*] --> NORMAL: Initialize (kappa=1.0)
+    
+    NORMAL --> CAUTION: Xi >= 0.45 (Instantaneous)
+    NORMAL --> DERISK: Xi >= 0.70 (Instantaneous)
+    NORMAL --> HALT: Xi >= 0.90 or (CUSUM Shock & Panic Regime)
+    
+    CAUTION --> DERISK: Xi >= 0.70 (Instantaneous)
+    CAUTION --> HALT: Xi >= 0.90 or (CUSUM Shock & Panic Regime)
+    CAUTION --> NORMAL: Xi < 0.30 (Recovery Barrier)
+    
+    DERISK --> HALT: Xi >= 0.90 or (CUSUM Shock & Panic Regime)
+    DERISK --> CAUTION: Dwell >= 5 bars AND Xi < 0.30 (Step-Down)
+    DERISK --> DERISK: Dwell < 5 bars or Xi >= 0.30 (Lockout Sustained)
+    
+    HALT --> DERISK: Dwell >= 5 bars AND Xi < 0.30 (Step-Down)
+    HALT --> HALT: Dwell < 5 bars or Xi >= 0.30 (Lockout Sustained)
+```
+
+```
++---------------------------------------------------------------------------------------------------------+
+|                                    CIRCUIT BREAKER OVERLAY DATA FLOW                                     |
++---------------------------------------------------------------------------------------------------------+
+| [EnsemblePrediction] (Phase 5 Step 1)                                                                   |
+|   ├── weights (w_k in Simplex)                                                                          |
+|   ├── aleatoric_variance (sigma^2_aleatoric)                                                            |
+|   ├── epistemic_variance (sigma^2_epistemic)                                                            |
+|   └── regime_probabilities (argmax == 2 -> panic)                                                      |
+| [Raw Predictions Vector] (y_tilde_k)                                                                    |
+| [Ambiguity Parameter] (beta_t)                                                                          |
++---------------------------------------------------+-----------------------------------------------------+
+                                                    |
+                                                    v
++---------------------------------------------------------------------------------------------------------+
+| 1. EpistemicEntropyCalculator                                                                           |
+|   ├── Directional Consensus Simplex: p_s = sum_{k in s} w_k  (s in {+, -, 0})                          |
+|   ├── Normalized Shannon Entropy:   H_dir = -sum p_s ln(p_s) / ln(3) in [0.0, 1.0]                  |
+|   ├── Epistemic Uncertainty Ratio:  rho_epistemic = sigma^2_epistemic / sigma^2_total                  |
+|   └── Composite Epistemic Entropy:  H_epistemic = H_dir * sqrt(rho_epistemic) in [0.0, 1.0]            |
++---------------------------------------------------+-----------------------------------------------------+
+                                                    |
+                                                    v
++---------------------------------------------------------------------------------------------------------+
+| 2. ContinuousHaircutCalculator                                                                          |
+|   ├── Normalized Ambiguity:        beta_tilde = clip((beta - beta_min)/(beta_max - beta_min), 0, 1)     |
+|   ├── Composite Shock Score:       Xi_t = omega_H * H_epi + omega_rho * rho + omega_beta * beta_tilde   |
+|   └── Logistic Sigmoid Haircut:    kappa_t = (sigmoid(Xi_t) - kappa_1) / (kappa_0 - kappa_1) in [0, 1]  |
++---------------------------------------------------+-----------------------------------------------------+
+                                                    |
+                                                    v
++---------------------------------------------------------------------------------------------------------+
+| 3. CircuitBreakerOverlayEngine (Hysteresis State Machine)                                               |
+|   ├── Target Tier Evaluation:      HALT (>=0.90 or CUSUM+Panic) | DERISK (>=0.70) | CAUTION (>=0.45)   |
+|   ├── Hysteresis Arbitration:      Instant escalation | Dwell-time lockout (>=5) | Recovery (<0.30) |
+|   ├── Effective Execution Sizing:  HALT/DERISK -> 0.0 | CAUTION -> min(0.50, kappa) | NORMAL -> kappa   |
+|   └── Output Construction:         CircuitBreakerDecision & CircuitBreakerState                         |
++---------------------------------------------------------------------------------------------------------+
+```
+
+1. **Directional Consensus on 3-Simplex & Normalized Shannon Entropy**:
+   Partitions model forecasts into three directional cohorts around a deadband threshold $\delta_{\text{sign}} = 10^{-4}$:
+   $$p_+ = \sum_{k: \tilde{y}_k > \delta_{\text{sign}}} w_k, \quad p_- = \sum_{k: \tilde{y}_k < -\delta_{\text{sign}}} w_k, \quad p_0 = \sum_{k: |\tilde{y}_k| \le \delta_{\text{sign}}} w_k$$
+   guaranteeing $\mathbf{p} \in \Delta^3$ and $\sum_{s \in \{+, -, 0\}} p_s \equiv 1.0 \pm 10^{-10}$ (`INV-CB-004`). Evaluates normalized Shannon directional consensus entropy:
+   $$\widetilde{H}_{\text{dir}} = \text{clip}\left( \frac{-\sum_{s \in \{+, -, 0\}} p_s \ln(p_s + \epsilon_{\text{log}})}{\ln(3)}, \; 0.0, \; 1.0 \right)$$
+   yielding $0.0$ for unanimous consensus, $\ln(2)/\ln(3) \approx 0.6309$ for 50/50 bimodal polarization, and $1.0$ for maximum three-way confusion.
+2. **Epistemic Uncertainty Ratio & Composite Disagreement Entropy**:
+   Extracts the fraction of total variance attributable to model disagreement:
+   $$\rho_{\text{epistemic}} = \frac{\sigma^2_{\text{epistemic}}}{\sigma^2_{\text{aleatoric}} + \sigma^2_{\text{epistemic}}} \in [0.0, 1.0)$$
+   and couples directional entropy with epistemic ratio to synthesize composite epistemic disagreement entropy:
+   $$H_{\text{epistemic}} = \widetilde{H}_{\text{dir}} \sqrt{\rho_{\text{epistemic}}} \in [0.0, 1.0]$$
+3. **Thermodynamic Composite Shock Score**:
+   Combines composite epistemic entropy, the epistemic variance ratio, and normalized macroeconomic ambiguity $\tilde{\beta}_t = \text{clip}\left(\frac{\beta_t - \beta_{\min}}{\beta_{\max} - \beta_{\min}}, 0.0, 1.0\right)$:
+   $$\Xi_t = \omega_H H_{\text{epistemic}} + \omega_\rho \rho_{\text{epistemic}} + \omega_\beta \tilde{\beta}_t \in [0.0, 1.0]$$
+   with default convex weights $(\omega_H = 0.50, \omega_\rho = 0.30, \omega_\beta = 0.20)$ summing to $1.0$.
+4. **Normalized Continuous Logistic Sigmoid Haircut**:
+   Transforms composite shock $\Xi_t$ through a normalized logistic sigmoid curve:
+   $$\kappa_{\text{raw}}(\Xi_t) = \frac{1}{1 + \exp(k_{\text{steep}} (\Xi_t - \Xi_{\text{mid}}))}, \quad \kappa_t = \text{clip}\left( \frac{\kappa_{\text{raw}}(\Xi_t) - \kappa_{\text{raw}}(1.0)}{\kappa_{\text{raw}}(0.0) - \kappa_{\text{raw}}(1.0)}, \; 0.0, \; 1.0 \right)$$
+   with $k_{\text{steep}} = 10.0$ and $\Xi_{\text{mid}} = 0.50$. Strictly guarantees boundary anchors $\kappa_t(0.0) \equiv 1.0000$ (full allocation under tranquil agreement), $\kappa_t(1.0) \equiv 0.0000$ (zero exposure under total chaos), and smooth monotonicity (`INV-CB-001`).
+5. **Discrete Risk Tiers & Anti-Chattering Hysteresis State Machine**:
+   - Institutional tiers (`CircuitBreakerTier`): `NORMAL` (0), `CAUTION` (1), `DERISK` (2), `HALT` (3) (`INV-CB-002`).
+   - Instantaneous Escalation: Any increase in candidate severity tier transitions immediately ($S_{t+1} = S_{\text{cand}}$) and resets active tier duration to $\tau = 1$.
+   - Dwell-Time Cooling Lockout: Once in `HALT` or `DERISK`, the state machine remains locked for at least $\tau_{\text{dwell}} = 5$ bars (`INV-CB-003`).
+   - Dual-Barrier Recovery: Recovery requires simultaneously satisfying $\tau \ge \tau_{\text{dwell}}$ AND $\Xi_t < \theta_{\text{recovery}} = 0.30$, stepping down strictly one tier at a time (`HALT` $\to$ `DERISK` $\to$ `CAUTION` $\to$ `NORMAL`), completely eliminating limit-order chattering and whipsaws.
+   - Exogenous CUSUM & Panic Coupling: Co-occurrence of CUSUM jump alarm and panic regime forces an immediate emergency halt (`cusum_shock and regime_is_panic`).
+6. **Effective Execution Sizing Overlay**:
+   Applies tier-dependent execution multipliers to target position sizes:
+   $$\text{execution\_haircut} = \begin{cases} 0.0 & \text{if } S_{t+1} \in \{\text{HALT}, \text{DERISK}\} \\ \min(0.50, \kappa_t) & \text{if } S_{t+1} = \text{CAUTION} \\ \kappa_t & \text{if } S_{t+1} = \text{NORMAL} \end{cases}$$
+7. **Upstream Integration & Benchmark Latency SLA**:
+   `evaluate_prediction` directly consumes `EnsemblePrediction` from Phase 5 Step 1, auto-detects panic regime states, enforces non-finite input guards (`INV-CB-005`), and completes full evaluation in $\approx 0.04\text{ms} \le 0.20\text{ms}$ median for $K=100$ models (`INV-CB-006`).
