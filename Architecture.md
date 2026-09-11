@@ -110,6 +110,7 @@ To achieve institutional-grade throughput while preserving relational integrity,
 | `src/quant/analytics/pareto_sorting.py` | `BoundaryAnchoredRVEARanker`, `SVDSubspaceOrthogonalArchive`, `AdaptiveReferenceLattice`, `DependentNonDominatedSorter` | Boundary-Anchored Adaptive RVEA, SVD subspace orthogonal novelty ($1 - R^2$), Memmel–Ledoit–Wolf dependent dominance, and ENS-SS front sorting. |
 | `src/quant/analytics/hypergamic_selection.py` | `HypergamicSelectionEngine`, `ParetoCohortStratifier`, `ResidualOrthogonalityGate`, `HypergamicPartnerMatcher`, `AsymmetricLatentCrossover` | Front-preserving Pareto cohort stratification, bidirectional residual orthogonality gating, adaptive deadlock-free partner matching, and asymmetric latent-hypercube crossover. |
 | `src/quant/analytics/evolutionary_lifecycle.py` | `GenerationalLifecycleEngine`, `AdaptiveVolatilityMutator`, `StagnationDetector`, `MutationConfig`, `GenerationalState` | Adaptive Cauchy volatility mutation with mirror reflection, Rechenberg APD progress adaptation, dual-space stagnation monitoring, and $(\mu + \lambda)$ closed-loop generational lifecycle. |
+| `src/quant/analytics/ensemble.py` | `RegimeConditionedDMAEngine`, `VolatilityAdaptiveForgetting`, `AsymmetricDownsideLossScorer`, `TikhonovCorrelationEstimator`, `OrthogonalityRegularizedSolver` | Regime-Conditioned Dynamic Model Averaging (RD-DMA) with volatility-adaptive forgetting, predictive forward-Markov regime transitions, asymmetric downside loss, Tikhonov correlation regularization, Entropic Mirror Descent on the simplex, thermodynamic ambiguity shrinkage, and total variance risk decomposition. |
 | `src/quant/services/event_service.py` | `EventService` | Dual-decay temporal kernel evaluation and multimodal feature projection. |
 | `src/quant/services/genotype_service.py` | `GenotypeService` | Multi-objective fitness calculation, NSGA-II sorting, and crowding distance. |
 | `src/quant/api/v1/endpoints/market_data.py` | `router` (`/api/v1/market-data`) | High-throughput batch ingestion and historical range queries. |
@@ -232,4 +233,87 @@ To achieve institutional-grade throughput while preserving relational integrity,
 4. **Continuous APD-Progress Rechenberg Volatility Adaptation**: Evaluates generation success ratio $r_t = \frac{1}{N_{\text{off}}} \sum_{i=1}^{N_{\text{off}}} \mathbf{1}_{[\min_j d_{\text{APD}}(O_i, R_j) < \min_j d_{\text{APD}}(P_i, R_j)]}$ comparing offspring against parents on the adaptive reference lattice; smooths via $\bar{r}_t = (1 - \alpha) \bar{r}_{t-1} + \alpha r_t$ and scales mutation volatility $\sigma_{\text{mut}} \leftarrow \text{clip}\left(\sigma_{\text{mut}} \cdot e^{\frac{\bar{r}_t - r^*}{1 - r^*}}, \sigma_{\min}, \sigma_{\max}\right)$.
 5. **Dual-Space Stagnation Monitoring & Cataclysmic Trigger**: Evaluates population genotypic dispersion $\bar{D}_{\text{param}}$ in the unit hypercube via `scipy.spatial.distance.pdist` and phenotypic collinearity $\bar{\rho}_{\text{pop}}$ across residual error series. If both drop below critical thresholds for $K_{\text{stagnant}} \ge 5$ consecutive generations, fires cataclysmic hyper-mutation with elevated volatility $\sigma_{\text{cataclysm}} = 0.20$, violently shattering stagnation while preserving Front-1 champions bitwise identical (`INV-LIFE-004`).
 6. **Closed-Loop $(\mu + \lambda)$ Environmental Selection & Ranking Caching**: Evaluates candidate fitnesses on offspring chromosomes, pools $P_t \cup Q_t$ ($2N = 200$), and ranks via Boundary-Anchored Adaptive RVEA. Truncates strictly to the top $N$ survivors (`INV-LIFE-001`), caches survivor ranking order to eliminate redundant parent re-evaluations, and strictly guarantees monotonic Pareto frontier improvement (`INV-LIFE-002`) and sub-35ms benchmark SLA (`INV-LIFE-006`).
+
+### 4.16 Regime-Conditioned Dynamic Model Averaging (RD-DMA) Subsystem & Pipeline
+
+```mermaid
+graph TD
+    subgraph Inputs [Online Bar Inputs]
+        Y[Realized Return y_t]
+        SIG[Realized Volatility sigma_t]
+        PRED[Model Forecasts y_hat_k]
+        VAR[Model Variances sigma_k^2]
+        REG[Regime Posteriors p_t]
+        TRANS[Transition Matrix P_trans]
+        BETA[Ambiguity Temp beta_t]
+    end
+
+    subgraph Dynamics [Online Dynamic Filtering]
+        VAF[Volatility-Adaptive Forgetting<br>alpha_t in 0.85, 0.99]
+        FMR[Forward-Markov Projection<br>p_{t+1|t} = P_trans^T p_t]
+        ADL[Asymmetric Downside Loss<br>l_{t,k} = y - y_tilde^2 + gamma max 0, -y y_tilde]
+        SEM[Downside Semi-Variance<br>sigma^2_{k, down}]
+        TIK[Tikhonov Ridge Correlation<br>C_t = 1-delta C_hat + delta I]
+    end
+
+    subgraph Optimizer [Simplex Convex Optimization]
+        SCORE[Composite Prior & Loss Score<br>s_t = l_{t-1} - ln bar_pi_{t|t-1}]
+        EMD[Entropic Mirror Descent<br>min w^T s + lambda/2 w^T C w - tau H w]
+        LAP[Laplace Floor Smoothing<br>w_k >= eps_floor = 0.001 / K]
+    end
+
+    subgraph Regularization [Robust Risk & Execution Shaping]
+        AMB[Thermodynamic Ambiguity Shrinkage<br>w^shrunk = 1-lambda_beta w* + lambda_beta w_uniform]
+        DAMP[Convex L1 Turnover Damping<br>w^final = 1-lambda_churn w^shrunk + lambda_churn w_{t-1}]
+        DECOMP[Law of Total Variance Decomposition<br>sigma^2_total = sigma^2_aleatoric + sigma^2_epistemic]
+        POST[Regime Posterior Update<br>Pi_{t, j} proportional to Pi_{t-1, j}^alpha exp -p_{t,j} l_t]
+    end
+
+    SIG --> VAF
+    REG --> FMR
+    TRANS --> FMR
+    Y --> ADL
+    PRED --> ADL
+    PRED --> TIK
+    VAF --> SCORE
+    FMR --> SCORE
+    ADL --> SCORE
+    TIK --> EMD
+    SCORE --> EMD
+    EMD --> LAP
+    LAP --> AMB
+    BETA --> AMB
+    AMB --> DAMP
+    DAMP --> DECOMP
+    SEM --> DECOMP
+    DECOMP --> POST
+```
+
+1. **Volatility-Adaptive Memory Depth Adjustment**: Evaluates market realized volatility deviation $\Delta \sigma_t = (\sigma_t - \bar{\sigma}) / \bar{\sigma}$ and updates rolling EMA baseline $\bar{\sigma}$. Adapts forgetting factor $\alpha_t = \text{clip}(\alpha_0 - \kappa_\alpha \Delta \sigma_t, \alpha_{\min}, \alpha_{\max})$, compressing memory depth in volatile sell-offs ($\alpha_t \to \alpha_{\min} = 0.85$) to track regime breaks within 1–2 bars while expanding memory in calm regimes ($\alpha_t \to \alpha_{\max} = 0.99$) to filter transient noise (`INV-ENS-003`).
+2. **Predictive Forward-Markov Transition Projection**: Ingests current regime posterior distribution $\mathbf{p}_t \in \Delta^3$ and Phase 3 Markov transition matrix $\mathbf{P}_{\text{trans}} \in \mathbb{R}^{3 \times 3}$. Projects predictive forward regime probabilities:
+   $$\mathbf{p}_{t+1|t} = \mathbf{P}_{\text{trans}}^T \mathbf{p}_t$$
+3. **Tempered Posterior Aggregation & Composite Prior Synthesis**: For each regime $j \in \{0, 1, 2\}$, tempers prior posteriors $\boldsymbol{\pi}_{j}^{\text{tempered}} \propto (\boldsymbol{\Pi}_{t-1, j})^{\alpha_t}$ via log-sum-exp normalization, and synthesizes forward composite model prior:
+   $$\bar{\boldsymbol{\pi}}_{t+1|t} = \sum_{j=0}^2 p_{t+1|t, j} \boldsymbol{\pi}_{j}^{\text{tempered}}$$
+4. **Asymmetric Downside Loss Scoring**: Measures model forecast errors against realized market return $y_t$:
+   $$\ell_{t, k} = (y_t - \tilde{y}_{t, k})^2 + \gamma_{\text{down}} \max(0, -y_t \tilde{y}_{t, k})$$
+   where $\gamma_{\text{down}} = 2.50$ and $\tilde{y}_{t, k} = \hat{y}_{t, k} / \sqrt{H_k}$, heavily penalizing false-positive directional signals that induce portfolio drawdowns, and computes empirical downside semi-variance $\sigma^2_{k, \text{down}}$.
+5. **Tikhonov Ridge-Regularized Correlation Estimation**: Evaluates strategy prediction correlation matrix $\widehat{\mathbf{C}}_t$ with standard deviation floor $\sigma_{\min} = 10^{-8}$, and regularizes via Tikhonov ridge shrinkage:
+   $$\mathbf{C}_t = (1 - \delta_{\text{ridge}}) \widehat{\mathbf{C}}_t + \delta_{\text{ridge}} \mathbf{I}_K, \quad \delta_{\text{ridge}} = 0.05$$
+   guaranteeing strict positive definiteness ($\mathbf{C}_t \succ 0, \lambda_{\min} \ge 0.05$) and eliminating $0/0$ division by zero on flatline strategies.
+6. **Entropic Mirror Descent Optimization on Simplex**: Optimizes model weights over the unit simplex $\Delta^K$:
+   $$\mathbf{w}_t^* = \arg\min_{\mathbf{w} \in \Delta^K} \left\{ \mathbf{w}^T \mathbf{s}_t + \frac{\lambda_{\text{ortho}}}{2} \mathbf{w}^T \mathbf{C}_t \mathbf{w} - \tau \mathcal{H}(\mathbf{w}) \right\}$$
+   where $\mathbf{s}_t = \boldsymbol{\ell}_{t-1} - \ln \bar{\boldsymbol{\pi}}_{t|t-1}$ and $\mathcal{H}(\mathbf{w}) = -\sum w_k \ln w_k$. Solves via vectorized Entropic Mirror Descent starting from prior weights $\mathbf{w}_{t-1}$ within 10 iterations ($< 0.15\text{ms}$), followed by Laplace floor injection:
+   $$w_{t, k}^* \leftarrow (1 - K \epsilon_{\text{floor}}) w_{t, k}^* + \epsilon_{\text{floor}}, \quad \epsilon_{\text{floor}} = \frac{0.001}{K}$$
+   strictly preserving unit simplex conservation and model survivability (`INV-ENS-001`).
+7. **Thermodynamic Ambiguity Shrinkage**: When Phase 3 thermodynamic ambiguity temperature $\beta_t$ rises, shrinks weights toward the entropy-maximizing uniform distribution:
+   $$\lambda_\beta = \text{clip}\left(\frac{\beta_t - \beta_{\min}}{\beta_{\max} - \beta_{\min}}, 0.0, 1.0\right) \cdot \kappa_{\text{shrink}}, \quad \mathbf{w}_t^{\text{shrunk}} = (1 - \lambda_\beta) \mathbf{w}_t^* + \lambda_\beta \mathbf{w}_{\text{uniform}}$$
+   defensively dampening overconfidence during macroeconomic turbulence ($\kappa_{\text{shrink}} = 0.50$).
+8. **Convex L1 Turnover Damping**: Protects against excessive transaction fee erosion via convex blending with the previous bar's executed weights:
+   $$\mathbf{w}_t^{\text{final}} = (1 - \lambda_{\text{churn}}) \mathbf{w}_t^{\text{shrunk}} + \lambda_{\text{churn}} \mathbf{w}_{t-1}, \quad \lambda_{\text{churn}} = 0.15$$
+   guaranteeing bounded weight turnover $\|\mathbf{w}_t - \mathbf{w}_{t-1}\|_1 \le 2(1 - \lambda_{\text{churn}})$ (`INV-ENS-005`).
+9. **Total Variance Risk Decomposition & Posterior Update**: Decomposes total prediction variance via the Law of Total Variance into process aleatoric uncertainty and model epistemic disagreement:
+   $$\hat{\mu}_t = \sum_{k=1}^K w_k^{\text{final}} \tilde{y}_{t, k}, \quad \sigma^2_{\text{aleatoric}} = \sum_{k=1}^K w_k^{\text{final}} \sigma^2_{k, \text{down}}, \quad \sigma^2_{\text{epistemic}} = \sum_{k=1}^K w_k^{\text{final}} (\tilde{y}_{t, k} - \hat{\mu}_t)^2$$
+   $$\sigma^2_{\text{total}} = \sigma^2_{\text{aleatoric}} + \sigma^2_{\text{epistemic}}, \quad K_{\text{eff}} = \frac{1}{\sum (w_k^{\text{final}})^2}$$
+   satisfying strict variance additivity (`INV-ENS-002`). Updates regime-conditional posteriors $\boldsymbol{\Pi}_{t, j} \propto \boldsymbol{\Pi}_{t-1, j}^{\text{tempered}} \odot \exp(-p_{t, j} \boldsymbol{\ell}_t)$ and advances state monotonically (`INV-ENS-004`), completing the full lifecycle within $\approx 0.18\text{ms} \le 2.0\text{ms}$ (`INV-ENS-006`).
+
 
