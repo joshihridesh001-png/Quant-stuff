@@ -879,3 +879,274 @@ class ContinuousHaircutCalculator:
         kappa_raw = self._raw_sigmoid(composite_shock, self._steepness, self._midpoint)
         normalized_haircut = (kappa_raw - self._kappa_1) / self._kappa_range
         return float(min(max(normalized_haircut, 0.0), 1.0)) + 0.0
+
+
+class CircuitBreakerOverlayEngine:
+    """Stateful orchestrator for epistemic circuit breakers and multi-tier hysteresis.
+
+    Integrates:
+    - EpistemicEntropyCalculator for directional consensus and uncertainty decomposition.
+    - ContinuousHaircutCalculator for thermodynamic composite shock and soft sizing haircut.
+    - Multi-tier discrete state machine (NORMAL, CAUTION, DERISK, HALT).
+    - Hysteresis anti-chattering lockout and dwell-time cooling rules (INV-CB-003).
+    - Exogenous CUSUM panic shock triggers.
+
+    Enforces Invariants:
+    - INV-CB-001: Bounded execution haircut in [0.0, 1.0].
+    - INV-CB-002: Action tier is valid CircuitBreakerTier.
+    - INV-CB-003: Anti-chattering hysteresis guarantee (dwell lockout, recovery barrier).
+    - INV-CB-005: Immediate defensive failure on non-finite data (NaN/Inf).
+    """
+
+    def __init__(self, config: CircuitBreakerConfig | None = None) -> None:
+        """Initialize CircuitBreakerOverlayEngine.
+
+        Args:
+            config: Optional CircuitBreakerConfig instance. If None, defaults to CircuitBreakerConfig().
+        """
+        if config is not None and not isinstance(config, CircuitBreakerConfig):
+            raise InvalidCircuitBreakerInputException(
+                f"config must be an instance of CircuitBreakerConfig or None, got {type(config)}"
+            )
+
+        self._config: CircuitBreakerConfig = (
+            config if config is not None else CircuitBreakerConfig()
+        )
+        self._entropy_calculator: EpistemicEntropyCalculator = (
+            EpistemicEntropyCalculator.from_config(self._config)
+        )
+        self._haircut_calculator: ContinuousHaircutCalculator = (
+            ContinuousHaircutCalculator.from_config(self._config)
+        )
+
+    @property
+    def config(self) -> CircuitBreakerConfig:
+        """Active CircuitBreakerConfig."""
+        return self._config
+
+    @property
+    def entropy_calculator(self) -> EpistemicEntropyCalculator:
+        """Subordinate EpistemicEntropyCalculator."""
+        return self._entropy_calculator
+
+    @property
+    def haircut_calculator(self) -> ContinuousHaircutCalculator:
+        """Subordinate ContinuousHaircutCalculator."""
+        return self._haircut_calculator
+
+    def initialize_state(self) -> CircuitBreakerState:
+        """Returns clean initial state at step_index = 0 in NORMAL tier.
+
+        Guarantees:
+            - tier = CircuitBreakerTier.NORMAL
+            - active_bars_in_tier = 0
+            - continuous_haircut = 1.0
+            - epistemic_entropy = 0.0
+            - directional_entropy = 0.0
+            - epistemic_ratio = 0.0
+            - composite_shock_score = 0.0
+            - directional_probabilities = [1/3, 1/3, 1/3]
+            - step_index = 0
+        """
+        return CircuitBreakerState(
+            tier=CircuitBreakerTier.NORMAL,
+            active_bars_in_tier=0,
+            continuous_haircut=1.0,
+            epistemic_entropy=0.0,
+            directional_entropy=0.0,
+            epistemic_ratio=0.0,
+            composite_shock_score=0.0,
+            directional_probabilities=np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float64),
+            step_index=0,
+        )
+
+    def evaluate(
+        self,
+        predictions: np.ndarray,
+        weights: np.ndarray,
+        aleatoric_variance: float,
+        epistemic_variance: float,
+        ambiguity_beta: float,
+        state: CircuitBreakerState,
+        cusum_shock: bool = False,
+        regime_is_panic: bool = False,
+    ) -> tuple[CircuitBreakerDecision, CircuitBreakerState]:
+        """Evaluates model disagreement, updates discrete tier with hysteresis, and emits execution decision.
+
+        Algorithm Steps:
+        1. Compute directional probabilities, Shannon directional entropy, epistemic ratio,
+           and composite epistemic entropy via subordinate EpistemicEntropyCalculator.
+        2. Compute composite shock score Xi_t and continuous haircut multiplier kappa_t
+           via subordinate ContinuousHaircutCalculator.
+        3. Determine Candidate Target Tier:
+           - If cusum_shock and regime_is_panic: Candidate is CircuitBreakerTier.HALT.
+           - Else if Xi_t >= halt_threshold (0.90): Candidate is CircuitBreakerTier.HALT.
+           - Else if Xi_t >= derisk_threshold (0.70): Candidate is CircuitBreakerTier.DERISK.
+           - Else if Xi_t >= caution_threshold (0.45): Candidate is CircuitBreakerTier.CAUTION.
+           - Else: Candidate is CircuitBreakerTier.NORMAL.
+        4. Apply Hysteresis & Anti-Chattering State Transitions (INV-CB-003):
+           - Instantaneous Escalation: If candidate tier is strictly more severe than current state.tier,
+             transition immediately and reset active_bars_in_tier = 1.
+           - Sustain Current Tier: If candidate tier equals state.tier, hold current tier and increment
+             active_bars_in_tier = state.active_bars_in_tier + 1.
+           - Hysteresis Recovery (De-escalation): If candidate tier is less severe:
+             * HALT / DERISK: permitted only if active_bars_in_tier >= dwell_time_bars AND Xi_t < recovery_threshold.
+               If met, step down one tier (HALT -> DERISK, DERISK -> CAUTION) and reset active_bars_in_tier = 1.
+               Otherwise, hold current tier and increment active_bars_in_tier.
+             * CAUTION: de-escalates to NORMAL if Xi_t < recovery_threshold. Otherwise holds CAUTION.
+        5. Compute Effective Execution Haircut:
+           - HALT: 0.0
+           - DERISK: 0.0
+           - CAUTION: min(0.50, kappa_t) (throttled cap)
+           - NORMAL: kappa_t
+        6. Construct updated CircuitBreakerState at step_index = state.step_index + 1.
+        7. Construct CircuitBreakerDecision via from_state.
+        8. Return (decision, new_state).
+
+        Args:
+            predictions: Model forecast vector of shape (K,).
+            weights: Non-negative model weights summing to 1.0 of shape (K,).
+            aleatoric_variance: Strictly positive aleatoric variance sigma^2_aleatoric > 0.0.
+            epistemic_variance: Non-negative epistemic variance sigma^2_epistemic >= 0.0.
+            ambiguity_beta: Thermodynamic macroeconomic ambiguity beta > 0.0.
+            state: Preceding CircuitBreakerState snapshot.
+            cusum_shock: Boolean flag indicating exogenous CUSUM jump detection.
+            regime_is_panic: Boolean flag indicating panic volatility regime.
+
+        Returns:
+            Tuple of (CircuitBreakerDecision, updated CircuitBreakerState).
+
+        Raises:
+            InvalidCircuitBreakerInputException: On schema or type mismatches.
+            DegenerateCircuitBreakerException: On non-finite values (INV-CB-005).
+        """
+        # Defensive parameter and type validation
+        if not isinstance(state, CircuitBreakerState):
+            raise InvalidCircuitBreakerInputException(
+                f"state must be an instance of CircuitBreakerState, got {type(state)}"
+            )
+
+        if not isinstance(cusum_shock, bool) or type(cusum_shock) is not bool:
+            raise InvalidCircuitBreakerInputException(
+                f"cusum_shock must be a boolean, got {type(cusum_shock)}"
+            )
+
+        if not isinstance(regime_is_panic, bool) or type(regime_is_panic) is not bool:
+            raise InvalidCircuitBreakerInputException(
+                f"regime_is_panic must be a boolean, got {type(regime_is_panic)}"
+            )
+
+        if not isinstance(ambiguity_beta, (int, float)) or isinstance(ambiguity_beta, bool):
+            raise InvalidCircuitBreakerInputException(
+                f"ambiguity_beta must be a float, got {type(ambiguity_beta)}"
+            )
+        if not math.isfinite(ambiguity_beta):
+            raise DegenerateCircuitBreakerException(
+                f"INV-CB-005: ambiguity_beta must be a finite float, got {ambiguity_beta}"
+            )
+        if ambiguity_beta <= 0.0:
+            raise InvalidCircuitBreakerInputException(
+                f"ambiguity_beta must be strictly positive (> 0.0), got {ambiguity_beta}"
+            )
+
+        # 1. Epistemic entropy and uncertainty decomposition
+        (
+            h_epi,
+            h_dir,
+            rho,
+            probs,
+        ) = self._entropy_calculator.compute_epistemic_entropy(
+            predictions=predictions,
+            weights=weights,
+            aleatoric_variance=aleatoric_variance,
+            epistemic_variance=epistemic_variance,
+        )
+
+        # 2. Composite shock score and continuous haircut
+        shock_score = self._haircut_calculator.compute_composite_shock(
+            epistemic_entropy=h_epi,
+            epistemic_ratio=rho,
+            ambiguity_beta=ambiguity_beta,
+        )
+        continuous_haircut = self._haircut_calculator.compute_haircut(shock_score)
+
+        # 3. Determine Candidate Target Tier
+        if (cusum_shock and regime_is_panic) or shock_score >= self._config.halt_threshold:
+            candidate_tier = CircuitBreakerTier.HALT
+        elif shock_score >= self._config.derisk_threshold:
+            candidate_tier = CircuitBreakerTier.DERISK
+        elif shock_score >= self._config.caution_threshold:
+            candidate_tier = CircuitBreakerTier.CAUTION
+        else:
+            candidate_tier = CircuitBreakerTier.NORMAL
+
+        # 4. Apply Hysteresis & Anti-Chattering State Transitions (INV-CB-003)
+        current_tier = state.tier
+        new_tier: CircuitBreakerTier
+        active_bars: int
+
+        if candidate_tier > current_tier:
+            # Instantaneous Escalation
+            new_tier = candidate_tier
+            active_bars = 1
+        elif candidate_tier == current_tier:
+            # Sustain Current Tier
+            new_tier = current_tier
+            active_bars = state.active_bars_in_tier + 1
+        else:
+            # Hysteresis Recovery (De-escalation: candidate_tier < current_tier)
+            if current_tier in (CircuitBreakerTier.HALT, CircuitBreakerTier.DERISK):
+                if (
+                    state.active_bars_in_tier >= self._config.dwell_time_bars
+                    and shock_score < self._config.recovery_threshold
+                ):
+                    # Step down one tier
+                    new_tier = CircuitBreakerTier(current_tier - 1)
+                    active_bars = 1
+                else:
+                    # Hold current tier
+                    new_tier = current_tier
+                    active_bars = state.active_bars_in_tier + 1
+            elif current_tier == CircuitBreakerTier.CAUTION:
+                if shock_score < self._config.recovery_threshold:
+                    new_tier = CircuitBreakerTier.NORMAL
+                    active_bars = 1
+                else:
+                    new_tier = current_tier
+                    active_bars = state.active_bars_in_tier + 1
+            else:
+                # current_tier is NORMAL, cannot de-escalate further
+                new_tier = CircuitBreakerTier.NORMAL
+                active_bars = state.active_bars_in_tier + 1
+
+        # 5. Compute Effective Execution Haircut
+        execution_haircut: float
+        if new_tier in (CircuitBreakerTier.HALT, CircuitBreakerTier.DERISK):
+            execution_haircut = 0.0
+        elif new_tier == CircuitBreakerTier.CAUTION:
+            execution_haircut = min(0.50, continuous_haircut)
+        else:  # CircuitBreakerTier.NORMAL
+            execution_haircut = continuous_haircut
+
+        # 6. Construct updated CircuitBreakerState at step_index = state.step_index + 1
+        new_state = CircuitBreakerState(
+            tier=new_tier,
+            active_bars_in_tier=active_bars,
+            continuous_haircut=continuous_haircut,
+            epistemic_entropy=h_epi,
+            directional_entropy=h_dir,
+            epistemic_ratio=rho,
+            composite_shock_score=shock_score,
+            directional_probabilities=probs,
+            step_index=state.step_index + 1,
+        )
+
+        # 7. Construct CircuitBreakerDecision
+        decision = CircuitBreakerDecision.from_state(
+            action_tier=new_tier,
+            execution_haircut=execution_haircut,
+            state=new_state,
+        )
+
+        # 8. Return (decision, new_state)
+        return decision, new_state

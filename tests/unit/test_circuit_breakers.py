@@ -17,6 +17,7 @@ from quant.analytics.circuit_breakers import (
     CircuitBreakerConfig,
     CircuitBreakerDecision,
     CircuitBreakerError,
+    CircuitBreakerOverlayEngine,
     CircuitBreakerState,
     CircuitBreakerTier,
     ContinuousHaircutCalculator,
@@ -1420,3 +1421,652 @@ class TestContinuousHaircutCalculator:
 
         assert decision.execution_haircut == haircut
         assert decision.state == state
+
+
+class TestCircuitBreakerOverlayEngine:
+    """Validate CircuitBreakerOverlayEngine state machine, multi-tier escalation, and hysteresis."""
+
+    @pytest.fixture
+    def default_engine(self) -> CircuitBreakerOverlayEngine:
+        """Provide a default CircuitBreakerOverlayEngine."""
+        return CircuitBreakerOverlayEngine()
+
+    @pytest.fixture
+    def quiescent_inputs(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, float, float, float]:
+        """Low uncertainty inputs producing composite shock Xi_t = 0.0."""
+        preds = np.array([0.05, 0.05, 0.05], dtype=np.float64)
+        weights = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float64)
+        aleatoric = 0.05
+        epistemic = 0.0
+        beta = 1.0  # beta_min -> normalized ambiguity = 0.0
+        return preds, weights, aleatoric, epistemic, beta
+
+    @pytest.fixture
+    def caution_inputs(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, float, float, float]:
+        """Moderate uncertainty inputs producing composite shock Xi_t in [0.45, 0.70)."""
+        preds = np.array([0.05, -0.05], dtype=np.float64)
+        weights = np.array([0.5, 0.5], dtype=np.float64)
+        aleatoric = 0.01
+        epistemic = 0.04  # rho = 0.80, H_dir ~ 0.6309, H_epi ~ 0.5643
+        beta = 3.0  # tilde_beta = 0.50 -> Xi ~ 0.622
+        return preds, weights, aleatoric, epistemic, beta
+
+    @pytest.fixture
+    def derisk_inputs(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, float, float, float]:
+        """High uncertainty inputs producing composite shock Xi_t in [0.70, 0.90)."""
+        preds = np.array([0.05, -0.05, 0.0], dtype=np.float64)
+        weights = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float64)
+        aleatoric = 0.04
+        epistemic = 0.06  # rho = 0.60, H_dir = 1.0, H_epi ~ 0.7746
+        beta = 4.0  # tilde_beta = 0.75 -> Xi ~ 0.717
+        return preds, weights, aleatoric, epistemic, beta
+
+    @pytest.fixture
+    def halt_inputs(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, float, float, float]:
+        """Extreme uncertainty inputs producing composite shock Xi_t >= 0.90."""
+        preds = np.array([0.05, -0.05, 0.0], dtype=np.float64)
+        weights = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float64)
+        aleatoric = 0.001
+        epistemic = 0.099  # rho = 0.99, H_dir = 1.0, H_epi ~ 0.9950
+        beta = 5.0  # tilde_beta = 1.0 -> Xi ~ 0.994
+        return preds, weights, aleatoric, epistemic, beta
+
+    def test_init_defaults_and_properties(
+        self, default_engine: CircuitBreakerOverlayEngine
+    ) -> None:
+        """Verify default configuration and subordinate calculator properties."""
+        assert isinstance(default_engine.config, CircuitBreakerConfig)
+        assert default_engine.config == CircuitBreakerConfig()
+        assert isinstance(default_engine.entropy_calculator, EpistemicEntropyCalculator)
+        assert isinstance(default_engine.haircut_calculator, ContinuousHaircutCalculator)
+        assert (
+            default_engine.entropy_calculator.sign_threshold == default_engine.config.sign_threshold
+        )
+        assert (
+            default_engine.haircut_calculator.steepness == default_engine.config.haircut_steepness
+        )
+
+    def test_init_custom_config_and_invalid_type(self) -> None:
+        """Verify custom configuration injection and type defense."""
+        custom_cfg = CircuitBreakerConfig(
+            dwell_time_bars=8,
+            caution_threshold=0.40,
+            derisk_threshold=0.65,
+            halt_threshold=0.85,
+            recovery_threshold=0.25,
+        )
+        engine = CircuitBreakerOverlayEngine(custom_cfg)
+        assert engine.config == custom_cfg
+        assert engine.config.dwell_time_bars == 8
+
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            CircuitBreakerOverlayEngine("invalid_cfg")  # type: ignore[arg-type]
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            CircuitBreakerOverlayEngine(123)  # type: ignore[arg-type]
+
+    def test_initialize_state(self, default_engine: CircuitBreakerOverlayEngine) -> None:
+        """Verify clean initial state generation at step 0 in NORMAL tier."""
+        state = default_engine.initialize_state()
+        assert state.tier == CircuitBreakerTier.NORMAL
+        assert state.active_bars_in_tier == 0
+        assert state.continuous_haircut == 1.0
+        assert state.epistemic_entropy == 0.0
+        assert state.directional_entropy == 0.0
+        assert state.epistemic_ratio == 0.0
+        assert state.composite_shock_score == 0.0
+        assert np.allclose(
+            state.directional_probabilities,
+            np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float64),
+        )
+        assert state.step_index == 0
+
+    def test_evaluate_input_validation_and_defensive_failures(
+        self,
+        default_engine: CircuitBreakerOverlayEngine,
+        quiescent_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+    ) -> None:
+        """Verify strict invariant INV-CB-005 non-finite checks and type validations."""
+        preds, weights, aleatoric, epistemic, beta = quiescent_inputs
+        state = default_engine.initialize_state()
+
+        # State must be CircuitBreakerState
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            default_engine.evaluate(
+                preds,
+                weights,
+                aleatoric,
+                epistemic,
+                beta,
+                state="invalid_state",  # type: ignore[arg-type]
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            default_engine.evaluate(
+                preds,
+                weights,
+                aleatoric,
+                epistemic,
+                beta,
+                state=None,  # type: ignore[arg-type]
+            )
+
+        # cusum_shock and regime_is_panic must be strictly boolean
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            default_engine.evaluate(
+                preds,
+                weights,
+                aleatoric,
+                epistemic,
+                beta,
+                state,
+                cusum_shock=1,  # type: ignore[arg-type]
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            default_engine.evaluate(
+                preds,
+                weights,
+                aleatoric,
+                epistemic,
+                beta,
+                state,
+                cusum_shock="True",  # type: ignore[arg-type]
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            default_engine.evaluate(
+                preds,
+                weights,
+                aleatoric,
+                epistemic,
+                beta,
+                state,
+                regime_is_panic=0,  # type: ignore[arg-type]
+            )
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            default_engine.evaluate(
+                preds,
+                weights,
+                aleatoric,
+                epistemic,
+                beta,
+                state,
+                regime_is_panic="False",  # type: ignore[arg-type]
+            )
+
+        # INV-CB-005 non-finite predictions
+        with pytest.raises(DegenerateCircuitBreakerException):
+            default_engine.evaluate(
+                np.array([0.05, float("nan")], dtype=np.float64),
+                np.array([0.5, 0.5], dtype=np.float64),
+                aleatoric,
+                epistemic,
+                beta,
+                state,
+            )
+        with pytest.raises(DegenerateCircuitBreakerException):
+            default_engine.evaluate(
+                np.array([0.05, float("inf")], dtype=np.float64),
+                np.array([0.5, 0.5], dtype=np.float64),
+                aleatoric,
+                epistemic,
+                beta,
+                state,
+            )
+
+        # INV-CB-005 non-finite weights
+        with pytest.raises(DegenerateCircuitBreakerException):
+            default_engine.evaluate(
+                preds,
+                np.array([float("nan"), 1.0 / 3.0, 1.0 / 3.0], dtype=np.float64),
+                aleatoric,
+                epistemic,
+                beta,
+                state,
+            )
+
+        # INV-CB-005 non-finite variances
+        with pytest.raises(DegenerateCircuitBreakerException):
+            default_engine.evaluate(preds, weights, float("nan"), epistemic, beta, state)
+        with pytest.raises(DegenerateCircuitBreakerException):
+            default_engine.evaluate(preds, weights, float("inf"), epistemic, beta, state)
+        with pytest.raises(DegenerateCircuitBreakerException):
+            default_engine.evaluate(preds, weights, aleatoric, float("nan"), beta, state)
+        with pytest.raises(DegenerateCircuitBreakerException):
+            default_engine.evaluate(preds, weights, aleatoric, float("inf"), beta, state)
+
+        # INV-CB-005 non-finite ambiguity beta
+        with pytest.raises(DegenerateCircuitBreakerException):
+            default_engine.evaluate(preds, weights, aleatoric, epistemic, float("nan"), state)
+        with pytest.raises(DegenerateCircuitBreakerException):
+            default_engine.evaluate(preds, weights, aleatoric, epistemic, float("inf"), state)
+
+        # Out-of-bounds ambiguity beta (<= 0)
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            default_engine.evaluate(preds, weights, aleatoric, epistemic, 0.0, state)
+        with pytest.raises(InvalidCircuitBreakerInputException):
+            default_engine.evaluate(preds, weights, aleatoric, epistemic, -1.0, state)
+
+    def test_evaluate_normal_state_progression(
+        self,
+        default_engine: CircuitBreakerOverlayEngine,
+        quiescent_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+    ) -> None:
+        """Verify normal progression, step_index increments, and active_bars_in_tier increments."""
+        preds, weights, aleatoric, epistemic, beta = quiescent_inputs
+        state_0 = default_engine.initialize_state()
+
+        # Step 1
+        decision_1, state_1 = default_engine.evaluate(
+            preds, weights, aleatoric, epistemic, beta, state_0
+        )
+        assert state_1.tier == CircuitBreakerTier.NORMAL
+        assert state_1.step_index == 1
+        assert state_1.active_bars_in_tier == 1
+        assert state_1.composite_shock_score == 0.0
+        assert state_1.continuous_haircut == 1.0
+        assert decision_1.action_tier == CircuitBreakerTier.NORMAL
+        assert decision_1.execution_haircut == 1.0
+        assert not decision_1.is_halted
+        assert not decision_1.is_derisking
+        assert not decision_1.is_throttled
+
+        # Step 2
+        decision_2, state_2 = default_engine.evaluate(
+            preds, weights, aleatoric, epistemic, beta, state_1
+        )
+        assert state_2.tier == CircuitBreakerTier.NORMAL
+        assert state_2.step_index == 2
+        assert state_2.active_bars_in_tier == 2
+        assert decision_2.execution_haircut == 1.0
+
+        # Step 3
+        decision_3, state_3 = default_engine.evaluate(
+            preds, weights, aleatoric, epistemic, beta, state_2
+        )
+        assert state_3.tier == CircuitBreakerTier.NORMAL
+        assert state_3.step_index == 3
+        assert state_3.active_bars_in_tier == 3
+
+    def test_evaluate_instantaneous_escalation_to_caution(
+        self,
+        default_engine: CircuitBreakerOverlayEngine,
+        quiescent_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+        caution_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+    ) -> None:
+        """Verify instantaneous escalation from NORMAL to CAUTION with active_bars reset to 1 and throttled haircut."""
+        state = default_engine.initialize_state()
+        preds_q, w_q, a_q, e_q, b_q = quiescent_inputs
+        _, state = default_engine.evaluate(preds_q, w_q, a_q, e_q, b_q, state)
+        _, state = default_engine.evaluate(preds_q, w_q, a_q, e_q, b_q, state)
+        assert state.tier == CircuitBreakerTier.NORMAL
+        assert state.active_bars_in_tier == 2
+
+        # Trigger CAUTION
+        preds_c, w_c, a_c, e_c, b_c = caution_inputs
+        decision, state = default_engine.evaluate(preds_c, w_c, a_c, e_c, b_c, state)
+        assert state.tier == CircuitBreakerTier.CAUTION
+        assert state.active_bars_in_tier == 1
+        assert state.step_index == 3
+        assert decision.action_tier == CircuitBreakerTier.CAUTION
+        assert decision.is_throttled is True
+        assert not decision.is_derisking
+        assert not decision.is_halted
+        # CAUTION caps execution haircut at min(0.50, continuous_haircut)
+        assert decision.execution_haircut <= 0.50
+        assert decision.execution_haircut == min(0.50, state.continuous_haircut)
+
+        # Second bar sustaining CAUTION
+        decision_2, state_2 = default_engine.evaluate(preds_c, w_c, a_c, e_c, b_c, state)
+        assert state_2.tier == CircuitBreakerTier.CAUTION
+        assert state_2.active_bars_in_tier == 2
+        assert state_2.step_index == 4
+
+    def test_evaluate_instantaneous_escalation_to_derisk(
+        self,
+        default_engine: CircuitBreakerOverlayEngine,
+        derisk_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+    ) -> None:
+        """Verify instantaneous escalation from NORMAL to DERISK with haircut 0.0."""
+        state = default_engine.initialize_state()
+        preds_d, w_d, a_d, e_d, b_d = derisk_inputs
+
+        decision, state = default_engine.evaluate(preds_d, w_d, a_d, e_d, b_d, state)
+        assert state.tier == CircuitBreakerTier.DERISK
+        assert state.active_bars_in_tier == 1
+        assert decision.action_tier == CircuitBreakerTier.DERISK
+        assert decision.is_derisking is True
+        assert not decision.is_halted
+        assert not decision.is_throttled
+        assert decision.execution_haircut == 0.0
+
+    def test_evaluate_instantaneous_escalation_to_halt(
+        self,
+        default_engine: CircuitBreakerOverlayEngine,
+        halt_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+    ) -> None:
+        """Verify instantaneous escalation to HALT with haircut 0.0."""
+        state = default_engine.initialize_state()
+        preds_h, w_h, a_h, e_h, b_h = halt_inputs
+
+        decision, state = default_engine.evaluate(preds_h, w_h, a_h, e_h, b_h, state)
+        assert state.tier == CircuitBreakerTier.HALT
+        assert state.active_bars_in_tier == 1
+        assert decision.action_tier == CircuitBreakerTier.HALT
+        assert decision.is_halted is True
+        assert not decision.is_derisking
+        assert not decision.is_throttled
+        assert decision.execution_haircut == 0.0
+
+    def test_evaluate_exogenous_cusum_panic_shock_combinations(
+        self,
+        default_engine: CircuitBreakerOverlayEngine,
+        quiescent_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+    ) -> None:
+        """Verify exogenous CUSUM panic shock triggers immediate HALT only when both flags are active."""
+        preds, weights, aleatoric, epistemic, beta = quiescent_inputs
+        state = default_engine.initialize_state()
+
+        # cusum_shock=True, regime_is_panic=False -> Candidate is NORMAL based on shock
+        dec, s = default_engine.evaluate(
+            preds,
+            weights,
+            aleatoric,
+            epistemic,
+            beta,
+            state,
+            cusum_shock=True,
+            regime_is_panic=False,
+        )
+        assert s.tier == CircuitBreakerTier.NORMAL
+
+        # cusum_shock=False, regime_is_panic=True -> Candidate is NORMAL based on shock
+        dec, s = default_engine.evaluate(
+            preds,
+            weights,
+            aleatoric,
+            epistemic,
+            beta,
+            state,
+            cusum_shock=False,
+            regime_is_panic=True,
+        )
+        assert s.tier == CircuitBreakerTier.NORMAL
+
+        # cusum_shock=True, regime_is_panic=True -> Candidate is HALT immediately!
+        dec, s_halt = default_engine.evaluate(
+            preds,
+            weights,
+            aleatoric,
+            epistemic,
+            beta,
+            state,
+            cusum_shock=True,
+            regime_is_panic=True,
+        )
+        assert s_halt.tier == CircuitBreakerTier.HALT
+        assert s_halt.active_bars_in_tier == 1
+        assert dec.action_tier == CircuitBreakerTier.HALT
+        assert dec.is_halted is True
+        assert dec.execution_haircut == 0.0
+
+    def test_evaluate_hysteresis_lockout_in_halt_inv_cb_003(
+        self,
+        default_engine: CircuitBreakerOverlayEngine,
+        halt_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+        quiescent_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+    ) -> None:
+        """Verify INV-CB-003 anti-chattering lockout: HALT requires dwell_time_bars and Xi < recovery_threshold to de-escalate."""
+        preds_h, w_h, a_h, e_h, b_h = halt_inputs
+        preds_q, w_q, a_q, e_q, b_q = quiescent_inputs
+
+        # Escalate to HALT (dwell_time_bars default = 5, recovery_threshold = 0.30)
+        state = default_engine.initialize_state()
+        dec, state = default_engine.evaluate(preds_h, w_h, a_h, e_h, b_h, state)
+        assert state.tier == CircuitBreakerTier.HALT
+        assert state.active_bars_in_tier == 1
+
+        # Bars 2 to 5: Quiescent inputs (Xi = 0.0 < 0.30), but active_bars < 5
+        for expected_bar in range(2, 6):
+            dec, state = default_engine.evaluate(preds_q, w_q, a_q, e_q, b_q, state)
+            assert state.tier == CircuitBreakerTier.HALT, f"Premature exit at bar {expected_bar}"
+            assert state.active_bars_in_tier == expected_bar
+            assert dec.action_tier == CircuitBreakerTier.HALT
+            assert dec.execution_haircut == 0.0
+
+        assert state.active_bars_in_tier == 5  # Now eligible on next evaluation!
+
+        # Next evaluation under quiescent conditions: both active >= 5 AND Xi < 0.30 met!
+        # Must step down one tier to DERISK (not skipping to NORMAL)
+        dec, state = default_engine.evaluate(preds_q, w_q, a_q, e_q, b_q, state)
+        assert state.tier == CircuitBreakerTier.DERISK
+        assert state.active_bars_in_tier == 1  # Reset to 1 upon tier transition
+        assert dec.action_tier == CircuitBreakerTier.DERISK
+        assert dec.execution_haircut == 0.0
+
+    def test_evaluate_halt_sustains_if_recovery_threshold_not_met(
+        self,
+        default_engine: CircuitBreakerOverlayEngine,
+        halt_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+        caution_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+    ) -> None:
+        """Verify HALT holds even when active_bars >= dwell_time_bars if Xi >= recovery_threshold."""
+        preds_h, w_h, a_h, e_h, b_h = halt_inputs
+        preds_c, w_c, a_c, e_c, b_c = caution_inputs
+
+        state = default_engine.initialize_state()
+        _, state = default_engine.evaluate(preds_h, w_h, a_h, e_h, b_h, state)
+
+        # Fast forward active bars to 5
+        for _ in range(4):
+            _, state = default_engine.evaluate(preds_h, w_h, a_h, e_h, b_h, state)
+        assert state.tier == CircuitBreakerTier.HALT
+        assert state.active_bars_in_tier == 5
+
+        # Evaluate with CAUTION inputs (Xi ~ 0.622 >= 0.30): candidate is CAUTION, but recovery threshold not met
+        dec, state = default_engine.evaluate(preds_c, w_c, a_c, e_c, b_c, state)
+        assert state.tier == CircuitBreakerTier.HALT
+        assert state.active_bars_in_tier == 6
+        assert dec.action_tier == CircuitBreakerTier.HALT
+
+    def test_evaluate_hysteresis_lockout_in_derisk_inv_cb_003(
+        self,
+        default_engine: CircuitBreakerOverlayEngine,
+        derisk_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+        quiescent_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+    ) -> None:
+        """Verify INV-CB-003: DERISK requires dwell_time_bars before stepping down to CAUTION."""
+        preds_d, w_d, a_d, e_d, b_d = derisk_inputs
+        preds_q, w_q, a_q, e_q, b_q = quiescent_inputs
+
+        state = default_engine.initialize_state()
+        _, state = default_engine.evaluate(preds_d, w_d, a_d, e_d, b_d, state)
+        assert state.tier == CircuitBreakerTier.DERISK
+        assert state.active_bars_in_tier == 1
+
+        # Bars 2 to 5: locked in DERISK
+        for expected_bar in range(2, 6):
+            dec, state = default_engine.evaluate(preds_q, w_q, a_q, e_q, b_q, state)
+            assert state.tier == CircuitBreakerTier.DERISK
+            assert state.active_bars_in_tier == expected_bar
+            assert dec.execution_haircut == 0.0
+
+        # Bar 6: active_bars = 5 >= 5 AND Xi < 0.30 -> Step down to CAUTION
+        dec, state = default_engine.evaluate(preds_q, w_q, a_q, e_q, b_q, state)
+        assert state.tier == CircuitBreakerTier.CAUTION
+        assert state.active_bars_in_tier == 1
+        assert dec.action_tier == CircuitBreakerTier.CAUTION
+        assert dec.is_throttled is True
+        assert dec.execution_haircut == min(0.50, state.continuous_haircut)
+
+    def test_evaluate_hysteresis_caution_to_normal_transition(
+        self,
+        default_engine: CircuitBreakerOverlayEngine,
+        caution_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+        quiescent_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+    ) -> None:
+        """Verify CAUTION transitions to NORMAL immediately when Xi < recovery_threshold."""
+        preds_c, w_c, a_c, e_c, b_c = caution_inputs
+        preds_q, w_q, a_q, e_q, b_q = quiescent_inputs
+
+        state = default_engine.initialize_state()
+        _, state = default_engine.evaluate(preds_c, w_c, a_c, e_c, b_c, state)
+        assert state.tier == CircuitBreakerTier.CAUTION
+        assert state.active_bars_in_tier == 1
+
+        # Immediate de-escalation to NORMAL when Xi < 0.30
+        dec, state = default_engine.evaluate(preds_q, w_q, a_q, e_q, b_q, state)
+        assert state.tier == CircuitBreakerTier.NORMAL
+        assert state.active_bars_in_tier == 1
+        assert dec.action_tier == CircuitBreakerTier.NORMAL
+        assert dec.execution_haircut == state.continuous_haircut
+
+    def test_evaluate_caution_deadband_retention(
+        self,
+        default_engine: CircuitBreakerOverlayEngine,
+        caution_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+    ) -> None:
+        """Verify CAUTION tier retention when shock score is in deadband [recovery_threshold, caution_threshold)."""
+        preds_c, w_c, a_c, e_c, b_c = caution_inputs
+
+        state = default_engine.initialize_state()
+        _, state = default_engine.evaluate(preds_c, w_c, a_c, e_c, b_c, state)
+        assert state.tier == CircuitBreakerTier.CAUTION
+        assert state.active_bars_in_tier == 1
+
+        # Synthesize deadband inputs: candidate is NORMAL (Xi < 0.45), but Xi >= 0.30
+        # For example: unanimous predictions, epistemic_ratio = 0.0, ambiguity_beta = 2.5
+        # tilde_beta = (2.5 - 1.0) / 4.0 = 0.375
+        # Xi = 0.20 * 0.375 = 0.075? No, we want Xi in [0.30, 0.45).
+        # Let ambiguity_beta = 1.0 (tilde_beta = 0.0), H_dir = 0.0, epistemic_ratio = 1.0 (weight 0.30)
+        # Xi = 0.30 * 1.0 = 0.3000! Candidate is NORMAL since 0.30 < 0.45, but 0.30 >= 0.30 (not < 0.30).
+        preds_deadband = np.array([0.05, 0.05], dtype=np.float64)
+        weights_deadband = np.array([0.5, 0.5], dtype=np.float64)
+        aleatoric_deadband = 0.0001
+        epistemic_deadband = 0.1  # rho ~ 1.0, H_dir = 0.0 -> weight_ratio = 0.30
+        beta_deadband = (
+            1.6  # tilde_beta = 0.6 / 4.0 = 0.15 -> weight_beta * 0.15 = 0.03 -> Xi ~ 0.33
+        )
+
+        shock = default_engine.haircut_calculator.compute_composite_shock(
+            epistemic_entropy=0.0,
+            epistemic_ratio=default_engine.entropy_calculator.compute_epistemic_ratio(
+                aleatoric_deadband, epistemic_deadband
+            ),
+            ambiguity_beta=beta_deadband,
+        )
+        assert 0.30 <= shock < 0.45
+
+        dec, state = default_engine.evaluate(
+            preds_deadband,
+            weights_deadband,
+            aleatoric_deadband,
+            epistemic_deadband,
+            beta_deadband,
+            state,
+        )
+        # Should stay in CAUTION because shock >= 0.30
+        assert state.tier == CircuitBreakerTier.CAUTION
+        assert state.active_bars_in_tier == 2
+        assert dec.action_tier == CircuitBreakerTier.CAUTION
+        assert dec.is_throttled is True
+
+    def test_evaluate_full_lifecycle_simulation(
+        self,
+        default_engine: CircuitBreakerOverlayEngine,
+        quiescent_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+        caution_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+        derisk_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+        halt_inputs: tuple[np.ndarray, np.ndarray, float, float, float],
+    ) -> None:
+        """Full institutional lifecycle simulation traversing NORMAL -> CAUTION -> DERISK -> HALT -> DERISK -> CAUTION -> NORMAL."""
+        p_q, w_q, a_q, e_q, b_q = quiescent_inputs
+        p_c, w_c, a_c, e_c, b_c = caution_inputs
+        p_d, w_d, a_d, e_d, b_d = derisk_inputs
+        p_h, w_h, a_h, e_h, b_h = halt_inputs
+
+        state = default_engine.initialize_state()
+        history_tiers: list[CircuitBreakerTier] = []
+
+        # 1. NORMAL (2 bars)
+        for _ in range(2):
+            dec, state = default_engine.evaluate(p_q, w_q, a_q, e_q, b_q, state)
+            history_tiers.append(state.tier)
+            assert dec.execution_haircut == 1.0
+
+        # 2. CAUTION (1 bar)
+        dec, state = default_engine.evaluate(p_c, w_c, a_c, e_c, b_c, state)
+        history_tiers.append(state.tier)
+        assert dec.action_tier == CircuitBreakerTier.CAUTION
+        assert dec.execution_haircut <= 0.50
+
+        # 3. DERISK (1 bar)
+        dec, state = default_engine.evaluate(p_d, w_d, a_d, e_d, b_d, state)
+        history_tiers.append(state.tier)
+        assert dec.action_tier == CircuitBreakerTier.DERISK
+        assert dec.execution_haircut == 0.0
+
+        # 4. HALT (1 bar)
+        dec, state = default_engine.evaluate(p_h, w_h, a_h, e_h, b_h, state)
+        history_tiers.append(state.tier)
+        assert dec.action_tier == CircuitBreakerTier.HALT
+        assert dec.execution_haircut == 0.0
+
+        # 5. Locked in HALT for 4 more bars (total 5 bars in HALT) under quiescent conditions
+        for _ in range(4):
+            dec, state = default_engine.evaluate(p_q, w_q, a_q, e_q, b_q, state)
+            history_tiers.append(state.tier)
+            assert dec.action_tier == CircuitBreakerTier.HALT
+            assert dec.execution_haircut == 0.0
+
+        # 6. De-escalates to DERISK (step down one tier, resets active to 1)
+        dec, state = default_engine.evaluate(p_q, w_q, a_q, e_q, b_q, state)
+        history_tiers.append(state.tier)
+        assert dec.action_tier == CircuitBreakerTier.DERISK
+        assert state.active_bars_in_tier == 1
+
+        # 7. Locked in DERISK for 4 more bars (total 5 bars in DERISK)
+        for _ in range(4):
+            dec, state = default_engine.evaluate(p_q, w_q, a_q, e_q, b_q, state)
+            history_tiers.append(state.tier)
+            assert dec.action_tier == CircuitBreakerTier.DERISK
+
+        # 8. De-escalates to CAUTION (step down one tier, resets active to 1)
+        dec, state = default_engine.evaluate(p_q, w_q, a_q, e_q, b_q, state)
+        history_tiers.append(state.tier)
+        assert dec.action_tier == CircuitBreakerTier.CAUTION
+        assert state.active_bars_in_tier == 1
+        assert dec.execution_haircut <= 0.50
+
+        # 9. De-escalates to NORMAL (immediate since Xi < 0.30)
+        dec, state = default_engine.evaluate(p_q, w_q, a_q, e_q, b_q, state)
+        history_tiers.append(state.tier)
+        assert dec.action_tier == CircuitBreakerTier.NORMAL
+        assert state.active_bars_in_tier == 1
+        assert dec.execution_haircut == 1.0
+
+        expected_sequence = [
+            CircuitBreakerTier.NORMAL,
+            CircuitBreakerTier.NORMAL,
+            CircuitBreakerTier.CAUTION,
+            CircuitBreakerTier.DERISK,
+            CircuitBreakerTier.HALT,
+            CircuitBreakerTier.HALT,
+            CircuitBreakerTier.HALT,
+            CircuitBreakerTier.HALT,
+            CircuitBreakerTier.HALT,
+            CircuitBreakerTier.DERISK,
+            CircuitBreakerTier.DERISK,
+            CircuitBreakerTier.DERISK,
+            CircuitBreakerTier.DERISK,
+            CircuitBreakerTier.DERISK,
+            CircuitBreakerTier.CAUTION,
+            CircuitBreakerTier.NORMAL,
+        ]
+        assert history_tiers == expected_sequence
+        assert state.step_index == 16
