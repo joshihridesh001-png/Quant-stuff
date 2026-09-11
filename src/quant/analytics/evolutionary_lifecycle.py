@@ -334,3 +334,110 @@ class AdaptiveVolatilityMutator:
         u_clamped = np.clip(u_refl, 0.0, 1.0)
 
         return self._codec.decode(u_clamped)
+
+    def adapt_step_size(
+        self,
+        current_step_size: float,
+        current_smoothed_ratio: float,
+        instantaneous_success_ratio: float,
+    ) -> tuple[float, float]:
+        """Adapt global mutation step size via Rechenberg 1/5th rule with exponential smoothing.
+
+        Args:
+            current_step_size: Current mutation step size sigma_mut^(t).
+            current_smoothed_ratio: Previous generation smoothed success ratio \bar{r}^(t-1).
+            instantaneous_success_ratio: Instantaneous success ratio r^(t) in [0, 1].
+
+        Returns:
+            Tuple of (new_step_size, new_smoothed_ratio) strictly bounded in [min, max] and [0, 1].
+        """
+        if current_step_size <= 0.0 or not math.isfinite(current_step_size):
+            raise LifecycleError(
+                f"current_step_size must be positive and finite, got {current_step_size}"
+            )
+        if not (0.0 <= current_smoothed_ratio <= 1.0):
+            raise LifecycleError(
+                f"current_smoothed_ratio must be in [0.0, 1.0], got {current_smoothed_ratio}"
+            )
+        if not (0.0 <= instantaneous_success_ratio <= 1.0):
+            raise LifecycleError(
+                f"instantaneous_success_ratio must be in [0.0, 1.0], got {instantaneous_success_ratio}"
+            )
+
+        # Exponential smoothing: \bar{r}^(t) = \alpha * r^(t) + (1 - \alpha) * \bar{r}^(t-1)
+        alpha = self._config.smoothing_factor
+        new_smoothed_ratio = float(
+            np.clip(
+                alpha * instantaneous_success_ratio + (1.0 - alpha) * current_smoothed_ratio,
+                0.0,
+                1.0,
+            )
+        )
+
+        # 1/5th rule: expand if > 0.20, contract if < 0.20
+        if new_smoothed_ratio > 0.20:
+            new_step_size = current_step_size * self._config.expansion_factor
+        elif new_smoothed_ratio < 0.20:
+            new_step_size = current_step_size * self._config.contraction_factor
+        else:
+            new_step_size = current_step_size
+
+        # Clamp strictly to [min_step_size, max_step_size]
+        new_step_size = float(
+            np.clip(new_step_size, self._config.min_step_size, self._config.max_step_size)
+        )
+
+        return new_step_size, new_smoothed_ratio
+
+    def compute_apd_success_ratio(
+        self,
+        offspring_to_parent: dict[str, str],
+        ranking: RankingResult,
+    ) -> float:
+        """Compute instantaneous APD progress success ratio r_succ^(t) in [0, 1].
+
+        Offspring q_j is successful (s_j = 1) if:
+          FrontRank(q_j) < FrontRank(p_j)  OR  (FrontRank(q_j) == FrontRank(p_j) AND APD(q_j) < APD(p_j))
+        Infeasible offspring always receive s_j = 0.
+
+        Args:
+            offspring_to_parent: Mapping of offspring candidate_id -> parent candidate_id.
+            ranking: Multi-objective RankingResult of joint (parents + offspring) candidate pool.
+
+        Returns:
+            Float empirical success ratio in [0.0, 1.0].
+        """
+        if not offspring_to_parent:
+            return 0.0
+
+        # Build candidate -> (front_rank, apd_score) map
+        infeasible_set = set(ranking.infeasible_ids)
+        candidate_meta: dict[str, tuple[int, float]] = {}
+        for front in ranking.fronts:
+            for cid, apd in zip(front.candidate_ids, front.apd_scores, strict=True):
+                candidate_meta[cid] = (front.rank, apd)
+
+        success_count = 0
+        total_count = len(offspring_to_parent)
+
+        for off_id, parent_id in offspring_to_parent.items():
+            if off_id in infeasible_set:
+                continue
+
+            off_meta = candidate_meta.get(off_id)
+            if off_meta is None:
+                continue
+
+            parent_meta = candidate_meta.get(parent_id)
+            if parent_id in infeasible_set or parent_meta is None:
+                # Parent failed or missing, but offspring is feasible and ranked
+                success_count += 1
+                continue
+
+            off_rank, off_apd = off_meta
+            parent_rank, parent_apd = parent_meta
+
+            if off_rank < parent_rank or off_rank == parent_rank and off_apd < parent_apd:
+                success_count += 1
+
+        return float(success_count / total_count)

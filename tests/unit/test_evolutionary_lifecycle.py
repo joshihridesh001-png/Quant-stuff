@@ -268,3 +268,100 @@ class TestAdaptiveVolatilityMutator:
         dist_cat = float(np.linalg.norm(codec.encode(cataclysm_mutated) - u_base))
 
         assert dist_cat > dist_nom
+
+
+class TestRechenbergAdaptation:
+    """Test Continuous APD-Progress Rechenberg Volatility Adaptation."""
+
+    def test_rechenberg_expands_on_high_apd_success(self) -> None:
+        """Success ratio > 0.20 expands mutation step size by expansion_factor."""
+        import numpy as np
+
+        mutator = AdaptiveVolatilityMutator()
+        sigma_new, smoothed_new = mutator.adapt_step_size(
+            current_step_size=0.05,
+            current_smoothed_ratio=0.20,
+            instantaneous_success_ratio=0.80,
+        )
+
+        # smoothed = 0.20 * 0.80 + 0.80 * 0.20 = 0.32 > 0.20
+        # sigma_new = 0.05 * 1.10 = 0.055
+        assert np.isclose(smoothed_new, 0.32)
+        assert np.isclose(sigma_new, 0.055)
+
+    def test_rechenberg_contracts_on_low_apd_success(self) -> None:
+        """Success ratio < 0.20 contracts mutation step size by contraction_factor."""
+        import numpy as np
+
+        mutator = AdaptiveVolatilityMutator()
+        sigma_new, smoothed_new = mutator.adapt_step_size(
+            current_step_size=0.05,
+            current_smoothed_ratio=0.20,
+            instantaneous_success_ratio=0.0,
+        )
+
+        # smoothed = 0.20 * 0.0 + 0.80 * 0.20 = 0.16 < 0.20
+        # sigma_new = 0.05 * 0.90 = 0.045
+        assert np.isclose(smoothed_new, 0.16)
+        assert np.isclose(sigma_new, 0.045)
+
+    def test_rechenberg_clamps_to_step_size_bounds(self) -> None:
+        """Repeated expansion/contraction clamps strictly to [min_step_size, max_step_size]."""
+        cfg = MutationConfig(min_step_size=0.01, max_step_size=0.10)
+        mutator = AdaptiveVolatilityMutator(cfg)
+
+        # Near upper bound
+        sigma = 0.095
+        smoothed = 0.50
+        for _ in range(10):
+            sigma, smoothed = mutator.adapt_step_size(sigma, smoothed, 1.0)
+        assert sigma == 0.10
+
+        # Near lower bound
+        sigma = 0.02
+        smoothed = 0.05
+        for _ in range(20):
+            sigma, smoothed = mutator.adapt_step_size(sigma, smoothed, 0.0)
+        assert sigma == 0.01
+
+    def test_rechenberg_smoothing_momentum(self) -> None:
+        """Exponential smoothing filters single-generation transient drops."""
+        import numpy as np
+
+        mutator = AdaptiveVolatilityMutator()
+        # High history smoothed = 0.90
+        # Sudden drop in instantaneous = 0.0
+        # smoothed = 0.20 * 0.0 + 0.80 * 0.90 = 0.72 > 0.20 -> still expands
+        sigma_new, smoothed_new = mutator.adapt_step_size(
+            current_step_size=0.05,
+            current_smoothed_ratio=0.90,
+            instantaneous_success_ratio=0.0,
+        )
+        assert np.isclose(smoothed_new, 0.72)
+        assert np.isclose(sigma_new, 0.055)
+
+    def test_compute_apd_success_ratio(self) -> None:
+        """Evaluates offspring APD and Pareto front progress against parent models."""
+        import numpy as np
+
+        from quant.analytics.pareto_sorting import ParetoFront, RankingResult
+
+        mutator = AdaptiveVolatilityMutator()
+        ranking = RankingResult(
+            fronts=(
+                ParetoFront(rank=1, candidate_ids=("p1", "q2"), apd_scores=(0.5, 0.3)),
+                ParetoFront(rank=2, candidate_ids=("p2", "q1"), apd_scores=(0.8, 0.6)),
+            ),
+            infeasible_ids=("q3",),
+            active_reference_rays=np.eye(3),
+            archive_size=0,
+            subspace_rank=0,
+        )
+
+        pairings = {
+            "q1": "p1",  # q1 rank 2 vs p1 rank 1 -> fail (0)
+            "q2": "p2",  # q2 rank 1 vs p2 rank 2 -> success (1)
+            "q3": "p2",  # q3 infeasible -> fail (0)
+        }
+        ratio = mutator.compute_apd_success_ratio(pairings, ranking)
+        assert np.isclose(ratio, 1.0 / 3.0)
