@@ -328,3 +328,234 @@ class SVDSubspaceOrthogonalArchive:
             novelties[i] = ortho_score
 
         return novelties
+
+
+class AdaptiveReferenceLattice:
+    """Boundary-Anchored Adaptive Reference Lattice for 3D objective surfaces (BA-ARVEA).
+
+    Functional Purpose:
+        Generates Das-Dennis structured reference rays, associates candidates with their
+        nearest directional ray, evaluates Angle-Penalized Distance (APD), and dynamically
+        migrates idle interior rays toward populated candidate clusters while keeping
+        basis anchor rays ([1,0,0], [0,1,0], [0,0,1]) strictly immutable.
+
+    Defensive Invariants:
+        INV-PAR-003: All rays maintain exact unit Euclidean norm (||v|| == 1.0).
+        INV-PAR-004: Anchor basis rays are strictly immutable across all adaptations.
+    """
+
+    def __init__(
+        self,
+        num_objectives: int = 3,
+        partitions: int = 6,
+        adaptation_interval: int = 5,
+        idle_threshold: int = 3,
+        adaptation_rate: float = 0.30,
+        min_angle_separation: float = 0.05,
+        alpha_escalation: float = 2.0,
+    ) -> None:
+        """Initialize reference lattice with Das-Dennis partition settings.
+
+        Args:
+            num_objectives: Dimension of objective space (M=3 for DSR, Regret, Novelty).
+            partitions: Number of divisions along each coordinate axis (p=6 yields 28 rays).
+            adaptation_interval: Number of generations between interior ray adjustments.
+            idle_threshold: Minimum idle generations before an interior ray is migrated.
+            adaptation_rate: Smoothing factor eta for ray cluster projection.
+            min_angle_separation: Minimum angular clearance required to prevent ray collapse.
+            alpha_escalation: Exponent alpha controlling APD penalty ramp-up over time.
+        """
+        self._m = num_objectives
+        self._p = partitions
+        self._adaptation_interval = adaptation_interval
+        self._idle_threshold = idle_threshold
+        self._eta = adaptation_rate
+        self._min_sep = min_angle_separation
+        self._alpha = alpha_escalation
+
+        # Generate initial Das-Dennis lattice
+        self._rays = self._generate_das_dennis_rays(self._m, self._p)
+        self._k_rays = len(self._rays)
+
+        # Identify immutable coordinate basis anchor indices
+        self._anchor_indices: set[int] = set()
+        for idx, ray in enumerate(self._rays):
+            for dim in range(self._m):
+                basis = np.zeros(self._m, dtype=np.float64)
+                basis[dim] = 1.0
+                if np.allclose(ray, basis, atol=1e-5):
+                    self._anchor_indices.add(idx)
+
+        # Idle generation counter per ray
+        self._idle_counters = np.zeros(self._k_rays, dtype=np.int64)
+
+        # Pre-compute localized minimum angles gamma_j
+        self._gamma = self._compute_gamma(self._rays)
+
+    @property
+    def rays(self) -> np.ndarray:
+        """Active reference rays matrix of shape (K, M)."""
+        return self._rays.copy()
+
+    @staticmethod
+    def _generate_das_dennis_rays(m: int, p: int) -> np.ndarray:
+        """Recursively generate uniform simplex lattice points using Das-Dennis method."""
+        combinations: list[list[int]] = []
+
+        def _recurse(remaining_sum: int, depth: int, current: list[int]) -> None:
+            if depth == m - 1:
+                combinations.append(current + [remaining_sum])
+                return
+            for val in range(remaining_sum + 1):
+                _recurse(remaining_sum - val, depth + 1, current + [val])
+
+        _recurse(p, 0, [])
+        raw = np.array(combinations, dtype=np.float64) / float(p)
+
+        # Normalize each ray to unit Euclidean length
+        norms = np.linalg.norm(raw, axis=1, keepdims=True)
+        # Avoid division by zero on degenerate lattice
+        norms = np.maximum(norms, 1e-12)
+        unit_rays = raw / norms
+        return unit_rays
+
+    @staticmethod
+    def _compute_gamma(rays: np.ndarray) -> np.ndarray:
+        """Compute localized smallest angle gamma_j to the nearest neighboring ray."""
+        # Pairwise dot products in R^{K x K}
+        dots = np.dot(rays, rays.T)
+        dots = np.clip(dots, -1.0, 1.0)
+        angles = np.arccos(dots)
+
+        # Mask diagonal (angle to self is 0)
+        np.fill_diagonal(angles, np.inf)
+        gamma = np.min(angles, axis=1)
+        # Numerical floor to prevent divide-by-zero
+        return np.maximum(gamma, 1e-5)
+
+    def associate_and_penalize(
+        self,
+        normalized_objectives: np.ndarray,
+        generation_ratio: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Associate candidates with nearest reference rays and compute APD metrics.
+
+        Functional Purpose:
+            Evaluates acute angle theta_{i, j} between candidate objective vectors
+            and reference rays, assigning each candidate to j* = argmin_j theta_{i, j}.
+            Computes Angle-Penalized Distance d_APD scaling convergence with diversity.
+
+        Args:
+            normalized_objectives: 2D array of shape (N_cand, M) in [0, 1]^M.
+            generation_ratio: Scaled generation index t / t_max in [0.0, 1.0].
+
+        Returns:
+            Tuple of (associated_ray_indices, acute_angles, apd_scores).
+        """
+        n_cand = normalized_objectives.shape[0]
+        associations = np.zeros(n_cand, dtype=np.int64)
+        angles = np.zeros(n_cand, dtype=np.float64)
+        apd_scores = np.zeros(n_cand, dtype=np.float64)
+
+        gen_ratio_clamped = max(0.0, min(1.0, generation_ratio))
+        time_escalation = float(self._m) * (gen_ratio_clamped**self._alpha)
+
+        # Euclidean norms of objective vectors
+        norms = np.linalg.norm(normalized_objectives, axis=1)
+
+        for i in range(n_cand):
+            norm_i = float(norms[i])
+            if norm_i < 1e-12:
+                # Solution at ideal point origin [0,0,0]: zero APD
+                associations[i] = 0
+                angles[i] = 0.0
+                apd_scores[i] = 0.0
+                continue
+
+            unit_obj = normalized_objectives[i] / norm_i
+            # Dot products with all reference rays in R^K
+            cosines = np.dot(self._rays, unit_obj)
+            cosines = np.clip(cosines, -1.0, 1.0)
+            candidate_angles = np.arccos(cosines)
+
+            best_ray = int(np.argmin(candidate_angles))
+            theta_star = float(candidate_angles[best_ray])
+            gamma_star = float(self._gamma[best_ray])
+
+            # Angle-Penalized Distance formula: (1 + M * (t/t_max)^alpha * (theta / gamma)) * ||f||
+            penalty = 1.0 + time_escalation * (theta_star / gamma_star)
+            apd = penalty * norm_i
+
+            associations[i] = best_ray
+            angles[i] = theta_star
+            apd_scores[i] = apd
+
+        return associations, angles, apd_scores
+
+    def adapt_interior_rays(
+        self,
+        normalized_objectives: np.ndarray,
+        associations: np.ndarray,
+    ) -> int:
+        """Adaptively re-project idle interior reference rays toward candidate clusters.
+
+        Functional Purpose:
+            Concentrates search capacity on empirically viable objective regions
+            while strictly preserving coordinate basis anchors (INV-PAR-004) and
+            minimum angular separation (gamma_min).
+
+        Args:
+            normalized_objectives: 2D array of shape (N_cand, M) of active solutions.
+            associations: 1D array of assigned ray indices for each solution.
+
+        Returns:
+            Total number of interior rays migrated during this adaptation pass.
+        """
+        active_ray_set = set(associations.tolist())
+        migrated_count = 0
+
+        # Identify most populated ray cluster as target direction
+        ray_counts = np.bincount(associations, minlength=self._k_rays)
+        dense_ray = int(np.argmax(ray_counts))
+
+        if ray_counts[dense_ray] == 0:
+            return 0
+
+        dense_mask = associations == dense_ray
+        cluster_centroid = np.mean(normalized_objectives[dense_mask], axis=0)
+        centroid_norm = float(np.linalg.norm(cluster_centroid))
+        if centroid_norm < 1e-12:
+            return 0
+        target_unit = cluster_centroid / centroid_norm
+
+        for j in range(self._k_rays):
+            if j in active_ray_set:
+                self._idle_counters[j] = 0
+            else:
+                self._idle_counters[j] += 1
+
+            # Check adaptation criteria: idle >= threshold and NOT an anchor ray (INV-PAR-004)
+            if self._idle_counters[j] >= self._idle_threshold and j not in self._anchor_indices:
+                candidate_ray = (1.0 - self._eta) * self._rays[j] + self._eta * target_unit
+                cand_norm = float(np.linalg.norm(candidate_ray))
+                if cand_norm < 1e-12:
+                    continue
+                candidate_unit = candidate_ray / cand_norm
+
+                # Verify minimum angular separation against other existing rays
+                temp_rays = self._rays.copy()
+                temp_rays[j] = candidate_unit
+                dots = np.dot(temp_rays, candidate_unit)
+                dots = np.clip(dots, -1.0, 1.0)
+                angles = np.arccos(dots)
+                angles[j] = np.inf
+
+                if float(np.min(angles)) >= self._min_sep:
+                    self._rays[j] = candidate_unit
+                    self._idle_counters[j] = 0
+                    migrated_count += 1
+
+        if migrated_count > 0:
+            self._gamma = self._compute_gamma(self._rays)
+
+        return migrated_count

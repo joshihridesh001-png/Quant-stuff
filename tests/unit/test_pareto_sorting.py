@@ -249,3 +249,71 @@ class TestSVDSubspaceOrthogonalArchive:
         novelties = archive.compute_novelty(zero_var_res, viability)
         assert np.isfinite(novelties[0])
         assert novelties[0] == 0.0
+
+
+class TestAdaptiveReferenceLattice:
+    """Test suite for AdaptiveReferenceLattice (BA-ARVEA)."""
+
+    def test_lattice_initialization_dimension_and_anchors(self) -> None:
+        """Das-Dennis with M=3, p=6 generates 28 unit-norm rays with 3 basis anchors."""
+        from quant.analytics.pareto_sorting import AdaptiveReferenceLattice
+
+        lattice = AdaptiveReferenceLattice(num_objectives=3, partitions=6)
+        rays = lattice.rays
+
+        assert rays.shape == (28, 3)
+        # Verify unit norm for all rays (INV-PAR-003)
+        norms = np.linalg.norm(rays, axis=1)
+        assert np.allclose(norms, 1.0, atol=1e-6)
+
+        # Verify basis anchors [1,0,0], [0,1,0], [0,0,1] exist (INV-PAR-004)
+        assert any(np.allclose(r, [1.0, 0.0, 0.0], atol=1e-6) for r in rays)
+        assert any(np.allclose(r, [0.0, 1.0, 0.0], atol=1e-6) for r in rays)
+        assert any(np.allclose(r, [0.0, 0.0, 1.0], atol=1e-6) for r in rays)
+
+    def test_anchor_rays_are_strictly_immutable(self) -> None:
+        """INV-PAR-004: Basis anchors never change during adaptation cycles."""
+        from quant.analytics.pareto_sorting import AdaptiveReferenceLattice
+
+        lattice = AdaptiveReferenceLattice(num_objectives=3, partitions=6, idle_threshold=1)
+
+        # Create a cluster far from [1,0,0], say near [0.2, 0.5, 0.8]
+        cluster = np.array([[0.2, 0.5, 0.8], [0.22, 0.48, 0.82]], dtype=np.float64)
+        associations, _, _ = lattice.associate_and_penalize(cluster, generation_ratio=0.5)
+
+        # Force multiple adaptation cycles
+        for _ in range(5):
+            lattice.adapt_interior_rays(cluster, associations)
+
+        updated_rays = lattice.rays
+        # Verify the 3 anchors are exactly preserved
+        assert any(np.allclose(r, [1.0, 0.0, 0.0], atol=1e-6) for r in updated_rays)
+        assert any(np.allclose(r, [0.0, 1.0, 0.0], atol=1e-6) for r in updated_rays)
+        assert any(np.allclose(r, [0.0, 0.0, 1.0], atol=1e-6) for r in updated_rays)
+
+    def test_associate_and_penalize_escalates_with_generation(self) -> None:
+        """Angle-penalized distance escalates with generation ratio t / t_max."""
+        from quant.analytics.pareto_sorting import AdaptiveReferenceLattice
+
+        lattice = AdaptiveReferenceLattice(num_objectives=3, partitions=6)
+
+        # An objective vector with non-zero angle to all rays
+        objs = np.array([[0.3, 0.7, 0.2]], dtype=np.float64)
+
+        _, _, apd_early = lattice.associate_and_penalize(objs, generation_ratio=0.0)
+        _, _, apd_late = lattice.associate_and_penalize(objs, generation_ratio=1.0)
+
+        # Late generation penalty must be strictly greater than early generation
+        assert apd_late[0] > apd_early[0]
+
+    def test_zero_norm_objective_vector_safe_handling(self) -> None:
+        """Solution at origin [0,0,0] yields zero APD without division-by-zero exception."""
+        from quant.analytics.pareto_sorting import AdaptiveReferenceLattice
+
+        lattice = AdaptiveReferenceLattice(num_objectives=3, partitions=6)
+        objs = np.array([[0.0, 0.0, 0.0]], dtype=np.float64)
+
+        assoc, angles, apd = lattice.associate_and_penalize(objs, generation_ratio=0.5)
+        assert len(assoc) == 1
+        assert apd[0] == 0.0
+        assert np.isfinite(angles[0])
