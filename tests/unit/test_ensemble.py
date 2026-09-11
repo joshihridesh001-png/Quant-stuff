@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from quant.analytics.ensemble import (
+    AsymmetricDownsideLossScorer,
     DegenerateEnsembleException,
     EnsembleConfig,
     EnsembleError,
@@ -1063,3 +1064,281 @@ class TestUpdateRegimePosteriors:
             update_regime_posteriors(valid_post, valid_alpha, np.array([-0.1, 0.6, 0.5]))
         with pytest.raises(InvalidPredictionException, match="forward_regime_probs"):
             update_regime_posteriors(valid_post, valid_alpha, np.array([0.4, 0.4, 0.4]))
+
+
+class TestAsymmetricDownsideLossScorer:
+    """Unit tests for AsymmetricDownsideLossScorer and downside semi-variance."""
+
+    def test_init_validation(self) -> None:
+        """Verify default and custom initialization contracts for AsymmetricDownsideLossScorer."""
+        scorer = AsymmetricDownsideLossScorer()
+        assert scorer.downside_penalty == 2.50
+
+        custom_scorer = AsymmetricDownsideLossScorer(downside_penalty=1.75)
+        assert custom_scorer.downside_penalty == 1.75
+
+        # Non-negative validation
+        with pytest.raises(EnsembleError, match="downside_penalty"):
+            AsymmetricDownsideLossScorer(downside_penalty=-0.1)
+
+        # Finiteness validation
+        with pytest.raises(EnsembleError, match="downside_penalty"):
+            AsymmetricDownsideLossScorer(downside_penalty=float("nan"))
+        with pytest.raises(EnsembleError, match="downside_penalty"):
+            AsymmetricDownsideLossScorer(downside_penalty=float("inf"))
+        with pytest.raises(EnsembleError, match="downside_penalty"):
+            AsymmetricDownsideLossScorer(downside_penalty="not_a_number")  # type: ignore[arg-type]
+
+    def test_compute_losses_symmetric_when_signs_agree(self) -> None:
+        """Verify when signs agree (y_t * y_tilde >= 0), loss is exact squared error without downside penalty."""
+        scorer = AsymmetricDownsideLossScorer(downside_penalty=2.50)
+
+        # Case 1: Both positive
+        y_realized = 0.04
+        predictions = np.array([0.01, 0.04, 0.08])
+        losses = scorer.compute_losses(predictions, y_realized)
+        expected = (y_realized - predictions) ** 2
+        assert np.allclose(losses, expected)
+
+        # Case 2: Both negative
+        y_realized_neg = -0.03
+        predictions_neg = np.array([-0.01, -0.03, -0.05])
+        losses_neg = scorer.compute_losses(predictions_neg, y_realized_neg)
+        expected_neg = (y_realized_neg - predictions_neg) ** 2
+        assert np.allclose(losses_neg, expected_neg)
+
+        # Case 3: Zero boundary
+        losses_zero = scorer.compute_losses(np.array([0.0, 0.05]), realized_return=0.0)
+        assert np.allclose(losses_zero, np.array([0.0, 0.0025]))
+
+    def test_compute_losses_asymmetric_downside_penalty(self) -> None:
+        """Verify directional drawdown penalty amplifies loss when y_t * y_tilde < 0."""
+        scorer = AsymmetricDownsideLossScorer(downside_penalty=2.50)
+
+        y_realized = -0.05
+        # Model 0: False long (+0.05)
+        # Model 1: Correct short (-0.05)
+        # Model 2: Short with same absolute error as Model 0 (-0.15, diff = 0.10)
+        predictions = np.array([0.05, -0.05, -0.15])
+        losses = scorer.compute_losses(predictions, y_realized)
+
+        # Model 0:
+        # squared_error = (-0.05 - 0.05)^2 = 0.01
+        # asymmetric penalty = 2.50 * max(0, -(-0.05) * 0.05) = 2.50 * 0.0025 = 0.00625
+        # total = 0.01625
+        assert losses[0] == pytest.approx(0.01625)
+
+        # Model 1:
+        # squared_error = (-0.05 - (-0.05))^2 = 0.0
+        # asymmetric penalty = 0.0
+        assert losses[1] == pytest.approx(0.0)
+
+        # Model 2:
+        # squared_error = (-0.05 - (-0.15))^2 = (0.10)^2 = 0.01
+        # asymmetric penalty = 0.0 (both signs negative)
+        assert losses[2] == pytest.approx(0.01)
+
+        # Crucial Invariant: Directionally wrong prediction (Model 0) receives strictly higher loss
+        # than sign-agreeing prediction with same error magnitude (Model 2)
+        assert losses[0] > losses[2]
+        assert losses[0] - losses[2] == pytest.approx(0.00625)
+
+    def test_compute_losses_multi_horizon_scaling(self) -> None:
+        """Verify forecast horizon scaling y_tilde = y_hat / sqrt(H) normalizes predictions."""
+        scorer = AsymmetricDownsideLossScorer(downside_penalty=2.50)
+
+        # Horizons: H = [1, 4, 9], sqrt(H) = [1, 2, 3]
+        horizons = np.array([1.0, 4.0, 9.0])
+        nominal_predictions = np.array([0.04, 0.08, 0.12])
+        # Normalized predictions: [0.04/1, 0.08/2, 0.12/3] = [0.04, 0.04, 0.04]
+        y_realized = 0.04
+
+        losses = scorer.compute_losses(
+            nominal_predictions, y_realized, forecast_horizons=horizons
+        )
+        assert losses.shape == (3,)
+        # All models have scaled prediction matching realized return exactly -> 0 loss
+        assert np.allclose(losses, np.zeros(3))
+
+        # Realized return = -0.04 with horizons
+        losses_drawdown = scorer.compute_losses(
+            nominal_predictions, -0.04, forecast_horizons=horizons
+        )
+        # All models should produce identical normalized loss
+        assert math.isclose(losses_drawdown[0], losses_drawdown[1])
+        assert math.isclose(losses_drawdown[1], losses_drawdown[2])
+
+    def test_compute_losses_non_negative_invariant(self) -> None:
+        """Verify Invariant: loss l_{t, k} >= 0.0 across random realizations."""
+        scorer = AsymmetricDownsideLossScorer(downside_penalty=5.0)
+        rng = np.random.default_rng(42)
+
+        for _ in range(20):
+            preds = rng.normal(0.0, 0.05, size=10)
+            y_realized = float(rng.normal(0.0, 0.05))
+            horizons = rng.uniform(1.0, 20.0, size=10)
+
+            losses = scorer.compute_losses(preds, y_realized, forecast_horizons=horizons)
+            assert losses.shape == (10,)
+            assert np.all(losses >= 0.0)
+            assert np.all(np.isfinite(losses))
+
+    def test_compute_losses_validation(self) -> None:
+        """Verify defensive input validation on compute_losses."""
+        scorer = AsymmetricDownsideLossScorer()
+        valid_preds = np.array([0.01, 0.02, 0.03])
+        valid_y = 0.015
+
+        # Invalid predictions
+        with pytest.raises(InvalidPredictionException, match="predictions"):
+            scorer.compute_losses([0.01, 0.02], valid_y)  # type: ignore[arg-type]
+        with pytest.raises(InvalidPredictionException, match="predictions"):
+            scorer.compute_losses(np.array([[0.01, 0.02]]), valid_y)
+        with pytest.raises(InvalidPredictionException, match="predictions"):
+            scorer.compute_losses(np.array([]), valid_y)
+        with pytest.raises(DegenerateEnsembleException, match="predictions"):
+            scorer.compute_losses(np.array([0.01, np.nan]), valid_y)
+        with pytest.raises(DegenerateEnsembleException, match="predictions"):
+            scorer.compute_losses(np.array([0.01, float("inf")]), valid_y)
+
+        # Invalid realized_return
+        with pytest.raises(DegenerateEnsembleException, match="realized_return"):
+            scorer.compute_losses(valid_preds, float("nan"))
+        with pytest.raises(DegenerateEnsembleException, match="realized_return"):
+            scorer.compute_losses(valid_preds, float("inf"))
+
+        # Invalid forecast_horizons
+        with pytest.raises(InvalidPredictionException, match="forecast_horizons"):
+            scorer.compute_losses(valid_preds, valid_y, forecast_horizons=[1.0, 1.0, 1.0])  # type: ignore[arg-type]
+        with pytest.raises(InvalidPredictionException, match="forecast_horizons"):
+            scorer.compute_losses(
+                valid_preds, valid_y, forecast_horizons=np.array([1.0, 2.0])
+            )
+        with pytest.raises(InvalidPredictionException, match="forecast_horizons"):
+            scorer.compute_losses(
+                valid_preds, valid_y, forecast_horizons=np.array([1.0, 0.5, 2.0])
+            )
+        with pytest.raises(DegenerateEnsembleException, match="forecast_horizons"):
+            scorer.compute_losses(
+                valid_preds, valid_y, forecast_horizons=np.array([1.0, np.nan, 2.0])
+            )
+
+    def test_compute_downside_semi_variance(self) -> None:
+        """Verify empirical downside semi-variance isolates negative deviations."""
+        scorer = AsymmetricDownsideLossScorer()
+
+        # Returns: [-0.02, 0.04, -0.04, 0.06]
+        # Target = 0.0
+        # Deviations: min(0, r - 0) = [-0.02, 0.0, -0.04, 0.0]
+        # Squared: [0.0004, 0.0, 0.0016, 0.0] -> sum = 0.0020
+        # Mean = 0.0020 / 4 = 0.0005
+        returns = np.array([-0.02, 0.04, -0.04, 0.06])
+        semi_var = scorer.compute_downside_semi_variance(returns, target_return=0.0)
+        assert semi_var == pytest.approx(0.0005)
+
+        # Target = 0.01
+        # Deviations: [min(0, -0.02 - 0.01), min(0, 0.04 - 0.01), min(0, -0.04 - 0.01), min(0, 0.06 - 0.01)]
+        #           = [-0.03, 0.0, -0.05, 0.0]
+        # Squared: [0.0009, 0.0, 0.0025, 0.0] -> sum = 0.0034
+        # Mean = 0.0034 / 4 = 0.00085
+        semi_var_target = scorer.compute_downside_semi_variance(returns, target_return=0.01)
+        assert semi_var_target == pytest.approx(0.00085)
+
+    def test_compute_downside_semi_variance_pure_upside_floor(self) -> None:
+        """Verify pure upside returns trigger defensive variance floor > 0.0."""
+        scorer = AsymmetricDownsideLossScorer()
+        pure_upside = np.array([0.02, 0.05, 0.01, 0.08])
+
+        floor = 1e-8
+        semi_var = scorer.compute_downside_semi_variance(
+            pure_upside, target_return=0.0, min_variance_floor=floor
+        )
+        assert semi_var == floor
+        assert semi_var > 0.0
+
+        # Custom floor
+        custom_floor = 1e-5
+        semi_var_custom = scorer.compute_downside_semi_variance(
+            pure_upside, target_return=0.0, min_variance_floor=custom_floor
+        )
+        assert semi_var_custom == custom_floor
+
+    def test_compute_downside_semi_variance_validation(self) -> None:
+        """Verify defensive validations on compute_downside_semi_variance."""
+        scorer = AsymmetricDownsideLossScorer()
+        valid_ret = np.array([0.01, -0.02, 0.03])
+
+        # Invalid returns
+        with pytest.raises(InvalidPredictionException, match="returns"):
+            scorer.compute_downside_semi_variance([0.01, -0.02])  # type: ignore[arg-type]
+        with pytest.raises(InvalidPredictionException, match="returns"):
+            scorer.compute_downside_semi_variance(np.array([[0.01], [-0.02]]))
+        with pytest.raises(InvalidPredictionException, match="returns"):
+            scorer.compute_downside_semi_variance(np.array([]))
+        with pytest.raises(DegenerateEnsembleException, match="returns"):
+            scorer.compute_downside_semi_variance(np.array([0.01, np.nan]))
+
+        # Invalid target_return
+        with pytest.raises(DegenerateEnsembleException, match="target_return"):
+            scorer.compute_downside_semi_variance(valid_ret, target_return=float("nan"))
+
+        # Invalid min_variance_floor
+        with pytest.raises(EnsembleError, match="min_variance_floor"):
+            scorer.compute_downside_semi_variance(valid_ret, min_variance_floor=0.0)
+        with pytest.raises(EnsembleError, match="min_variance_floor"):
+            scorer.compute_downside_semi_variance(valid_ret, min_variance_floor=-1e-5)
+        with pytest.raises(DegenerateEnsembleException, match="min_variance_floor"):
+            scorer.compute_downside_semi_variance(valid_ret, min_variance_floor=float("inf"))
+
+    def test_compute_cohort_downside_variances(self) -> None:
+        """Verify cohort downside variance evaluation across 2D return matrices."""
+        scorer = AsymmetricDownsideLossScorer()
+
+        # 4 time steps x 3 models
+        # Model 0: mixed [-0.02, 0.04, -0.04, 0.06] -> semi_var = 0.0005
+        # Model 1: pure upside [0.01, 0.02, 0.03, 0.04] -> clamped to floor 1e-8
+        # Model 2: pure downside [-0.01, -0.02, -0.03, -0.04] -> mean([-0.01^2, -0.02^2, -0.03^2, -0.04^2])
+        #          = (0.0001 + 0.0004 + 0.0009 + 0.0016) / 4 = 0.0030 / 4 = 0.00075
+        matrix = np.array(
+            [
+                [-0.02, 0.01, -0.01],
+                [0.04, 0.02, -0.02],
+                [-0.04, 0.03, -0.03],
+                [0.06, 0.04, -0.04],
+            ]
+        )
+
+        cohort_vars = scorer.compute_cohort_downside_variances(matrix, target_return=0.0)
+        assert cohort_vars.shape == (3,)
+        assert cohort_vars[0] == pytest.approx(0.0005)
+        assert cohort_vars[1] == pytest.approx(1e-8)
+        assert cohort_vars[2] == pytest.approx(0.00075)
+
+        # Cross-validate against individual column calls
+        for k in range(3):
+            single_var = scorer.compute_downside_semi_variance(matrix[:, k], target_return=0.0)
+            assert cohort_vars[k] == pytest.approx(single_var)
+
+    def test_compute_cohort_downside_variances_validation(self) -> None:
+        """Verify defensive validation on compute_cohort_downside_variances."""
+        scorer = AsymmetricDownsideLossScorer()
+        valid_mat = np.array([[0.01, -0.01], [0.02, -0.02]])
+
+        # Non-2D
+        with pytest.raises(InvalidPredictionException, match="return_matrix"):
+            scorer.compute_cohort_downside_variances(np.array([0.01, -0.01]))
+        with pytest.raises(InvalidPredictionException, match="return_matrix"):
+            scorer.compute_cohort_downside_variances([[0.01, -0.01]])  # type: ignore[arg-type]
+
+        # Empty matrix
+        with pytest.raises(InvalidPredictionException, match="return_matrix"):
+            scorer.compute_cohort_downside_variances(np.zeros((0, 3)))
+        with pytest.raises(InvalidPredictionException, match="return_matrix"):
+            scorer.compute_cohort_downside_variances(np.zeros((3, 0)))
+
+        # Non-finite matrix
+        with pytest.raises(DegenerateEnsembleException, match="return_matrix"):
+            bad_mat = np.copy(valid_mat)
+            bad_mat[0, 0] = np.nan
+            scorer.compute_cohort_downside_variances(bad_mat)
+

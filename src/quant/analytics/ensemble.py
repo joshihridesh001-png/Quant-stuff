@@ -13,6 +13,7 @@ Invariants Enforced:
 
 import math
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 
@@ -468,6 +469,201 @@ class VolatilityAdaptiveForgetting:
         return alpha_t
 
 
+class AsymmetricDownsideLossScorer:
+    """Asymmetric downside prediction loss scorer and downside semi-variance evaluator.
+
+    Evaluates strategy prediction errors with asymmetric downside penalization:
+        l_{t, k} = (y_t - y_tilde_k)^2 + gamma_down * max(0, -y_t * y_tilde_k)
+    where y_tilde_k = y_hat_k / sqrt(H_k) standardizes across heterogeneous forecast horizons.
+
+    Also evaluates empirical downside semi-variance:
+        sigma^2_{k, down} = (1/N) * sum_{i=1}^N min(0.0, r_i - target)^2
+    subject to a strictly positive defensive variance floor (>= 1e-8).
+    """
+
+    def __init__(self, downside_penalty: float = 2.50) -> None:
+        """Initialize the asymmetric downside loss scorer.
+
+        Args:
+            downside_penalty: Asymmetric penalty multiplier gamma_down >= 0.0.
+
+        Raises:
+            EnsembleError: If downside_penalty < 0.0 or is non-finite / invalid.
+        """
+        if not (isinstance(downside_penalty, (int, float)) and math.isfinite(downside_penalty)):
+            raise EnsembleError(
+                f"downside_penalty must be a finite float, got {downside_penalty}"
+            )
+        if downside_penalty < 0.0:
+            raise EnsembleError(
+                f"downside_penalty must be >= 0.0, got {downside_penalty}"
+            )
+        self._downside_penalty: float = float(downside_penalty)
+
+    @property
+    def downside_penalty(self) -> float:
+        """Asymmetric downside loss penalty multiplier gamma_down."""
+        return self._downside_penalty
+
+    def compute_losses(
+        self,
+        predictions: np.ndarray,
+        realized_return: float,
+        forecast_horizons: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Compute asymmetric downside prediction losses for strategy forecast candidates.
+
+        Args:
+            predictions: 1D array of nominal strategy return forecasts (shape: (K,)).
+            realized_return: Contemporaneous realized benchmark/market return y_t.
+            forecast_horizons: Optional 1D array of model forecast horizons H_k >= 1.0 (shape: (K,)).
+
+        Returns:
+            losses: 1D array of non-negative prediction losses (shape: (K,)).
+
+        Raises:
+            InvalidPredictionException: If predictions or horizons have invalid shape/dimensions
+                or horizons < 1.0.
+            DegenerateEnsembleException: If predictions, realized_return, or horizons contain NaN/Inf.
+        """
+        if not isinstance(predictions, np.ndarray) or predictions.ndim != 1:
+            raise InvalidPredictionException("predictions must be a 1D numpy array")
+        if len(predictions) < 1:
+            raise InvalidPredictionException("predictions must contain at least 1 model prediction")
+        if not np.all(np.isfinite(predictions)):
+            raise DegenerateEnsembleException("predictions must contain only finite values")
+
+        if not (isinstance(realized_return, (int, float)) and math.isfinite(realized_return)):
+            raise DegenerateEnsembleException(
+                f"realized_return must be a finite float, got {realized_return}"
+            )
+
+        if forecast_horizons is not None:
+            if not isinstance(forecast_horizons, np.ndarray) or forecast_horizons.ndim != 1:
+                raise InvalidPredictionException("forecast_horizons must be a 1D numpy array")
+            if forecast_horizons.shape != predictions.shape:
+                raise InvalidPredictionException(
+                    f"forecast_horizons shape {forecast_horizons.shape} must match predictions shape {predictions.shape}"
+                )
+            if not np.all(np.isfinite(forecast_horizons)):
+                raise DegenerateEnsembleException(
+                    "forecast_horizons must contain only finite values"
+                )
+            if np.any(forecast_horizons < 1.0):
+                raise InvalidPredictionException("forecast_horizons elements must be >= 1.0")
+            scaled_predictions: np.ndarray = predictions / np.sqrt(forecast_horizons)
+        else:
+            scaled_predictions = predictions.astype(np.float64, copy=False)
+
+        squared_error = (realized_return - scaled_predictions) ** 2
+        sign_product = -float(realized_return) * scaled_predictions
+        downside_penalty = self._downside_penalty * np.maximum(0.0, sign_product)
+
+        losses = squared_error + downside_penalty
+        losses = np.maximum(0.0, losses)
+        return losses.astype(np.float64)
+
+    def compute_downside_semi_variance(
+        self,
+        returns: np.ndarray,
+        target_return: float = 0.0,
+        min_variance_floor: float = 1e-8,
+    ) -> float:
+        """Compute empirical downside semi-variance for a strategy return series.
+
+        Args:
+            returns: 1D array of historical strategy returns (length >= 1).
+            target_return: Minimum acceptable return threshold (MAR), default 0.0.
+            min_variance_floor: Strictly positive defensive variance floor, default 1e-8.
+
+        Returns:
+            downside_semi_variance: Empirical downside semi-variance clamped to >= min_variance_floor.
+
+        Raises:
+            InvalidPredictionException: If returns is not 1D or is empty.
+            DegenerateEnsembleException: If returns, target_return, or min_variance_floor contain NaN/Inf.
+            EnsembleError: If min_variance_floor <= 0.0.
+        """
+        if not isinstance(returns, np.ndarray) or returns.ndim != 1:
+            raise InvalidPredictionException("returns must be a 1D numpy array")
+        if len(returns) < 1:
+            raise InvalidPredictionException("returns must contain at least 1 observation")
+        if not np.all(np.isfinite(returns)):
+            raise DegenerateEnsembleException("returns must contain only finite values")
+
+        if not (isinstance(target_return, (int, float)) and math.isfinite(target_return)):
+            raise DegenerateEnsembleException(
+                f"target_return must be a finite float, got {target_return}"
+            )
+
+        if not (
+            isinstance(min_variance_floor, (int, float)) and math.isfinite(min_variance_floor)
+        ):
+            raise DegenerateEnsembleException(
+                f"min_variance_floor must be a finite float, got {min_variance_floor}"
+            )
+        if min_variance_floor <= 0.0:
+            raise EnsembleError(
+                f"min_variance_floor must be > 0.0, got {min_variance_floor}"
+            )
+
+        deviations = np.minimum(0.0, returns - target_return)
+        semi_variance = float(np.mean(deviations ** 2))
+        return float(max(semi_variance, float(min_variance_floor)))
+
+    def compute_cohort_downside_variances(
+        self,
+        return_matrix: np.ndarray,
+        target_return: float = 0.0,
+        min_variance_floor: float = 1e-8,
+    ) -> np.ndarray:
+        """Compute downside semi-variances across a cohort of strategy return series.
+
+        Args:
+            return_matrix: 2D array of historical returns (shape: (N, K)) where N is time bars
+                and K is strategy models.
+            target_return: Minimum acceptable return threshold (MAR), default 0.0.
+            min_variance_floor: Strictly positive defensive variance floor, default 1e-8.
+
+        Returns:
+            cohort_downside_variances: 1D array of downside semi-variances (shape: (K,)).
+
+        Raises:
+            InvalidPredictionException: If return_matrix is not 2D or is empty.
+            DegenerateEnsembleException: If return_matrix, target_return, or min_variance_floor contain NaN/Inf.
+            EnsembleError: If min_variance_floor <= 0.0.
+        """
+        if not isinstance(return_matrix, np.ndarray) or return_matrix.ndim != 2:
+            raise InvalidPredictionException("return_matrix must be a 2D numpy array")
+        if return_matrix.shape[0] < 1 or return_matrix.shape[1] < 1:
+            raise InvalidPredictionException(
+                f"return_matrix must have shape (N, K) with N >= 1, K >= 1, got {return_matrix.shape}"
+            )
+        if not np.all(np.isfinite(return_matrix)):
+            raise DegenerateEnsembleException("return_matrix must contain only finite values")
+
+        if not (isinstance(target_return, (int, float)) and math.isfinite(target_return)):
+            raise DegenerateEnsembleException(
+                f"target_return must be a finite float, got {target_return}"
+            )
+
+        if not (
+            isinstance(min_variance_floor, (int, float)) and math.isfinite(min_variance_floor)
+        ):
+            raise DegenerateEnsembleException(
+                f"min_variance_floor must be a finite float, got {min_variance_floor}"
+            )
+        if min_variance_floor <= 0.0:
+            raise EnsembleError(
+                f"min_variance_floor must be > 0.0, got {min_variance_floor}"
+            )
+
+        deviations = np.minimum(0.0, return_matrix - target_return)
+        col_vars: np.ndarray = np.mean(deviations ** 2, axis=0)
+        clamped_vars = np.maximum(col_vars, float(min_variance_floor))
+        return cast(np.ndarray, clamped_vars.astype(np.float64))
+
+
 def predict_forward_regime_prior(
     current_regime_probs: np.ndarray,
     transition_matrix: np.ndarray,
@@ -651,6 +847,7 @@ __all__ = [
     "EnsembleState",
     "EnsemblePrediction",
     "VolatilityAdaptiveForgetting",
+    "AsymmetricDownsideLossScorer",
     "predict_forward_regime_prior",
     "update_regime_posteriors",
 ]
