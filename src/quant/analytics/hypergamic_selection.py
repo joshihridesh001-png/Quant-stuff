@@ -17,7 +17,7 @@ from typing import Tuple
 
 import numpy as np
 
-from quant.analytics.chromosomes import StrategyChromosome
+from quant.analytics.chromosomes import ChromosomeVectorCodec, StrategyChromosome
 from quant.analytics.pareto_sorting import CandidateFitness, RankingResult
 
 
@@ -314,5 +314,148 @@ class ResidualOrthogonalityGate:
         is_accepted = bool(unexplained_variance >= delta_eff)
 
         return is_accepted, rho
+
+
+# =====================================================================
+# 3. Assortative Hypergamic Partner Matcher
+# =====================================================================
+
+
+class HypergamicPartnerMatcher:
+    """Matches Alpha and Aspirant candidates into complementary mating pairs.
+
+    Features:
+    - Bounded tournament selection for Aspirant petitions.
+    - Evaluation through Bidirectional Residual Orthogonality Gate.
+    - Adaptive threshold relaxation upon consecutive rejections.
+    - Phenotypic distance fallback in unit-hypercube space upon retry exhaustion,
+      guaranteeing zero deadlocks and strictly bounded execution time.
+    """
+
+    def __init__(
+        self,
+        gate: ResidualOrthogonalityGate | None = None,
+        config: HypergamicConfig | None = None,
+    ) -> None:
+        """Initialize matcher with orthogonality gate and configuration."""
+        self._config = config or HypergamicConfig()
+        self._gate = gate or ResidualOrthogonalityGate(self._config)
+        self._codec = ChromosomeVectorCodec()
+
+    def match_pairs(
+        self,
+        alphas: list[CandidateFitness],
+        aspirants: list[CandidateFitness],
+        target_pair_count: int,
+        chromosome_map: dict[str, StrategyChromosome] | None = None,
+        seed: int | None = None,
+    ) -> list[MatingPair]:
+        """Match target_pair_count mating pairs between Alphas and Aspirants.
+
+        Args:
+            alphas: Viable Alpha cohort candidates.
+            aspirants: Viable Aspirant cohort candidates.
+            target_pair_count: Number of parent pairs to generate.
+            chromosome_map: Optional map of candidate_id -> StrategyChromosome for phenotypic distance.
+            seed: Optional PRNG seed for deterministic testing.
+
+        Returns:
+            List of accepted MatingPair instances of length target_pair_count.
+
+        Raises:
+            InvalidCohortException: If alphas or aspirants list is empty.
+        """
+        if not alphas:
+            raise InvalidCohortException("Alpha cohort cannot be empty for partner matching.")
+        if not aspirants:
+            raise InvalidCohortException("Aspirant cohort cannot be empty for partner matching.")
+        if target_pair_count <= 0:
+            return []
+
+        rng = np.random.default_rng(seed)
+        n_alphas = len(alphas)
+        n_aspirants = len(aspirants)
+        k_tourn = min(self._config.tournament_size, n_aspirants)
+        max_attempts = self._config.max_mating_attempts
+        exhaustion_limit = 2 * max_attempts
+
+        pairs: list[MatingPair] = []
+
+        for pair_idx in range(target_pair_count):
+            # Select Alpha parent via round-robin
+            alpha = alphas[pair_idx % n_alphas]
+
+            accepted = False
+            attempts = 0
+            best_pair: MatingPair | None = None
+
+            while not accepted and attempts < exhaustion_limit:
+                # Determine adaptive relaxation level
+                level = 0
+                if attempts >= max_attempts:
+                    level = attempts - max_attempts + 1
+
+                # Tournament selection among aspirants
+                tourn_indices = rng.choice(n_aspirants, size=k_tourn, replace=(k_tourn > n_aspirants))
+                best_idx = int(max(tourn_indices, key=lambda idx: aspirants[idx].dsr))
+                aspirant = aspirants[best_idx]
+
+                # Evaluate through gate
+                is_accepted, rho = self._gate.evaluate(alpha, aspirant, relaxation_level=level)
+
+                if is_accepted:
+                    accepted = True
+                    best_pair = MatingPair(
+                        alpha_id=alpha.candidate_id,
+                        aspirant_id=aspirant.candidate_id,
+                        residual_correlation=rho,
+                        is_relaxed=(level > 0),
+                        relaxation_level=level,
+                    )
+                else:
+                    attempts += 1
+
+            # Fallback upon retry exhaustion
+            if not accepted or best_pair is None:
+                # Phenotypic distance fallback in unit hypercube space
+                if chromosome_map and alpha.candidate_id in chromosome_map:
+                    u_alpha = self._codec.encode(chromosome_map[alpha.candidate_id])
+                    max_dist = -1.0
+                    chosen_asp = aspirants[0]
+                    chosen_rho = 1.0
+
+                    for asp in aspirants:
+                        if asp.candidate_id in chromosome_map:
+                            u_asp = self._codec.encode(chromosome_map[asp.candidate_id])
+                            dist = float(np.linalg.norm(u_alpha - u_asp))
+                            if dist > max_dist:
+                                max_dist = dist
+                                chosen_asp = asp
+                                _, chosen_rho = self._gate.evaluate(alpha, asp, relaxation_level=0)
+                else:
+                    # Fallback to aspirant with minimum absolute residual correlation
+                    min_abs_corr = 2.0
+                    chosen_asp = aspirants[0]
+                    chosen_rho = 1.0
+
+                    for asp in aspirants:
+                        _, rho_val = self._gate.evaluate(alpha, asp, relaxation_level=0)
+                        if abs(rho_val) < min_abs_corr:
+                            min_abs_corr = abs(rho_val)
+                            chosen_asp = asp
+                            chosen_rho = rho_val
+
+                best_pair = MatingPair(
+                    alpha_id=alpha.candidate_id,
+                    aspirant_id=chosen_asp.candidate_id,
+                    residual_correlation=chosen_rho,
+                    is_relaxed=True,
+                    relaxation_level=max(1, attempts),
+                )
+
+            pairs.append(best_pair)
+
+        return pairs
+
 
 

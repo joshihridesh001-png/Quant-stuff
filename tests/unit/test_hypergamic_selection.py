@@ -421,4 +421,155 @@ class TestResidualOrthogonalityGate:
         assert rho == 1.0
 
 
+class TestHypergamicPartnerMatcher:
+    """Test assortative hypergamic partner matching and deadlock prevention."""
+
+    def test_matcher_nominal_pairing_produces_exact_count(self) -> None:
+        """Nominal diverse population matches exact requested pair count."""
+        import numpy as np
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            HypergamicPartnerMatcher,
+            ResidualOrthogonalityGate,
+        )
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        np.random.seed(42)
+        t_bars = 100
+
+        alphas = [
+            CandidateFitness(f"alpha_{i}", 1.5, 0.04, np.random.randn(t_bars), np.random.randn(t_bars), t_bars, True)
+            for i in range(3)
+        ]
+        aspirants = [
+            CandidateFitness(f"asp_{j}", 1.0, 0.06, np.random.randn(t_bars), np.random.randn(t_bars), t_bars, True)
+            for j in range(8)
+        ]
+
+        cfg = HypergamicConfig(orthogonality_threshold=0.20)
+        gate = ResidualOrthogonalityGate(cfg)
+        matcher = HypergamicPartnerMatcher(gate, cfg)
+
+        pairs = matcher.match_pairs(alphas, aspirants, target_pair_count=10, seed=123)
+
+        assert len(pairs) == 10
+        alpha_ids = {a.candidate_id for a in alphas}
+        asp_ids = {asp.candidate_id for asp in aspirants}
+
+        for p in pairs:
+            assert p.alpha_id in alpha_ids
+            assert p.aspirant_id in asp_ids
+
+    def test_matcher_adaptive_relaxation_on_collinear_cohort(self) -> None:
+        """When all aspirants are collinear, matcher relaxes gate and succeeds without deadlock."""
+        import numpy as np
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            HypergamicPartnerMatcher,
+            ResidualOrthogonalityGate,
+        )
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        np.random.seed(77)
+        t_bars = 120
+        base_res = np.random.randn(t_bars)
+
+        # 1 Alpha, 4 Aspirants all highly correlated (rho ~ 0.85 -> unexplained ~ 0.15)
+        alpha = CandidateFitness("alpha", 1.8, 0.02, np.random.randn(t_bars), base_res, t_bars, True)
+        aspirants = [
+            CandidateFitness(
+                f"asp_{j}",
+                1.1,
+                0.05,
+                np.random.randn(t_bars),
+                0.85 * base_res + 0.15 * np.random.randn(t_bars),
+                t_bars,
+                True,
+            )
+            for j in range(4)
+        ]
+
+        # Base threshold is 0.30 -> cannot be met at level 0 (unexplained is ~0.15)
+        cfg = HypergamicConfig(
+            orthogonality_threshold=0.30,
+            max_mating_attempts=3,
+            relaxation_factor=0.80,
+        )
+        gate = ResidualOrthogonalityGate(cfg)
+        matcher = HypergamicPartnerMatcher(gate, cfg)
+
+        pairs = matcher.match_pairs([alpha], aspirants, target_pair_count=3, seed=42)
+
+        assert len(pairs) == 3
+        # Must have applied relaxation
+        assert any(p.is_relaxed for p in pairs)
+        assert all(p.alpha_id == "alpha" for p in pairs)
+
+    def test_matcher_phenotypic_distance_fallback_on_exhaustion(self) -> None:
+        """When retries exhaust threshold, falls back to maximum phenotypic distance in unit hypercube."""
+        import numpy as np
+        from quant.analytics.chromosomes import StrategyChromosome
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            HypergamicPartnerMatcher,
+            ResidualOrthogonalityGate,
+        )
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        t_bars = 100
+        res = np.random.randn(t_bars)
+
+        # 1 Alpha, 2 Aspirants with identical residuals (rho = 1.0)
+        alpha = CandidateFitness("alpha", 1.5, 0.03, res, res, t_bars, True)
+        asp_close = CandidateFitness("asp_close", 1.0, 0.05, res, res, t_bars, True)
+        asp_distant = CandidateFitness("asp_distant", 1.0, 0.05, res, res, t_bars, True)
+
+        # Build mock chromosomes with known distance
+        from quant.analytics.chromosomes import RiskChromosome, StrategyChromosome
+
+        chrom_alpha = StrategyChromosome()
+        chrom_close = StrategyChromosome()
+        chrom_distant = StrategyChromosome(risk=RiskChromosome(vol_target=0.35))
+
+        chrom_map = {
+            "alpha": chrom_alpha,
+            "asp_close": chrom_close,
+            "asp_distant": chrom_distant,
+        }
+
+        cfg = HypergamicConfig(
+            orthogonality_threshold=0.50,
+            max_mating_attempts=2,
+            relaxation_factor=0.99,  # Stays high so threshold is never met by rho=1.0
+        )
+        gate = ResidualOrthogonalityGate(cfg)
+        matcher = HypergamicPartnerMatcher(gate, cfg)
+
+        pairs = matcher.match_pairs(
+            [alpha], [asp_close, asp_distant], target_pair_count=1, chromosome_map=chrom_map, seed=1
+        )
+
+        assert len(pairs) == 1
+        # Fallback selected asp_distant because of maximum phenotypic distance
+        assert pairs[0].aspirant_id == "asp_distant"
+        assert pairs[0].is_relaxed is True
+
+    def test_matcher_empty_cohorts_raises_error(self) -> None:
+        """Empty alphas or aspirants raises InvalidCohortException."""
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            HypergamicPartnerMatcher,
+            InvalidCohortException,
+            ResidualOrthogonalityGate,
+        )
+
+        cfg = HypergamicConfig()
+        gate = ResidualOrthogonalityGate(cfg)
+        matcher = HypergamicPartnerMatcher(gate, cfg)
+
+        with pytest.raises(InvalidCohortException, match="Alpha cohort cannot be empty"):
+            matcher.match_pairs([], [], target_pair_count=5)
+
+
+
 
