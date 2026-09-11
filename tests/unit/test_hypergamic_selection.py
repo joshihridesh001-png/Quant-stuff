@@ -291,3 +291,134 @@ class TestParetoCohortStratifier:
             stratifier.stratify([cand], ranking)
 
 
+class TestResidualOrthogonalityGate:
+    """Test bidirectional absolute residual orthogonality gating."""
+
+    def test_gate_rejects_positive_collinear_clones(self) -> None:
+        """Residual correlation rho = 0.95 fails gate (unexplained variance only 5%)."""
+        import numpy as np
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            ResidualOrthogonalityGate,
+        )
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        np.random.seed(42)
+        t_bars = 150
+        base_res = np.random.randn(t_bars)
+        clone_res = 0.95 * base_res + 0.05 * np.random.randn(t_bars)
+
+        ret = np.random.randn(t_bars)
+        alpha = CandidateFitness("alpha", 1.2, 0.05, ret, base_res, t_bars, True)
+        clone = CandidateFitness("clone", 1.0, 0.06, ret, clone_res, t_bars, True)
+
+        gate = ResidualOrthogonalityGate(HypergamicConfig(orthogonality_threshold=0.30))
+        accepted, rho = gate.evaluate(alpha, clone, relaxation_level=0)
+
+        assert accepted is False
+        assert rho > 0.90
+
+    def test_gate_rejects_negative_inverse_clones(self) -> None:
+        """Residual correlation rho = -0.95 fails gate (catches inverse clones that naive signed corr passes)."""
+        import numpy as np
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            ResidualOrthogonalityGate,
+        )
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        np.random.seed(42)
+        t_bars = 150
+        base_res = np.random.randn(t_bars)
+        inv_res = -0.95 * base_res + 0.05 * np.random.randn(t_bars)
+
+        ret = np.random.randn(t_bars)
+        alpha = CandidateFitness("alpha", 1.2, 0.05, ret, base_res, t_bars, True)
+        inv_clone = CandidateFitness("inv_clone", 1.0, 0.06, ret, inv_res, t_bars, True)
+
+        gate = ResidualOrthogonalityGate(HypergamicConfig(orthogonality_threshold=0.30))
+        accepted, rho = gate.evaluate(alpha, inv_clone, relaxation_level=0)
+
+        # Naive signed correlation (rho < 0.30) would have mistakenly accepted this!
+        # Our bidirectional gate correctly rejects inverse clones!
+        assert accepted is False
+        assert rho < -0.90
+
+    def test_gate_accepts_orthogonal_residuals(self) -> None:
+        """Uncorrelated residuals pass gate."""
+        import numpy as np
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            ResidualOrthogonalityGate,
+        )
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        np.random.seed(123)
+        t_bars = 200
+        res_a = np.random.randn(t_bars)
+        res_b = np.random.randn(t_bars)
+
+        ret = np.random.randn(t_bars)
+        alpha = CandidateFitness("alpha", 1.2, 0.05, ret, res_a, t_bars, True)
+        aspirant = CandidateFitness("asp", 1.0, 0.06, ret, res_b, t_bars, True)
+
+        gate = ResidualOrthogonalityGate(HypergamicConfig(orthogonality_threshold=0.30))
+        accepted, rho = gate.evaluate(alpha, aspirant, relaxation_level=0)
+
+        assert accepted is True
+        assert abs(rho) < 0.20
+
+    def test_gate_adaptive_relaxation_lowers_threshold(self) -> None:
+        """Relaxation level > 0 multiplies threshold by relaxation_factor."""
+        import numpy as np
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            ResidualOrthogonalityGate,
+        )
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        np.random.seed(99)
+        t_bars = 150
+        base_res = np.random.randn(t_bars)
+        # Moderate correlation: rho ~ 0.75 -> unexplained variance ~ 0.25
+        mod_res = 0.75 * base_res + 0.66 * np.random.randn(t_bars)
+
+        ret = np.random.randn(t_bars)
+        alpha = CandidateFitness("alpha", 1.2, 0.05, ret, base_res, t_bars, True)
+        aspirant = CandidateFitness("asp", 1.0, 0.06, ret, mod_res, t_bars, True)
+
+        # Base threshold = 0.30 -> 0.25 < 0.30 (rejected at level 0)
+        gate = ResidualOrthogonalityGate(
+            HypergamicConfig(orthogonality_threshold=0.30, relaxation_factor=0.80)
+        )
+        accepted_0, _ = gate.evaluate(alpha, aspirant, relaxation_level=0)
+        assert accepted_0 is False
+
+        # Level 2 threshold = 0.30 * 0.80^2 = 0.192 -> 0.25 >= 0.192 (accepted at level 2)
+        accepted_2, _ = gate.evaluate(alpha, aspirant, relaxation_level=2)
+        assert accepted_2 is True
+
+    def test_gate_zero_variance_residuals_safe_rejection(self) -> None:
+        """Zero-variance flat residual series rejected without division by zero."""
+        import numpy as np
+        from quant.analytics.hypergamic_selection import (
+            HypergamicConfig,
+            ResidualOrthogonalityGate,
+        )
+        from quant.analytics.pareto_sorting import CandidateFitness
+
+        t_bars = 100
+        ret = np.random.randn(t_bars)
+        flat_res = np.ones(t_bars)
+        normal_res = np.random.randn(t_bars)
+
+        alpha = CandidateFitness("alpha", 1.0, 0.05, ret, flat_res, t_bars, True)
+        asp = CandidateFitness("asp", 1.0, 0.05, ret, normal_res, t_bars, True)
+
+        gate = ResidualOrthogonalityGate(HypergamicConfig())
+        accepted, rho = gate.evaluate(alpha, asp, relaxation_level=0)
+        assert accepted is False
+        assert rho == 1.0
+
+
+

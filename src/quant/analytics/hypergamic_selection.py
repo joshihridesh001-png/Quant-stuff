@@ -15,6 +15,8 @@ import math
 from dataclasses import dataclass
 from typing import Tuple
 
+import numpy as np
+
 from quant.analytics.chromosomes import StrategyChromosome
 from quant.analytics.pareto_sorting import CandidateFitness, RankingResult
 
@@ -246,4 +248,71 @@ class ParetoCohortStratifier:
         aspirants = [viable_cands[cid] for cid in aspirant_ids]
 
         return alphas, aspirants
+
+
+# =====================================================================
+# 2. Bidirectional Residual Orthogonality Gate
+# =====================================================================
+
+
+class ResidualOrthogonalityGate:
+    """Evaluates whether prospective mating partners exhibit orthogonal residuals.
+
+    Enforces bidirectional absolute correlation rejection:
+    - Rejects positive collinear clones (rho -> +1.0).
+    - Rejects negative inverse clones (rho -> -1.0).
+    - Accepts pairs where unexplained variance 1.0 - |rho| >= delta_eff.
+    - Supports adaptive relaxation levels k >= 0: delta_eff = delta * (relaxation_factor)^k.
+    """
+
+    def __init__(self, config: HypergamicConfig | None = None) -> None:
+        """Initialize gate with configuration thresholds."""
+        self._config = config or HypergamicConfig()
+
+    def evaluate(
+        self,
+        alpha: CandidateFitness,
+        aspirant: CandidateFitness,
+        relaxation_level: int = 0,
+    ) -> tuple[bool, float]:
+        """Evaluate orthogonality between Alpha and Aspirant residual vectors.
+
+        Args:
+            alpha: Alpha candidate fitness record.
+            aspirant: Aspirant candidate fitness record.
+            relaxation_level: Number of adaptive relaxation steps applied (default 0).
+
+        Returns:
+            Tuple of (is_accepted, sample_pearson_correlation).
+        """
+        res_a = alpha.residual_series
+        res_b = aspirant.residual_series
+
+        t_bars = min(len(res_a), len(res_b))
+        if t_bars < 2:
+            return False, 1.0
+
+        dev_a = res_a[:t_bars] - np.mean(res_a[:t_bars])
+        dev_b = res_b[:t_bars] - np.mean(res_b[:t_bars])
+
+        norm_a = float(np.linalg.norm(dev_a))
+        norm_b = float(np.linalg.norm(dev_b))
+
+        # ERR-EVO-HYP-002: Guard against zero variance residuals
+        if norm_a < 1e-12 or norm_b < 1e-12:
+            return False, 1.0
+
+        rho = float(np.dot(dev_a, dev_b) / (norm_a * norm_b))
+        rho = max(-1.0, min(1.0, rho))
+
+        # Effective threshold under adaptive relaxation
+        factor = self._config.relaxation_factor ** max(0, relaxation_level)
+        delta_eff = self._config.orthogonality_threshold * factor
+
+        # Bidirectional unexplained variance condition: 1.0 - |rho| >= delta_eff
+        unexplained_variance = 1.0 - abs(rho)
+        is_accepted = bool(unexplained_variance >= delta_eff)
+
+        return is_accepted, rho
+
 
