@@ -1438,6 +1438,13 @@ class RegimeConditionedDMAEngine:
             beta_min: Optional override for ambiguity lower bound.
             beta_max: Optional override for ambiguity upper bound.
 
+        Note:
+            Multi-horizon scaling standardizes predictions by 1 / sqrt(H_k). Constituent
+            variances should be provided on a consistent per-unit-time scale (sigma_k^2 / H_k).
+            In live execution environments (Phase 5 Step 4), execution forecasts are generated
+            prior to candle close using prior weights w_{t-1}, while predict_and_update updates
+            posterior state at candle close after realized_return is observed.
+
         Returns:
             tuple[EnsemblePrediction, EnsembleState]:
                 - prediction: Complete probabilistic prediction payload for bar t.
