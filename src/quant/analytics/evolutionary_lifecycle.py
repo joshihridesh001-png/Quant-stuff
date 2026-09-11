@@ -16,9 +16,14 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from quant.analytics.chromosomes import StrategyChromosome
-from quant.analytics.pareto_sorting import CandidateFitness, RankingResult
+import numpy as np
 
+from quant.analytics.chromosomes import (
+    GENE_REGISTRY,
+    ChromosomeVectorCodec,
+    StrategyChromosome,
+)
+from quant.analytics.pareto_sorting import CandidateFitness, RankingResult
 
 # =====================================================================
 # Domain Exceptions
@@ -103,9 +108,7 @@ class MutationConfig:
                 f"cauchy_clipping_bound must be positive and finite, got {self.cauchy_clipping_bound}"
             )
         if self.expansion_factor <= 1.0 or not math.isfinite(self.expansion_factor):
-            raise LifecycleError(
-                f"expansion_factor must be > 1.0, got {self.expansion_factor}"
-            )
+            raise LifecycleError(f"expansion_factor must be > 1.0, got {self.expansion_factor}")
         if not (0.0 < self.contraction_factor < 1.0):
             raise LifecycleError(
                 f"contraction_factor must be in (0.0, 1.0), got {self.contraction_factor}"
@@ -126,7 +129,9 @@ class MutationConfig:
             raise LifecycleError(
                 f"search_gene_scale must be positive and finite, got {self.search_gene_scale}"
             )
-        if self.stagnation_diversity_threshold <= 0.0 or not math.isfinite(self.stagnation_diversity_threshold):
+        if self.stagnation_diversity_threshold <= 0.0 or not math.isfinite(
+            self.stagnation_diversity_threshold
+        ):
             raise LifecycleError(
                 f"stagnation_diversity_threshold must be positive, got {self.stagnation_diversity_threshold}"
             )
@@ -206,7 +211,10 @@ class GenerationalState:
             raise InvalidGenerationalStateException(
                 f"front_1_count must be >= 0, got {self.front_1_count}"
             )
-        if self.surviving_candidate_ids and len(self.surviving_candidate_ids) != self.population_size:
+        if (
+            self.surviving_candidate_ids
+            and len(self.surviving_candidate_ids) != self.population_size
+        ):
             raise InvalidGenerationalStateException(
                 f"surviving_candidate_ids count ({len(self.surviving_candidate_ids)}) does not match population_size ({self.population_size})"
             )
@@ -227,3 +235,102 @@ class LifecycleStepResult:
     surviving_fitness: tuple[CandidateFitness, ...]
     ranking: RankingResult
     state: GenerationalState
+
+
+# =====================================================================
+# Adaptive Volatility Mutator
+# =====================================================================
+
+
+class AdaptiveVolatilityMutator:
+    """Self-adaptive Truncated Cauchy Mutator with Gene-Family Differential Scaling and Mirror Reflection.
+
+    Operates in the scale-free unit hypercube space u in [0, 1]^20. Applies truncated Cauchy
+    perturbations scaled differentially across gene families (conservative risk, intermediate game
+    theory, exploratory search), reflects crossing trajectories back into [0, 1] to prevent edge-stickiness,
+    and decodes back to strictly invariant-satisfying StrategyChromosome domain models.
+    """
+
+    def __init__(
+        self,
+        config: MutationConfig | None = None,
+        codec: ChromosomeVectorCodec | None = None,
+    ) -> None:
+        self._config = config or MutationConfig()
+        self._codec = codec or ChromosomeVectorCodec()
+
+        # Construct scale vector for the 20 genes
+        scales: list[float] = []
+        for spec in GENE_REGISTRY:
+            if spec.block == "risk":
+                scales.append(self._config.risk_gene_scale)
+            elif spec.block == "game":
+                scales.append(self._config.game_gene_scale)
+            else:  # "repr", "infer"
+                scales.append(self._config.search_gene_scale)
+        self._scale_vector: np.ndarray = np.array(scales, dtype=np.float64)
+
+    @property
+    def config(self) -> MutationConfig:
+        """Hyperparameter configuration."""
+        return self._config
+
+    @property
+    def codec(self) -> ChromosomeVectorCodec:
+        """Chromosome vector codec."""
+        return self._codec
+
+    def mutate(
+        self,
+        chromosome: StrategyChromosome,
+        step_size: float | None = None,
+        is_cataclysmic: bool = False,
+        rng: np.random.Generator | None = None,
+    ) -> StrategyChromosome:
+        """Mutate a StrategyChromosome in unit hypercube space with Cauchy fat tails and mirror reflection.
+
+        Args:
+            chromosome: Parent StrategyChromosome to mutate.
+            step_size: Optional step size override sigma_mut. If None, defaults to config.initial_step_size.
+            is_cataclysmic: If True, uses elevated cataclysmic_step_size for high-dispersion re-diversification.
+            rng: Optional numpy Generator for deterministic reproduction.
+
+        Returns:
+            Mutated StrategyChromosome guaranteed to satisfy all domain invariants.
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+
+        if is_cataclysmic:
+            effective_sigma = self._config.cataclysmic_step_size
+        elif step_size is not None:
+            if step_size <= 0.0 or not math.isfinite(step_size):
+                raise LifecycleError(f"step_size must be positive and finite, got {step_size}")
+            effective_sigma = step_size
+        else:
+            effective_sigma = self._config.initial_step_size
+
+        u = self._codec.encode(chromosome)
+
+        # Draw gene mutation mask
+        mask = rng.random(self._codec.dimension) < self._config.mutation_probability
+
+        # Standard Cauchy random draws: xi ~ Cauchy(0, 1)
+        xi = rng.standard_cauchy(self._codec.dimension)
+        xi_clipped = np.clip(
+            xi, -self._config.cauchy_clipping_bound, self._config.cauchy_clipping_bound
+        )
+
+        # Differential perturbation: Delta u = sigma * kappa * xi
+        delta_u = np.where(mask, effective_sigma * self._scale_vector * xi_clipped, 0.0)
+
+        # Mirror boundary reflection
+        u_raw = u + delta_u
+        u_refl = np.where(
+            u_raw < 0.0,
+            -u_raw,
+            np.where(u_raw > 1.0, 2.0 - u_raw, u_raw),
+        )
+        u_clamped = np.clip(u_refl, 0.0, 1.0)
+
+        return self._codec.decode(u_clamped)
