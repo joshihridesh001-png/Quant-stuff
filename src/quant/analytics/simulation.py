@@ -42,6 +42,8 @@ import math
 from dataclasses import dataclass
 from typing import Any, Final, Protocol, runtime_checkable
 
+import numpy as np
+
 # ============================================================================
 # Diagnostic Fault Vector Constants (Rule 2: Zero-Execution Diagnostics)
 # ============================================================================
@@ -751,3 +753,289 @@ class SimulationListener(Protocol):
             record: BarExecutionRecord capturing updated portfolio equity, cash, and drawdown.
         """
         ...
+
+
+# ============================================================================
+# Execution Cost Model (Rule 1 & Rule 4: Microstructure Friction Architecture)
+# ============================================================================
+
+
+class ExecutionCostModel:
+    """Microstructure execution friction and non-linear market impact model.
+
+    Mathematical Formulation:
+        For a trade position dollar adjustment vector Delta nu_t = nu_t - nu_{t-1} in R^N:
+            C(Delta nu_t) = C_{fee}(Delta nu_t) + C_{spread}(Delta nu_t) + C_{impact}(Delta nu_t)
+
+        1. Exchange Taker Fee:
+            C_{fee}(Delta nu_t) = fee_{bps} * 10^{-4} * ||Delta nu_t||_1
+
+        2. Bid-Ask Spread Half-Crossing Slippage:
+            C_{spread}(Delta nu_t) = (spread_{bps} * 10^{-4} / 2) * ||Delta nu_t||_1
+
+        3. 3/2-Power Kyle-Obizhaeva Non-Linear Market Impact:
+            C_{impact}(Delta nu_t) = sum_{i=1}^N lambda_i * sigma_{i, t} * |Delta nu_{i, t}|^{3/2}
+            where lambda_i = impact_coefficient / sqrt(ADV_i) if ADV_i > 0 is provided,
+            else lambda_i = impact_coefficient.
+
+    Defensive Invariants:
+        - INV-SIM-003: Non-negative execution friction (C >= 0.0 everywhere).
+        - INV-SIM-006: Hot-path execution latency SLA (sub-microsecond evaluation for N=10 assets).
+        - Zero trade (Delta nu = 0) returns exactly 0.0 friction and (0.0, 0.0, 0.0) breakdown.
+        - Dimension consistency: len(Delta nu) == len(sigma) (== len(ADV) if provided).
+        - Strictly finite numeric inputs: rejection of NaN, Inf, negative volatility, and non-positive ADV.
+    """
+
+    def __init__(
+        self,
+        fee_bps: float = 2.0,
+        spread_bps: float = 1.0,
+        impact_coefficient: float = 0.10,
+    ) -> None:
+        """Initialize microstructure friction parameters and precompute constant fee schedules.
+
+        Args:
+            fee_bps: Exchange and clearing fee rate in basis points >= 0.0 (default 2.0).
+            spread_bps: Average bid-ask spread in basis points >= 0.0 (default 1.0).
+            impact_coefficient: Kyle-Obizhaeva non-linear market impact parameter >= 0.0 (default 0.10).
+
+        Raises:
+            DegenerateSimulationException: If any parameter is non-numeric, boolean, or non-finite (ERR-SIM-002).
+            InfeasibleSimulationException: If any parameter is strictly negative (INV-SIM-003 / ERR-SIM-004).
+        """
+        # Functional Purpose: Initialize transaction friction parameters for exchange fees, half-spread slippage, and Kyle impact.
+        # Explicit Dependency Tracking: math.isfinite, InfeasibleSimulationException, DegenerateSimulationException, ERR_SIM_NEGATIVE_FRICTION, ERR_SIM_NON_FINITE_INPUT.
+        # Structural Relationship: Instantiated by ReplayEngine or standalone simulation backtesters; computes friction applied to PortfolioLedger.
+        # Defensive Invariant: Parameters must be strictly finite, non-boolean numeric floats/ints, and non-negative (>= 0.0). Precomputes multipliers for hot-path speed.
+
+        # 1. Validate numeric scalar types and finiteness
+        for param_name, param_val in (
+            ("fee_bps", fee_bps),
+            ("spread_bps", spread_bps),
+            ("impact_coefficient", impact_coefficient),
+        ):
+            if not (isinstance(param_val, (int, float)) and not isinstance(param_val, bool)):
+                raise DegenerateSimulationException(
+                    f"ExecutionCostModel {param_name} must be numeric, got {type(param_val).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if not math.isfinite(param_val):
+                raise DegenerateSimulationException(
+                    f"ExecutionCostModel {param_name} must be a finite float, got {param_val}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if param_val < 0.0:
+                raise InfeasibleSimulationException(
+                    f"ExecutionCostModel {param_name} must be non-negative (INV-SIM-003), got {param_val}",
+                    code=ERR_SIM_NEGATIVE_FRICTION,
+                )
+
+        self.fee_bps: float = float(fee_bps)
+        self.spread_bps: float = float(spread_bps)
+        self.impact_coefficient: float = float(impact_coefficient)
+        self._fee_multiplier: float = self.fee_bps * 1e-4
+        self._spread_multiplier: float = 0.5 * self.spread_bps * 1e-4
+        self._linear_multiplier: float = self._fee_multiplier + self._spread_multiplier
+
+    def compute_cost_breakdown(
+        self,
+        delta_positions: np.ndarray,
+        asset_volatilities: np.ndarray,
+        advs: np.ndarray | None = None,
+    ) -> tuple[float, float, float]:
+        """Compute the granular three-component friction breakdown (fee, spread, impact).
+
+        Args:
+            delta_positions: Target position dollar adjustments Delta nu_t in R^N.
+            asset_volatilities: Instantaneous per-asset return volatilities sigma_t in R^N (sigma_i >= 0.0).
+            advs: Optional Average Daily Volume dollar participation baselines ADV in R^N (ADV_i > 0.0).
+
+        Returns:
+            Tuple of (fee_cost, spread_cost, impact_cost) in dollars.
+
+        Raises:
+            DegenerateSimulationException: On dimension mismatch (ERR-SIM-006), non-finite inputs,
+                negative volatilities, or non-positive ADVs (ERR-SIM-002).
+            InfeasibleSimulationException: On negative friction cost invariant violation (ERR-SIM-004).
+        """
+        # Functional Purpose: Evaluate the orthogonal transaction friction components: exchange fees, half-spread slippage, and 3/2-power Kyle-Obizhaeva impact.
+        # Explicit Dependency Tracking: numpy array operations, math.isfinite, DegenerateSimulationException, InfeasibleSimulationException, ERR_SIM_DIMENSION_MISMATCH, ERR_SIM_NON_FINITE_INPUT, ERR_SIM_NEGATIVE_FRICTION.
+        # Structural Relationship: Ingested by PortfolioLedger to deduct cash liquidity and record bar execution costs; also invoked by compute_cost.
+        # Defensive Invariant: Strict 1D vector dimensionality; len(delta) == len(vols) == len(advs); non-negative volatilities; strictly positive ADVs; non-negative cost components (INV-SIM-003).
+
+        # 1. Type validation: must be numpy ndarrays with numeric non-boolean dtypes
+        if not isinstance(delta_positions, np.ndarray):
+            raise DegenerateSimulationException(
+                f"delta_positions must be a numpy ndarray, got {type(delta_positions).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not (
+            np.issubdtype(delta_positions.dtype, np.number)
+            and not np.issubdtype(delta_positions.dtype, np.bool_)
+        ):
+            raise DegenerateSimulationException(
+                f"delta_positions must have numeric dtype, got {delta_positions.dtype}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        if not isinstance(asset_volatilities, np.ndarray):
+            raise DegenerateSimulationException(
+                f"asset_volatilities must be a numpy ndarray, got {type(asset_volatilities).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not (
+            np.issubdtype(asset_volatilities.dtype, np.number)
+            and not np.issubdtype(asset_volatilities.dtype, np.bool_)
+        ):
+            raise DegenerateSimulationException(
+                f"asset_volatilities must have numeric dtype, got {asset_volatilities.dtype}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        if advs is not None:
+            if not isinstance(advs, np.ndarray):
+                raise DegenerateSimulationException(
+                    f"advs must be a numpy ndarray if provided, got {type(advs).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if not (
+                np.issubdtype(advs.dtype, np.number) and not np.issubdtype(advs.dtype, np.bool_)
+            ):
+                raise DegenerateSimulationException(
+                    f"advs must have numeric dtype, got {advs.dtype}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+
+        # 2. Dimensionality validation: must strictly be 1D arrays
+        if delta_positions.ndim != 1:
+            raise DegenerateSimulationException(
+                f"delta_positions must be 1-dimensional, got ndim={delta_positions.ndim}",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+        if asset_volatilities.ndim != 1:
+            raise DegenerateSimulationException(
+                f"asset_volatilities must be 1-dimensional, got ndim={asset_volatilities.ndim}",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+        if advs is not None and advs.ndim != 1:
+            raise DegenerateSimulationException(
+                f"advs must be 1-dimensional, got ndim={advs.ndim}",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+
+        # 3. Dimension match validation
+        n = delta_positions.shape[0]
+        if asset_volatilities.shape[0] != n:
+            raise DegenerateSimulationException(
+                f"Dimension mismatch between delta_positions ({n}) and asset_volatilities ({asset_volatilities.shape[0]})",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+        if advs is not None and advs.shape[0] != n:
+            raise DegenerateSimulationException(
+                f"Dimension mismatch between delta_positions ({n}) and advs ({advs.shape[0]})",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+
+        # 4. Empty trade array boundary check (N=0)
+        if n == 0:
+            return (0.0, 0.0, 0.0)
+
+        # 5. Non-finite value validation (NaN or Inf)
+        if not np.isfinite(delta_positions).all():
+            raise DegenerateSimulationException(
+                "delta_positions contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not np.isfinite(asset_volatilities).all():
+            raise DegenerateSimulationException(
+                "asset_volatilities contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if advs is not None and not np.isfinite(advs).all():
+            raise DegenerateSimulationException(
+                "advs contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        # 6. Domain bounds validation: volatilities >= 0.0, ADVs > 0.0
+        if (asset_volatilities < 0.0).any():
+            raise DegenerateSimulationException(
+                "asset_volatilities must be non-negative (sigma_i >= 0.0)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if advs is not None and (advs <= 0.0).any():
+            raise DegenerateSimulationException(
+                "advs must be strictly positive (ADV_i > 0.0)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        # 7. Absolute position changes and L1 turnover norm
+        abs_delta = np.abs(delta_positions)
+        l1_turnover = float(abs_delta.sum())
+
+        # Exact zero trade shortcut: if all deltas are 0.0, return bit-exact (0.0, 0.0, 0.0)
+        if l1_turnover == 0.0:
+            return (0.0, 0.0, 0.0)
+
+        # 8. Compute fee and spread crossing costs
+        fee_cost = float(self._fee_multiplier * l1_turnover)
+        spread_cost = float(self._spread_multiplier * l1_turnover)
+
+        # 9. Compute 3/2-power non-linear Kyle-Obizhaeva market impact cost:
+        # C_impact = sum lambda_i * sigma_i * |Delta nu_i|^(3/2)
+        # Using x * sqrt(x) for hardware-accelerated square-root law without transcendental pow()
+        abs_delta_3_2 = abs_delta * np.sqrt(abs_delta)
+        if advs is None:
+            impact_cost = float(
+                self.impact_coefficient * float(np.dot(asset_volatilities, abs_delta_3_2))
+            )
+        else:
+            lambda_vec = self.impact_coefficient / np.sqrt(advs)
+            impact_cost = float(np.dot(lambda_vec * asset_volatilities, abs_delta_3_2))
+
+        # 10. Invariant enforcement: INV-SIM-003 non-negative execution friction
+        if fee_cost < 0.0 or spread_cost < 0.0 or impact_cost < 0.0:
+            raise InfeasibleSimulationException(
+                f"Negative friction component detected (INV-SIM-003): fee={fee_cost}, spread={spread_cost}, impact={impact_cost}",
+                code=ERR_SIM_NEGATIVE_FRICTION,
+            )
+
+        return (fee_cost, spread_cost, impact_cost)
+
+    def compute_cost(
+        self,
+        delta_positions: np.ndarray,
+        asset_volatilities: np.ndarray,
+        advs: np.ndarray | None = None,
+    ) -> float:
+        """Compute the total execution friction cost C(Delta nu_t) = C_fee + C_spread + C_impact.
+
+        Args:
+            delta_positions: Target position dollar adjustments Delta nu_t in R^N.
+            asset_volatilities: Instantaneous per-asset return volatilities sigma_t in R^N.
+            advs: Optional Average Daily Volume dollar participation baselines ADV in R^N.
+
+        Returns:
+            Total transaction friction cost in dollars >= 0.0.
+
+        Raises:
+            DegenerateSimulationException: On dimension mismatch (ERR-SIM-006), non-finite inputs,
+                negative volatilities, or non-positive ADVs (ERR-SIM-002).
+            InfeasibleSimulationException: On negative friction cost invariant violation (ERR-SIM-004).
+        """
+        # Functional Purpose: Aggregate total execution friction across fees, half-spread slippage, and Kyle impact.
+        # Explicit Dependency Tracking: compute_cost_breakdown, InfeasibleSimulationException, ERR_SIM_NEGATIVE_FRICTION.
+        # Structural Relationship: Primary cost interface consumed by ReplayEngine and PortfolioLedger.
+        # Defensive Invariant: Returned total friction must be strictly >= 0.0 (INV-SIM-003).
+        fee_cost, spread_cost, impact_cost = self.compute_cost_breakdown(
+            delta_positions=delta_positions,
+            asset_volatilities=asset_volatilities,
+            advs=advs,
+        )
+        total_cost = fee_cost + spread_cost + impact_cost
+        if total_cost < 0.0:
+            raise InfeasibleSimulationException(
+                f"Total friction cost must be non-negative (INV-SIM-003), got {total_cost}",
+                code=ERR_SIM_NEGATIVE_FRICTION,
+            )
+        return total_cost

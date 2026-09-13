@@ -7,7 +7,12 @@ classes, and diagnostic fault codes in quant.analytics.simulation.
 from __future__ import annotations
 
 import dataclasses
+import gc
+import math
+import sys
+import time
 
+import numpy as np
 import pytest
 
 from quant.analytics.simulation import (
@@ -21,6 +26,7 @@ from quant.analytics.simulation import (
     BenchmarkAuditReport,
     BenchmarkComparison,
     DegenerateSimulationException,
+    ExecutionCostModel,
     InfeasibleSimulationException,
     LookaheadViolationException,
     SimulationConfig,
@@ -857,3 +863,416 @@ class TestSimulationListenerProtocol:
 
         incomplete = IncompleteListener()
         assert not isinstance(incomplete, SimulationListener)
+
+
+class TestExecutionCostModel:
+    """Comprehensive test suite for ExecutionCostModel (Phase 5 Step 4 Task 2)."""
+
+    def test_default_parameters(self) -> None:
+        """Verify default fee, spread, and impact parameters match institutional specification."""
+        model = ExecutionCostModel()
+        assert model.fee_bps == 2.0
+        assert model.spread_bps == 1.0
+        assert model.impact_coefficient == 0.10
+
+    def test_custom_valid_parameters(self) -> None:
+        """Verify custom valid configuration parameters are accepted and stored."""
+        model = ExecutionCostModel(fee_bps=1.5, spread_bps=0.8, impact_coefficient=0.05)
+        assert model.fee_bps == 1.5
+        assert model.spread_bps == 0.8
+        assert model.impact_coefficient == 0.05
+
+    @pytest.mark.parametrize(
+        ("param_name", "bad_val"),
+        [
+            ("fee_bps", -0.01),
+            ("fee_bps", -1.0),
+            ("spread_bps", -0.01),
+            ("spread_bps", -1.0),
+            ("impact_coefficient", -0.01),
+            ("impact_coefficient", -0.5),
+        ],
+    )
+    def test_constructor_negative_parameter_rejection(
+        self, param_name: str, bad_val: float
+    ) -> None:
+        """Verify negative friction parameters raise InfeasibleSimulationException (INV-SIM-003 / ERR-SIM-004)."""
+        kwargs = {param_name: bad_val}
+        with pytest.raises(InfeasibleSimulationException) as exc_info:
+            ExecutionCostModel(**kwargs)
+        assert exc_info.value.code == ERR_SIM_NEGATIVE_FRICTION
+
+    @pytest.mark.parametrize(
+        ("param_name", "non_finite"),
+        [
+            ("fee_bps", float("nan")),
+            ("fee_bps", float("inf")),
+            ("fee_bps", float("-inf")),
+            ("spread_bps", float("nan")),
+            ("spread_bps", float("inf")),
+            ("spread_bps", float("-inf")),
+            ("impact_coefficient", float("nan")),
+            ("impact_coefficient", float("inf")),
+            ("impact_coefficient", float("-inf")),
+        ],
+    )
+    def test_constructor_non_finite_rejection(self, param_name: str, non_finite: float) -> None:
+        """Verify non-finite parameters raise DegenerateSimulationException (ERR-SIM-002)."""
+        kwargs = {param_name: non_finite}
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ExecutionCostModel(**kwargs)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    @pytest.mark.parametrize(
+        ("param_name", "bad_type"),
+        [
+            ("fee_bps", True),
+            ("fee_bps", False),
+            ("fee_bps", "2.0"),
+            ("spread_bps", True),
+            ("spread_bps", "1.0"),
+            ("impact_coefficient", False),
+            ("impact_coefficient", [0.10]),
+        ],
+    )
+    def test_constructor_type_rejection(self, param_name: str, bad_type: object) -> None:
+        """Verify boolean and non-numeric types are rejected in constructor (ERR-SIM-002)."""
+        kwargs = {param_name: bad_type}
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ExecutionCostModel(**kwargs)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_zero_trade_returns_zero(self) -> None:
+        """Verify zero trade delta returns exactly 0.0 total cost and (0.0, 0.0, 0.0) breakdown."""
+        model = ExecutionCostModel(fee_bps=2.0, spread_bps=1.0, impact_coefficient=0.10)
+        delta = np.zeros(5, dtype=np.float64)
+        vols = np.full(5, 0.02, dtype=np.float64)
+        advs = np.full(5, 1_000_000.0, dtype=np.float64)
+
+        cost = model.compute_cost(delta, vols, advs)
+        assert cost == 0.0
+        assert isinstance(cost, float)
+
+        breakdown = model.compute_cost_breakdown(delta, vols, advs)
+        assert breakdown == (0.0, 0.0, 0.0)
+        assert all(isinstance(c, float) for c in breakdown)
+
+        # Without ADV
+        cost_no_adv = model.compute_cost(delta, vols)
+        assert cost_no_adv == 0.0
+        assert model.compute_cost_breakdown(delta, vols) == (0.0, 0.0, 0.0)
+
+    def test_empty_arrays_returns_zero(self) -> None:
+        """Verify empty trade vector (N=0) returns exactly 0.0 cost and (0.0, 0.0, 0.0) breakdown."""
+        model = ExecutionCostModel()
+        delta = np.array([], dtype=np.float64)
+        vols = np.array([], dtype=np.float64)
+        advs = np.array([], dtype=np.float64)
+
+        assert model.compute_cost(delta, vols, advs) == 0.0
+        assert model.compute_cost_breakdown(delta, vols, advs) == (0.0, 0.0, 0.0)
+
+    def test_non_negative_friction_invariant_inv_sim_003(self) -> None:
+        """Verify INV-SIM-003: cost >= 0.0 and all breakdown components >= 0.0."""
+        model = ExecutionCostModel(fee_bps=2.0, spread_bps=1.0, impact_coefficient=0.10)
+        rng = np.random.default_rng(seed=42)
+
+        for _ in range(50):
+            n = rng.integers(1, 20)
+            delta = rng.normal(0.0, 10_000.0, size=n)
+            vols = rng.uniform(0.005, 0.08, size=n)
+            advs = rng.uniform(100_000.0, 10_000_000.0, size=n)
+
+            cost = model.compute_cost(delta, vols, advs)
+            assert cost >= 0.0
+
+            fee, spread, impact = model.compute_cost_breakdown(delta, vols, advs)
+            assert fee >= 0.0
+            assert spread >= 0.0
+            assert impact >= 0.0
+            assert math.isclose(cost, fee + spread + impact, rel_tol=1e-12, abs_tol=1e-12)
+
+    def test_symmetry(self) -> None:
+        """Verify positive and negative trade deltas of identical magnitude produce identical friction."""
+        model = ExecutionCostModel(fee_bps=2.0, spread_bps=1.0, impact_coefficient=0.10)
+        delta_pos = np.array([500.0, 1200.0, 300.0], dtype=np.float64)
+        delta_neg = -delta_pos
+        vols = np.array([0.02, 0.03, 0.015], dtype=np.float64)
+        advs = np.array([1_000_000.0, 2_000_000.0, 500_000.0], dtype=np.float64)
+
+        cost_pos = model.compute_cost(delta_pos, vols, advs)
+        cost_neg = model.compute_cost(delta_neg, vols, advs)
+        assert math.isclose(cost_pos, cost_neg, rel_tol=1e-14, abs_tol=1e-14)
+
+        bd_pos = model.compute_cost_breakdown(delta_pos, vols, advs)
+        bd_neg = model.compute_cost_breakdown(delta_neg, vols, advs)
+        for c1, c2 in zip(bd_pos, bd_neg, strict=True):
+            assert math.isclose(c1, c2, rel_tol=1e-14, abs_tol=1e-14)
+
+    def test_monotonicity(self) -> None:
+        """Verify strictly larger trade positions produce strictly larger execution costs."""
+        model = ExecutionCostModel(fee_bps=2.0, spread_bps=1.0, impact_coefficient=0.10)
+        delta_small = np.array([100.0, 200.0], dtype=np.float64)
+        delta_medium = np.array([200.0, 400.0], dtype=np.float64)
+        delta_large = np.array([500.0, 1000.0], dtype=np.float64)
+        vols = np.array([0.02, 0.025], dtype=np.float64)
+
+        cost_small = model.compute_cost(delta_small, vols)
+        cost_medium = model.compute_cost(delta_medium, vols)
+        cost_large = model.compute_cost(delta_large, vols)
+
+        assert cost_small < cost_medium < cost_large
+
+    def test_3_2_power_nonlinear_impact_scaling(self) -> None:
+        """Verify 3/2-power non-linear impact scaling: f(4x) = 8 f(x) > 4 f(x)."""
+        model = ExecutionCostModel(fee_bps=2.0, spread_bps=1.0, impact_coefficient=0.10)
+        delta = np.array([100.0, 250.0], dtype=np.float64)
+        vols = np.array([0.02, 0.03], dtype=np.float64)
+
+        _, _, impact_1 = model.compute_cost_breakdown(delta, vols)
+        _, _, impact_4 = model.compute_cost_breakdown(4.0 * delta, vols)
+
+        # 4^(1.5) = (sqrt(4))^3 = 2^3 = 8.0
+        expected_ratio = 8.0
+        actual_ratio = impact_4 / impact_1
+        assert math.isclose(actual_ratio, expected_ratio, rel_tol=1e-12)
+        assert impact_4 > 4.0 * impact_1
+
+    def test_adv_scaling_dampening(self) -> None:
+        """Verify inverse square root ADV scaling: quadrupling ADV halves the impact cost."""
+        model = ExecutionCostModel(fee_bps=2.0, spread_bps=1.0, impact_coefficient=0.10)
+        delta = np.array([500.0, 1000.0], dtype=np.float64)
+        vols = np.array([0.02, 0.03], dtype=np.float64)
+        advs_1 = np.array([1_000_000.0, 4_000_000.0], dtype=np.float64)
+        advs_4 = 4.0 * advs_1
+
+        _, _, impact_1 = model.compute_cost_breakdown(delta, vols, advs_1)
+        _, _, impact_4 = model.compute_cost_breakdown(delta, vols, advs_4)
+
+        # lambda scales as 1 / sqrt(ADV), so 1 / sqrt(4 * ADV) = 0.5 * (1 / sqrt(ADV))
+        expected_ratio = 0.5
+        actual_ratio = impact_4 / impact_1
+        assert math.isclose(actual_ratio, expected_ratio, rel_tol=1e-12)
+
+    def test_impact_without_adv(self) -> None:
+        """Verify impact calculation when advs is None uses impact_coefficient directly."""
+        model = ExecutionCostModel(fee_bps=0.0, spread_bps=0.0, impact_coefficient=0.10)
+        delta = np.array([100.0], dtype=np.float64)
+        vols = np.array([0.02], dtype=np.float64)
+
+        # cost = 0.10 * 0.02 * (100^(1.5)) = 0.002 * 1000 = 2.0
+        cost = model.compute_cost(delta, vols)
+        assert math.isclose(cost, 2.0, rel_tol=1e-12)
+
+    def test_exact_hand_calculated_breakdown(self) -> None:
+        """Verify exact analytical values against manual arithmetic derivation."""
+        # Setup: fee_bps = 2.0 (0.0002), spread_bps = 1.0 (0.00005 half spread), impact = 0.10
+        model = ExecutionCostModel(fee_bps=2.0, spread_bps=1.0, impact_coefficient=0.10)
+        delta = np.array([100.0], dtype=np.float64)
+        vols = np.array([0.02], dtype=np.float64)
+        advs = np.array([10_000.0], dtype=np.float64)
+
+        # L1 norm = 100.0
+        # fee = 2.0 * 1e-4 * 100.0 = 0.02
+        # spread = 0.5 * 1.0 * 1e-4 * 100.0 = 0.005
+        # lambda = 0.10 / sqrt(10000.0) = 0.10 / 100.0 = 0.001
+        # |delta|^(3/2) = 100.0 * 10.0 = 1000.0
+        # impact = 0.001 * 0.02 * 1000.0 = 0.02
+        # total = 0.02 + 0.005 + 0.02 = 0.045
+        fee, spread, impact = model.compute_cost_breakdown(delta, vols, advs)
+        assert math.isclose(fee, 0.02, rel_tol=1e-12)
+        assert math.isclose(spread, 0.005, rel_tol=1e-12)
+        assert math.isclose(impact, 0.02, rel_tol=1e-12)
+
+        total = model.compute_cost(delta, vols, advs)
+        assert math.isclose(total, 0.045, rel_tol=1e-12)
+
+    def test_dimension_mismatch_rejection(self) -> None:
+        """Verify dimension mismatches between delta, vols, and advs raise ERR-SIM-006."""
+        model = ExecutionCostModel()
+        delta = np.ones(3, dtype=np.float64)
+        vols_bad = np.ones(4, dtype=np.float64)
+        advs_bad = np.ones(2, dtype=np.float64)
+        vols_good = np.ones(3, dtype=np.float64)
+
+        # delta vs vols mismatch
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(delta, vols_bad)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost_breakdown(delta, vols_bad)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # delta vs advs mismatch
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(delta, vols_good, advs_bad)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost_breakdown(delta, vols_good, advs_bad)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+    def test_multidimensional_arrays_rejection(self) -> None:
+        """Verify non-1D arrays raise ERR-SIM-006."""
+        model = ExecutionCostModel()
+        delta_2d = np.ones((3, 1), dtype=np.float64)
+        vols_1d = np.ones(3, dtype=np.float64)
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(delta_2d, vols_1d)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(vols_1d, delta_2d)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(vols_1d, vols_1d, delta_2d)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+    def test_input_type_rejection(self) -> None:
+        """Verify non-numpy ndarrays and invalid dtypes raise ERR-SIM-002."""
+        model = ExecutionCostModel()
+        vols = np.full(3, 0.02, dtype=np.float64)
+
+        # List instead of ndarray
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost([1.0, 2.0, 3.0], vols)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Boolean array in delta
+        bool_arr = np.array([True, False, True])
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(bool_arr, vols)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # String / object array in delta
+        obj_arr = np.array(["a", "b", "c"], dtype=object)
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(obj_arr, vols)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # List instead of ndarray for asset_volatilities
+        delta = np.ones(3, dtype=np.float64)
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(delta, [0.02, 0.02, 0.02])  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Boolean array in asset_volatilities
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(delta, bool_arr)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # List instead of ndarray for advs
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(delta, vols, [1e6, 1e6, 1e6])  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Boolean array in advs
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(delta, vols, bool_arr)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    @pytest.mark.parametrize("bad_val", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_inputs_rejection(self, bad_val: float) -> None:
+        """Verify NaN and Inf in delta, vols, or advs raise ERR-SIM-002."""
+        model = ExecutionCostModel()
+        vols = np.full(3, 0.02, dtype=np.float64)
+        advs = np.full(3, 1_000_000.0, dtype=np.float64)
+
+        # Non-finite in delta
+        delta_bad = np.array([100.0, bad_val, 200.0], dtype=np.float64)
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(delta_bad, vols, advs)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Non-finite in vols
+        vols_bad = np.array([0.02, bad_val, 0.01], dtype=np.float64)
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(np.ones(3), vols_bad, advs)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Non-finite in advs
+        advs_bad = np.array([1e6, bad_val, 2e6], dtype=np.float64)
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(np.ones(3), vols, advs_bad)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_negative_volatility_rejection(self) -> None:
+        """Verify negative volatility raises DegenerateSimulationException (ERR-SIM-002)."""
+        model = ExecutionCostModel()
+        delta = np.array([100.0, 200.0], dtype=np.float64)
+        vols = np.array([0.02, -0.01], dtype=np.float64)
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(delta, vols)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost_breakdown(delta, vols)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    @pytest.mark.parametrize("bad_adv", [0.0, -1.0, -1000.0])
+    def test_zero_or_negative_adv_rejection(self, bad_adv: float) -> None:
+        """Verify non-positive ADV (ADV_i <= 0.0) raises DegenerateSimulationException (ERR-SIM-002)."""
+        model = ExecutionCostModel()
+        delta = np.array([100.0, 200.0], dtype=np.float64)
+        vols = np.array([0.02, 0.01], dtype=np.float64)
+        advs = np.array([1_000_000.0, bad_adv], dtype=np.float64)
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost(delta, vols, advs)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            model.compute_cost_breakdown(delta, vols, advs)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_inv_sim_006_execution_cost_latency_sla(self) -> None:
+        """Verify INV-SIM-006: Hot-path execution cost evaluation SLA for N=10 assets."""
+        model = ExecutionCostModel(fee_bps=2.0, spread_bps=1.0, impact_coefficient=0.10)
+        n = 10
+        delta = np.ones(n, dtype=np.float64) * 5_000.0
+        vols = np.full(n, 0.02, dtype=np.float64)
+        advs = np.full(n, 1_000_000.0, dtype=np.float64)
+
+        # Warm-up JIT and caches
+        for _ in range(50):
+            model.compute_cost(delta, vols, advs)
+            model.compute_cost_breakdown(delta, vols, advs)
+
+        gc_was_enabled = gc.isenabled()
+        gc.collect()
+        gc.disable()
+        old_trace = sys.gettrace()
+        num_batches = 10
+        batch_size = 100
+        latencies_ms: list[float] = []
+        try:
+            sys.settrace(None)
+            for _ in range(num_batches):
+                t0 = time.perf_counter()
+                for _ in range(batch_size):
+                    model.compute_cost(delta, vols, advs)
+                latencies_ms.append(((time.perf_counter() - t0) / batch_size) * 1000.0)
+        finally:
+            sys.settrace(old_trace)
+            if gc_was_enabled:
+                gc.enable()
+
+        is_traced = (
+            old_trace is not None
+            or "coverage" in sys.modules
+            or "pytest_cov" in sys.modules
+            or (
+                hasattr(sys, "monitoring")
+                and any(sys.monitoring.get_tool(i) is not None for i in range(6))
+            )
+        )
+        # Hot-path SLA threshold: <= 0.150ms (150 microseconds) under tracing, <= 0.025ms without tracing
+        threshold_ms = 0.150 if is_traced else 0.025
+        min_latency = float(np.min(latencies_ms))
+        assert min_latency <= threshold_ms, (
+            f"INV-SIM-006 SLA breached: min evaluation took {min_latency:.5f}ms > {threshold_ms}ms"
+        )
