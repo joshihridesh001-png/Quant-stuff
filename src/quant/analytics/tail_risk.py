@@ -70,7 +70,7 @@ class InvalidTailRiskInputException(TailRiskError):
     """Raised on invalid hyperparameter configurations, invalid types, or hierarchy contract violations."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TailRiskConfig:
     """Hyperparameter configuration container for EVT-GPD tail risk estimation.
 
@@ -204,7 +204,10 @@ class TailRiskConfig:
         return float(np.clip(xi, self.tail_index_lower_bound, self.tail_index_upper_bound))
 
 
-@dataclass(frozen=True)
+_DEFAULT_TAIL_CONFIG: Final[TailRiskConfig] = TailRiskConfig()
+
+
+@dataclass(frozen=True, slots=True)
 class EVTTailParameters:
     """Extreme Value Theory (EVT) Generalized Pareto Distribution (GPD) parameter container.
 
@@ -294,7 +297,7 @@ class EVTTailParameters:
             )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TailRiskMetrics:
     """Coherent tail risk metrics container holding Value-at-Risk and Expected Shortfall.
 
@@ -349,13 +352,275 @@ class TailRiskMetrics:
                 f"{ERR_TR_INVALID_CONFIG}: confidence_level must be in (0.50, 1.0), got {self.confidence_level}"
             )
 
-        # 5. INV-TR-001: Coherent Risk Ordering (cvar_alpha >= var_alpha within 1e-10 tolerance)
+        # 5. INV-TR-001: Coherent Risk Ordering (cvar_alpha >= var_alpha within scale-adaptive tolerance)
         # Functional Purpose: Enforce Artzner's coherence axiom; CVaR must strictly bound VaR from above.
         # Explicit Dependency Tracking: self.cvar_alpha, self.var_alpha.
         # Structural Relationship: Ingested by convex execution sizer for hard drawdown constraints.
-        # Defensive Invariant: INV-TR-001 cvar_alpha >= var_alpha - 1e-10.
-        if self.cvar_alpha < self.var_alpha - 1e-10:
+        # Defensive Invariant: INV-TR-001 cvar_alpha >= var_alpha - tolerance.
+        tolerance = max(1e-10, 1e-9 * abs(self.var_alpha))
+        if self.cvar_alpha < self.var_alpha - tolerance:
             raise DegenerateTailRiskException(
                 f"{ERR_TR_ORDERING}: INV-TR-001 violated: cvar_alpha ({self.cvar_alpha}) < "
-                f"var_alpha ({self.var_alpha}) beyond 1e-10 numerical tolerance."
+                f"var_alpha ({self.var_alpha}) beyond {tolerance} numerical tolerance."
             )
+
+
+class ProbabilityWeightedMomentsEstimator:
+    """Closed-form Probability Weighted Moments (PWM) parameter estimation engine for GPD.
+
+    Purpose:
+        Provides institutional-grade, deterministic algebraic parameter estimation (xi, beta)
+        for Peak-Over-Threshold (POT) Generalized Pareto Distribution (GPD) modeling.
+        Eliminates iterative numerical optimizers (banned under Rule 4.3) to achieve
+        sub-0.02ms execution latency (INV-TR-006).
+
+    Mathematical Foundation:
+        Given Nu exceedances sorted in ascending order y_{(1)} <= ... <= y_{(N_u)}:
+            M0 = (1 / N_u) * sum(y_{(i)})
+            M1 = (1 / N_u) * sum((1 - (i - 0.35) / N_u) * y_{(i)})
+            denom = M0 - 2 * M1
+            xi_PWM = 2 - M0 / denom
+            beta_PWM = (2 * M0 * M1) / denom
+
+    Invariants Enforced:
+        - INV-TR-002: Fréchet Tail Stability (xi in [0.001, 0.999]). If xi >= 1.0, raises
+          InfiniteVarianceException demanding emergency HALT.
+        - INV-TR-005: Non-finite input protection; rejects NaN / Inf with DegenerateTailRiskException.
+        - INV-TR-006: Hot-path execution latency SLA <= 0.02ms for Nu = 500.
+        - Rule 4.3: Zero iterative numerical solvers (scipy.optimize strictly banned).
+    """
+
+    def __init__(self, config: TailRiskConfig | None = None) -> None:
+        """Initialize estimator with optional institutional TailRiskConfig."""
+        self.config: TailRiskConfig = config if config is not None else TailRiskConfig()
+
+    @staticmethod
+    def compute_dynamic_threshold(losses: np.ndarray, threshold_k: float = 1.645) -> float:
+        """Compute sample mean and high-volatility dynamic threshold u_t = mu + k * sigma.
+
+        Args:
+            losses: 1D numpy array of positive loss innovations X = -r.
+            threshold_k: High-threshold standard deviation multiplier k > 0.0 (default 1.645).
+
+        Returns:
+            Dynamic threshold u_t as a finite float.
+
+        Raises:
+            InvalidTailRiskInputException: If losses is not a 1D ndarray or threshold_k <= 0.
+            DegenerateTailRiskException: If losses is empty, non-finite, or threshold_k is non-finite.
+        """
+        # Functional Purpose: Evaluate dynamic threshold u_t = mu + k * sigma.
+        # Explicit Dependency Tracking: losses, threshold_k.
+        # Structural Relationship: Feeds extract_exceedances in EVT-POT pipeline.
+        # Defensive Invariant: Non-empty array, finite values, k > 0.
+        if not isinstance(losses, np.ndarray):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: losses must be a numpy ndarray, got {type(losses).__name__}"
+            )
+        if losses.ndim != 1:
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: losses array must be 1-dimensional, got shape {losses.shape}"
+            )
+        if losses.size == 0:
+            raise DegenerateTailRiskException(f"{ERR_TR_DEGENERATE}: losses array cannot be empty")
+        if not np.all(np.isfinite(losses)):
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: losses contain non-finite elements (NaN or Inf)"
+            )
+        if not (isinstance(threshold_k, (int, float)) and not isinstance(threshold_k, bool)):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: threshold_k must be numeric, got {type(threshold_k).__name__}"
+            )
+        if not math.isfinite(threshold_k):
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: threshold_k must be finite, got {threshold_k}"
+            )
+        if threshold_k <= 0.0:
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: threshold_k must be strictly positive, got {threshold_k}"
+            )
+        mu = float(np.mean(losses))
+        sigma = float(np.std(losses))
+        return float(mu + threshold_k * sigma)
+
+    @staticmethod
+    def extract_exceedances(losses: np.ndarray, threshold_u: float) -> np.ndarray:
+        """Extract threshold exceedances Y = X[X > u] - u strictly above high threshold.
+
+        Args:
+            losses: 1D numpy array of historical loss innovations X = -r.
+            threshold_u: Dynamic threshold cutoff u_t.
+
+        Returns:
+            1D float64 numpy array of positive excess losses Y (empty if no exceedances).
+
+        Raises:
+            InvalidTailRiskInputException: If losses is not a 1D ndarray or threshold_u not numeric.
+            DegenerateTailRiskException: If losses or threshold_u contain non-finite values.
+        """
+        # Functional Purpose: Extract excess losses Y = X[X > u] - u above high threshold.
+        # Explicit Dependency Tracking: losses, threshold_u.
+        # Structural Relationship: Emits exceedance array Y for PWM fitting.
+        # Defensive Invariant: Non-finite protection, non-negative exceedance guarantees.
+        if not isinstance(losses, np.ndarray):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: losses must be a numpy ndarray, got {type(losses).__name__}"
+            )
+        if losses.ndim != 1:
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: losses array must be 1-dimensional, got shape {losses.shape}"
+            )
+        if not np.all(np.isfinite(losses)):
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: losses contain non-finite elements (NaN or Inf)"
+            )
+        if not (isinstance(threshold_u, (int, float)) and not isinstance(threshold_u, bool)):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: threshold_u must be numeric, got {type(threshold_u).__name__}"
+            )
+        if not math.isfinite(threshold_u):
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: threshold_u must be finite, got {threshold_u}"
+            )
+        exceedances = losses[losses > threshold_u] - threshold_u
+        y = np.asarray(exceedances, dtype=np.float64)
+        if y.ndim != 1:
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: exceedances must be 1-dimensional, got {y.ndim}"
+            )
+        if not np.all(np.isfinite(y)):
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: exceedances contain non-finite values"
+            )
+        if np.any(y < 0.0):
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: exceedances must be non-negative"
+            )
+        return y
+
+    @staticmethod
+    def fit(
+        exceedances: np.ndarray,
+        total_observations: int,
+        threshold_u: float,
+        config: TailRiskConfig | None = None,
+    ) -> EVTTailParameters:
+        """Calibrate GPD parameters (xi, beta) using closed-form Probability Weighted Moments.
+
+        Args:
+            exceedances: 1D non-empty numpy array of positive excess losses Y = X - u.
+            total_observations: Historical sample capacity n >= N_u.
+            threshold_u: High threshold u_t above which excess losses occurred.
+            config: Optional TailRiskConfig specifying bounds and tolerances.
+
+        Returns:
+            Calibrated EVTTailParameters with method='EVT_PWM'.
+
+        Raises:
+            InvalidTailRiskInputException: If inputs are improperly typed or n < N_u.
+            DegenerateTailRiskException: If exceedances is empty, non-finite, or negative.
+            InfiniteVarianceException: If xi >= 1.0 (INV-TR-002 infinite variance tripwire).
+        """
+        # Functional Purpose: Estimate GPD parameters (xi, beta) via closed-form algebraic PWM.
+        # Explicit Dependency Tracking: exceedances, total_observations, threshold_u, config.
+        # Structural Relationship: Ingested by EVTTailRiskEngine to construct EVTTailParameters.
+        # Defensive Invariant: INV-TR-002 Fréchet stability, INV-TR-006 ultra-low latency, zero solvers.
+        cfg = config if config is not None else _DEFAULT_TAIL_CONFIG
+        if not isinstance(cfg, TailRiskConfig):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: config must be an instance of TailRiskConfig, got {type(cfg).__name__}"
+            )
+        if not isinstance(exceedances, np.ndarray):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: exceedances must be a numpy ndarray, got {type(exceedances).__name__}"
+            )
+        if exceedances.ndim != 1:
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: exceedances must be 1-dimensional, got shape {exceedances.shape}"
+            )
+        n_u = int(exceedances.size)
+        if n_u == 0:
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: Cannot fit PWM with zero exceedances (num_exceedances=0)"
+            )
+        if not (isinstance(total_observations, int) and not isinstance(total_observations, bool)):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: total_observations must be an integer, got {type(total_observations).__name__}"
+            )
+        if total_observations < n_u:
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: total_observations ({total_observations}) "
+                f"cannot be less than num_exceedances ({n_u})"
+            )
+        if not (isinstance(threshold_u, (int, float)) and not isinstance(threshold_u, bool)):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: threshold_u must be numeric, got {type(threshold_u).__name__}"
+            )
+        if not math.isfinite(threshold_u):
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: threshold_u must be finite, got {threshold_u}"
+            )
+
+        # 1. Sort exceedances in ascending order: y_{(1)} <= ... <= y_{(N_u)}
+        y_sorted = (
+            np.sort(exceedances)
+            if exceedances.dtype == np.float64
+            else np.sort(np.asarray(exceedances, dtype=np.float64))
+        )
+        min_val = float(y_sorted[0])
+        max_val = float(y_sorted[-1])
+        if not (math.isfinite(min_val) and math.isfinite(max_val)):
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: exceedances contain non-finite values"
+            )
+        if min_val < 0.0:
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: exceedances must be non-negative"
+            )
+
+        # 2. Vectorized Probability Weighted Moments: M0 and M1
+        # M0 = (1 / N_u) * sum(y_i)
+        inv_n_u = 1.0 / n_u
+        m0 = float(np.sum(y_sorted)) * inv_n_u
+
+        # i = 1, 2, ..., N_u
+        # M1 = (1 / N_u) * sum((1 - (i - 0.35) / N_u) * y_{(i)})
+        # Unnormalized weights: w_i * N_u = N_u - i + 0.35
+        unnorm_w = np.arange(n_u - 0.65, -0.65, -1.0, dtype=np.float64)
+        m1 = float(np.dot(unnorm_w, y_sorted)) * (inv_n_u * inv_n_u)
+
+        # 3. Closed-form algebraic estimators
+        denom = m0 - 2.0 * m1
+
+        # Defensive Boundary Handling:
+        # If denom <= 1e-12 or xi <= 0.0: Exponential fallback
+        if denom <= 1e-12:
+            xi = cfg.tail_index_lower_bound
+            beta = max(m0, 1e-8)
+        else:
+            inv_denom = 1.0 / denom
+            xi = 2.0 - (m0 * inv_denom)
+            beta = (2.0 * m0 * m1) * inv_denom
+            if xi <= 0.0:
+                xi = cfg.tail_index_lower_bound
+                beta = max(m0, 1e-8)
+
+        # INV-TR-002: Infinite theoretical variance tripwire
+        if xi >= 1.0:
+            raise InfiniteVarianceException(
+                f"{ERR_TR_INFINITE_VARIANCE}: Estimated shape_xi={xi} >= 1.0 violates INV-TR-002. "
+                "Theoretical variance is infinite; emergency HALT required."
+            )
+
+        # Fréchet stability clamp
+        xi = cfg.clamp_tail_index(xi)
+        beta = max(beta, 1e-8)
+
+        return EVTTailParameters(
+            threshold_u=float(threshold_u),
+            shape_xi=xi,
+            scale_beta=beta,
+            num_exceedances=n_u,
+            total_observations=total_observations,
+            method="EVT_PWM",
+        )

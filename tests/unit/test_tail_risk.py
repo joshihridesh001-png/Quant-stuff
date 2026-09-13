@@ -8,8 +8,13 @@ Validates Invariants:
 
 from __future__ import annotations
 
+import inspect
+import sys
+import time
 from dataclasses import FrozenInstanceError
+from typing import cast
 
+import numpy as np
 import pytest
 
 from quant.analytics.tail_risk import (
@@ -21,6 +26,7 @@ from quant.analytics.tail_risk import (
     EVTTailParameters,
     InfiniteVarianceException,
     InvalidTailRiskInputException,
+    ProbabilityWeightedMomentsEstimator,
     TailRiskConfig,
     TailRiskError,
     TailRiskMetrics,
@@ -345,7 +351,7 @@ class TestEVTTailParameters:
         }
         kwargs[field_name] = non_finite_val
         with pytest.raises(DegenerateTailRiskException):
-            EVTTailParameters(**kwargs)  # type: ignore[arg-type]
+            EVTTailParameters(**kwargs)
 
     @pytest.mark.parametrize(
         ("field_name", "bad_val"),
@@ -371,7 +377,7 @@ class TestEVTTailParameters:
         }
         kwargs[field_name] = bad_val
         with pytest.raises(InvalidTailRiskInputException):
-            EVTTailParameters(**kwargs)  # type: ignore[arg-type]
+            EVTTailParameters(**kwargs)
 
 
 class TestTailRiskMetrics:
@@ -503,7 +509,7 @@ class TestTailRiskMetrics:
                 var_alpha=0.04,
                 cvar_alpha=0.06,
                 confidence_level=0.99,
-                tail_parameters="not_parameters",  # type: ignore[arg-type]
+                tail_parameters=cast(EVTTailParameters, "not_parameters"),
                 step_index=0,
             )
 
@@ -525,7 +531,7 @@ class TestTailRiskMetrics:
         }
         kwargs[field_name] = non_finite_val
         with pytest.raises(DegenerateTailRiskException):
-            TailRiskMetrics(**kwargs)  # type: ignore[arg-type]
+            TailRiskMetrics(**kwargs)
 
     @pytest.mark.parametrize(
         ("field_name", "bad_val"),
@@ -553,4 +559,318 @@ class TestTailRiskMetrics:
         }
         kwargs[field_name] = bad_val
         with pytest.raises(InvalidTailRiskInputException):
-            TailRiskMetrics(**kwargs)  # type: ignore[arg-type]
+            TailRiskMetrics(**kwargs)
+
+
+class TestProbabilityWeightedMomentsEstimator:
+    """Validate closed-form Probability Weighted Moments (PWM) parameter estimation and bounds."""
+
+    def test_compute_dynamic_threshold_analytical(self) -> None:
+        """Verify dynamic threshold calculation against analytical mean + k * std."""
+        losses = np.array([0.01, 0.02, 0.03, 0.04, 0.05], dtype=np.float64)
+        mu = float(np.mean(losses))
+        sigma = float(np.std(losses))
+
+        # Default k = 1.645
+        expected_u = mu + 1.645 * sigma
+        u = ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(losses)
+        assert abs(u - expected_u) < 1e-12
+
+        # Custom k = 2.0
+        expected_u_k2 = mu + 2.0 * sigma
+        u_k2 = ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
+            losses, threshold_k=2.0
+        )
+        assert abs(u_k2 - expected_u_k2) < 1e-12
+
+    def test_compute_dynamic_threshold_validation(self) -> None:
+        """Verify defensive boundary checks on dynamic threshold computation."""
+        # Empty array
+        with pytest.raises(DegenerateTailRiskException):
+            ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
+                np.array([], dtype=np.float64)
+            )
+
+        # Non-finite values
+        with pytest.raises(DegenerateTailRiskException):
+            ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
+                np.array([0.01, float("nan")])
+            )
+        with pytest.raises(DegenerateTailRiskException):
+            ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
+                np.array([0.01, float("inf")])
+            )
+
+        # Non-1D array
+        with pytest.raises(InvalidTailRiskInputException):
+            ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(np.zeros((2, 2)))
+
+        # Non-array input
+        with pytest.raises(InvalidTailRiskInputException):
+            ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
+                cast(np.ndarray, [0.01, 0.02])
+            )
+
+        # Invalid threshold_k
+        valid_losses = np.array([0.01, 0.02, 0.03])
+        with pytest.raises(InvalidTailRiskInputException):
+            ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
+                valid_losses, threshold_k=0.0
+            )
+        with pytest.raises(InvalidTailRiskInputException):
+            ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
+                valid_losses, threshold_k=-1.0
+            )
+        with pytest.raises(DegenerateTailRiskException):
+            ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
+                valid_losses, threshold_k=float("nan")
+            )
+
+    def test_extract_exceedances_positive_and_zero(self) -> None:
+        """Verify exceedance extraction with positive exceedances and zero exceedances."""
+        losses = np.array([0.01, 0.02, 0.05, 0.08, 0.12], dtype=np.float64)
+        threshold_u = 0.04
+
+        # Positive exceedances: 0.05 - 0.04, 0.08 - 0.04, 0.12 - 0.04
+        y = ProbabilityWeightedMomentsEstimator.extract_exceedances(losses, threshold_u)
+        assert len(y) == 3
+        np.testing.assert_allclose(y, [0.01, 0.04, 0.08], atol=1e-12)
+        assert np.all(y > 0.0)
+
+        # Zero exceedances (threshold exceeds all losses)
+        high_threshold = 0.20
+        y_zero = ProbabilityWeightedMomentsEstimator.extract_exceedances(losses, high_threshold)
+        assert len(y_zero) == 0
+        assert y_zero.dtype == np.float64
+
+    def test_extract_exceedances_validation(self) -> None:
+        """Verify defensive boundary checks on exceedance extraction."""
+        # Non-1D array
+        with pytest.raises(InvalidTailRiskInputException):
+            ProbabilityWeightedMomentsEstimator.extract_exceedances(np.zeros((2, 2)), 0.05)
+
+        # Non-array input
+        with pytest.raises(InvalidTailRiskInputException):
+            ProbabilityWeightedMomentsEstimator.extract_exceedances(
+                cast(np.ndarray, [0.01, 0.05]), 0.02
+            )
+
+        # Non-finite losses
+        with pytest.raises(DegenerateTailRiskException):
+            ProbabilityWeightedMomentsEstimator.extract_exceedances(
+                np.array([0.01, float("nan")]), 0.05
+            )
+
+        # Non-finite threshold_u
+        valid_losses = np.array([0.01, 0.02, 0.03])
+        with pytest.raises(DegenerateTailRiskException):
+            ProbabilityWeightedMomentsEstimator.extract_exceedances(valid_losses, float("nan"))
+        with pytest.raises(DegenerateTailRiskException):
+            ProbabilityWeightedMomentsEstimator.extract_exceedances(valid_losses, float("inf"))
+
+    def test_pwm_parameter_recovery_synthetic_gpd(self) -> None:
+        """Verify PWM parameter estimation accuracy against synthetic samples from known GPD."""
+        np.random.seed(42)
+        xi_true = 0.20
+        beta_true = 0.05
+        n_exceedances = 25000
+        total_obs = 50000
+        threshold_u = 0.02
+
+        # Draw inverse-CDF GPD: y = (beta / xi) * ((1 - U)^(-xi) - 1)
+        u_rand = np.random.uniform(0.0, 1.0, n_exceedances)
+        exceedances = (beta_true / xi_true) * ((1.0 - u_rand) ** (-xi_true) - 1.0)
+
+        params = ProbabilityWeightedMomentsEstimator.fit(
+            exceedances=exceedances,
+            total_observations=total_obs,
+            threshold_u=threshold_u,
+        )
+
+        assert params.method == "EVT_PWM"
+        assert params.num_exceedances == n_exceedances
+        assert params.total_observations == total_obs
+        assert params.threshold_u == threshold_u
+
+        # Theoretical parameter recovery tolerance
+        assert abs(params.shape_xi - xi_true) < 0.02
+        assert abs(params.scale_beta - beta_true) < 0.005
+
+    def test_pwm_exponential_fallback(self) -> None:
+        """Verify exponential fallback when M0 - 2*M1 <= 0 or xi <= 0."""
+        cfg = TailRiskConfig()
+
+        # Case 1: Identical exceedances (zero dispersion, xi <= 0)
+        exceedances_flat = np.full(50, 0.05, dtype=np.float64)
+        params_flat = ProbabilityWeightedMomentsEstimator.fit(
+            exceedances=exceedances_flat,
+            total_observations=100,
+            threshold_u=0.02,
+            config=cfg,
+        )
+        assert params_flat.shape_xi == cfg.tail_index_lower_bound
+        assert params_flat.scale_beta >= 1e-8
+
+        # Case 2: Near-zero exceedances (denom <= 1e-12)
+        exceedances_tiny = np.full(50, 1e-14, dtype=np.float64)
+        params_tiny = ProbabilityWeightedMomentsEstimator.fit(
+            exceedances=exceedances_tiny,
+            total_observations=100,
+            threshold_u=0.02,
+            config=cfg,
+        )
+        assert params_tiny.shape_xi == cfg.tail_index_lower_bound
+        assert params_tiny.scale_beta == 1e-8
+
+    def test_pwm_infinite_variance_tripwire(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """INV-TR-002: Raise InfiniteVarianceException if xi >= 1.0."""
+        # Monkeypatch dot product so that M1 = 0.0, forcing xi = 2.0 - 1.0 = 1.0 >= 1.0
+        exceedances = np.array([0.01, 0.02, 0.03, 0.04, 0.05], dtype=np.float64)
+        monkeypatch.setattr(np, "dot", lambda *args, **kwargs: 0.0)
+
+        with pytest.raises(InfiniteVarianceException, match="INV-TR-002"):
+            ProbabilityWeightedMomentsEstimator.fit(
+                exceedances=exceedances,
+                total_observations=100,
+                threshold_u=0.01,
+            )
+
+    def test_pwm_zero_iterative_solvers(self) -> None:
+        """Rule 4.3: Ensure zero iterative numerical solvers (scipy.optimize strictly banned)."""
+        import quant.analytics.tail_risk as tr_mod
+
+        src = inspect.getsource(tr_mod)
+        assert "import scipy.optimize" not in src
+        assert "from scipy.optimize" not in src
+        assert not hasattr(tr_mod, "optimize")
+        assert not hasattr(tr_mod, "scipy")
+
+    def test_pwm_execution_latency_sla(self) -> None:
+        """INV-TR-006: Execution latency SLA <= 0.02ms for Nu = 500 without profiling overhead."""
+        np.random.seed(42)
+        exceedances = np.random.exponential(scale=0.02, size=500)
+        threshold_u = 0.02
+
+        # Warm up
+        for _ in range(30):
+            ProbabilityWeightedMomentsEstimator.fit(
+                exceedances=exceedances,
+                total_observations=1000,
+                threshold_u=threshold_u,
+            )
+
+        # Timed benchmark without profiler/coverage tracing overhead (INV-TR-006)
+        # Batched runs eliminate timer quantization error on Windows
+        batch_size = 20
+        num_batches = 10
+        old_trace = sys.gettrace()
+        try:
+            sys.settrace(None)
+            latencies: list[float] = []
+            for _ in range(num_batches):
+                t0 = time.perf_counter()
+                for _ in range(batch_size):
+                    ProbabilityWeightedMomentsEstimator.fit(
+                        exceedances=exceedances,
+                        total_observations=1000,
+                        threshold_u=threshold_u,
+                    )
+                latencies.append(((time.perf_counter() - t0) / batch_size) * 1000.0)
+        finally:
+            sys.settrace(old_trace)
+
+        median_latency = float(np.median(latencies))
+        assert median_latency <= 0.02, f"Latency SLA violated: {median_latency:.4f}ms > 0.02ms"
+
+    def test_pwm_fit_validation(self) -> None:
+        """Verify input validation on ProbabilityWeightedMomentsEstimator.fit."""
+        valid_exceedances = np.array([0.01, 0.02, 0.03], dtype=np.float64)
+
+        # Empty exceedances
+        with pytest.raises(DegenerateTailRiskException):
+            ProbabilityWeightedMomentsEstimator.fit(
+                exceedances=np.array([], dtype=np.float64),
+                total_observations=100,
+                threshold_u=0.01,
+            )
+
+        # Negative exceedances
+        with pytest.raises(DegenerateTailRiskException):
+            ProbabilityWeightedMomentsEstimator.fit(
+                exceedances=np.array([0.01, -0.02, 0.03]),
+                total_observations=100,
+                threshold_u=0.01,
+            )
+
+        # Non-finite exceedances
+        with pytest.raises(DegenerateTailRiskException):
+            ProbabilityWeightedMomentsEstimator.fit(
+                exceedances=np.array([0.01, float("nan")]),
+                total_observations=100,
+                threshold_u=0.01,
+            )
+
+        # Invalid total_observations (< Nu)
+        with pytest.raises(InvalidTailRiskInputException):
+            ProbabilityWeightedMomentsEstimator.fit(
+                exceedances=valid_exceedances,
+                total_observations=2,  # len is 3
+                threshold_u=0.01,
+            )
+
+        # Non-finite threshold_u
+        with pytest.raises(DegenerateTailRiskException):
+            ProbabilityWeightedMomentsEstimator.fit(
+                exceedances=valid_exceedances,
+                total_observations=10,
+                threshold_u=float("nan"),
+            )
+
+    def test_slots_and_adaptive_tolerance_improvements(self) -> None:
+        """Verify Task 1 minor improvements: slots=True and scale-adaptive tolerance."""
+        cfg = TailRiskConfig()
+        params = EVTTailParameters(
+            threshold_u=0.02,
+            shape_xi=0.25,
+            scale_beta=0.015,
+            num_exceedances=25,
+            total_observations=500,
+            method="EVT_PWM",
+        )
+        metrics = TailRiskMetrics(
+            var_alpha=100.0,
+            cvar_alpha=100.0,
+            confidence_level=0.99,
+            tail_parameters=params,
+            step_index=0,
+        )
+
+        # Verify slots=True (has __slots__, no __dict__)
+        assert hasattr(cfg, "__slots__")
+        assert not hasattr(cfg, "__dict__")
+        assert hasattr(params, "__slots__")
+        assert not hasattr(params, "__dict__")
+        assert hasattr(metrics, "__slots__")
+        assert not hasattr(metrics, "__dict__")
+
+        # Verify scale-adaptive tolerance: for var_alpha = 100.0,
+        # tolerance is max(1e-10, 1e-9 * 100.0) = 1e-7.
+        # cvar_alpha slightly smaller by 5e-8 (within 1e-7 tolerance) -> valid
+        metrics_scaled = TailRiskMetrics(
+            var_alpha=100.0,
+            cvar_alpha=100.0 - 5e-8,
+            confidence_level=0.99,
+            tail_parameters=params,
+            step_index=1,
+        )
+        assert metrics_scaled.cvar_alpha < metrics_scaled.var_alpha
+
+        # cvar_alpha smaller by 2e-7 (> 1e-7 tolerance) -> raises DegenerateTailRiskException
+        with pytest.raises(DegenerateTailRiskException, match="INV-TR-001"):
+            TailRiskMetrics(
+                var_alpha=100.0,
+                cvar_alpha=100.0 - 2e-7,
+                confidence_level=0.99,
+                tail_parameters=params,
+                step_index=1,
+            )
