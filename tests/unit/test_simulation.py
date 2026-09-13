@@ -11,6 +11,7 @@ import gc
 import math
 import sys
 import time
+from typing import Any
 
 import numpy as np
 import pytest
@@ -29,6 +30,7 @@ from quant.analytics.simulation import (
     ExecutionCostModel,
     InfeasibleSimulationException,
     LookaheadViolationException,
+    PortfolioLedger,
     SimulationConfig,
     SimulationError,
     SimulationListener,
@@ -1275,4 +1277,616 @@ class TestExecutionCostModel:
         min_latency = float(np.min(latencies_ms))
         assert min_latency <= threshold_ms, (
             f"INV-SIM-006 SLA breached: min evaluation took {min_latency:.5f}ms > {threshold_ms}ms"
+        )
+
+
+class TestPortfolioLedger:
+    """Comprehensive test suite for PortfolioLedger (Phase 5 Step 4 Task 3).
+
+    Verifies causal portfolio accounting, capital conservation (INV-SIM-002),
+    ruin detection (ERR-SIM-003), drawdown & HWM tracking, out-of-order rejection (ERR-SIM-001),
+    dimension consistency (ERR-SIM-006), non-finite protection (ERR-SIM-002), and hot-path latency SLA (INV-SIM-006).
+    """
+
+    def test_constructor_default_initial_capital(self) -> None:
+        """Verify default initial capital is 1,000,000.0 and properties are properly initialized."""
+        ledger = PortfolioLedger()
+        assert ledger.initial_capital == 1_000_000.0
+        assert ledger.current_equity == 1_000_000.0
+        assert ledger.current_cash == 1_000_000.0
+        assert len(ledger.current_positions) == 0
+        assert ledger.high_water_mark == 1_000_000.0
+        assert ledger.current_drawdown == 0.0
+        assert len(ledger.history) == 0
+        assert len(ledger.get_equity_curve()) == 0
+        assert len(ledger.get_net_returns()) == 0
+
+    def test_constructor_custom_initial_capital(self) -> None:
+        """Verify custom positive initial capital is accepted."""
+        ledger = PortfolioLedger(initial_capital=250_000.0)
+        assert ledger.initial_capital == 250_000.0
+        assert ledger.current_equity == 250_000.0
+        assert ledger.current_cash == 250_000.0
+        assert ledger.high_water_mark == 250_000.0
+        assert ledger.current_drawdown == 0.0
+
+    @pytest.mark.parametrize("bad_cap", [0.0, -1.0, -100_000.0])
+    def test_constructor_non_positive_capital_rejection(self, bad_cap: float) -> None:
+        """Verify initial capital <= 0 raises DegenerateSimulationException (ERR-SIM-003)."""
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            PortfolioLedger(initial_capital=bad_cap)
+        assert exc_info.value.code == ERR_SIM_CAPITAL_RUIN
+
+    @pytest.mark.parametrize("bad_val", [float("nan"), float("inf"), float("-inf")])
+    def test_constructor_non_finite_capital_rejection(self, bad_val: float) -> None:
+        """Verify non-finite initial capital raises DegenerateSimulationException (ERR-SIM-002)."""
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            PortfolioLedger(initial_capital=bad_val)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    @pytest.mark.parametrize("bad_type", [True, False, "1000000", [1_000_000.0], None])
+    def test_constructor_type_rejection(self, bad_type: Any) -> None:
+        """Verify non-numeric or bool initial capital raises DegenerateSimulationException (ERR-SIM-002)."""
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            PortfolioLedger(initial_capital=bad_type)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_step_0_execution_mechanics_and_friction_deduction(self) -> None:
+        """Verify bar 0 causal mechanics: gross PnL is 0.0, friction deducted from cash and equity."""
+        init_cap = 1_000_000.0
+        ledger = PortfolioLedger(initial_capital=init_cap)
+        ret_0 = np.array([0.05, -0.02, 0.01], dtype=np.float64)
+        pos_0 = np.array([200_000.0, 100_000.0, 50_000.0], dtype=np.float64)
+        target_0 = np.array([200_000.0, 100_000.0, 50_000.0], dtype=np.float64)
+        friction_0 = 125.50
+
+        record = ledger.update(
+            step_index=0,
+            timestamp=1_700_000_000_000,
+            return_vector=ret_0,
+            new_positions=pos_0,
+            friction_cost=friction_0,
+            circuit_breaker_tier="NORMAL",
+            circuit_breaker_haircut=1.0,
+            target_allocations=target_0,
+        )
+
+        # Causal property: gross PnL must be bit-exact 0.0 because prior positions were 0
+        assert record.gross_pnl == 0.0
+        assert record.net_pnl == -friction_0
+        expected_equity = init_cap - friction_0
+        assert record.portfolio_equity == expected_equity
+        assert ledger.current_equity == expected_equity
+
+        # Conservation of capital INV-SIM-002
+        expected_cash = expected_equity - float(np.sum(pos_0))
+        assert record.cash_balance == expected_cash
+        assert ledger.current_cash == expected_cash
+        assert abs(record.portfolio_equity - (record.cash_balance + float(np.sum(pos_0)))) < 1e-5
+
+        # Effective leverage = ||pos||_1 / equity
+        expected_leverage = float(np.sum(np.abs(pos_0))) / expected_equity
+        assert abs(record.effective_leverage - expected_leverage) < 1e-6
+
+        # HWM and Drawdown: HWM remains init_cap, drawdown = friction / init_cap
+        assert ledger.high_water_mark == init_cap
+        expected_dd = friction_0 / init_cap
+        assert abs(record.drawdown - expected_dd) < 1e-6
+        assert abs(ledger.current_drawdown - expected_dd) < 1e-6
+
+        # Positions and History
+        assert np.array_equal(ledger.current_positions, pos_0)
+        assert len(ledger.history) == 1
+        assert ledger.history[0] == record
+
+        # Equity curve and returns
+        curve = ledger.get_equity_curve()
+        assert len(curve) == 1
+        assert curve[0] == expected_equity
+        rets = ledger.get_net_returns()
+        assert len(rets) == 1
+        assert abs(rets[0] - (-friction_0 / init_cap)) < 1e-6
+
+    def test_step_0_ruin_from_friction_rejection(self) -> None:
+        """Verify step 0 friction exceeding initial capital causes ruin (ERR-SIM-003)."""
+        ledger = PortfolioLedger(initial_capital=100.0)
+        ret = np.zeros(2, dtype=np.float64)
+        pos = np.zeros(2, dtype=np.float64)
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(
+                step_index=0,
+                timestamp=1000,
+                return_vector=ret,
+                new_positions=pos,
+                friction_cost=150.0,
+                circuit_breaker_tier="NORMAL",
+                circuit_breaker_haircut=1.0,
+                target_allocations=pos,
+            )
+        assert exc_info.value.code == ERR_SIM_CAPITAL_RUIN
+
+    def test_causal_pnl_lag_and_return_compounding(self) -> None:
+        """Verify return r_t at bar t compounds strictly on positions held at bar t-1 (nu_{t-1})."""
+        init_cap = 100_000.0
+        ledger = PortfolioLedger(initial_capital=init_cap)
+
+        # Bar 0: Enter position [50_000, 30_000]. Returns at bar 0 are NOT earned.
+        pos_0 = np.array([50_000.0, 30_000.0], dtype=np.float64)
+        ret_0 = np.array([0.10, -0.05], dtype=np.float64)
+        f_0 = 50.0
+        rec_0 = ledger.update(
+            step_index=0,
+            timestamp=1000,
+            return_vector=ret_0,
+            new_positions=pos_0,
+            friction_cost=f_0,
+            circuit_breaker_tier="NORMAL",
+            circuit_breaker_haircut=1.0,
+            target_allocations=pos_0,
+        )
+        assert rec_0.gross_pnl == 0.0
+        w_0 = init_cap - f_0
+        assert rec_0.portfolio_equity == w_0
+
+        # Bar 1: Return vector r_1 = [0.02, 0.01]. Earned on pos_0!
+        # gross_pnl_1 = 50_000 * 0.02 + 30_000 * 0.01 = 1_000 + 300 = 1_300.0
+        pos_1 = np.array([40_000.0, 40_000.0], dtype=np.float64)
+        ret_1 = np.array([0.02, 0.01], dtype=np.float64)
+        f_1 = 20.0
+        rec_1 = ledger.update(
+            step_index=1,
+            timestamp=2000,
+            return_vector=ret_1,
+            new_positions=pos_1,
+            friction_cost=f_1,
+            circuit_breaker_tier="NORMAL",
+            circuit_breaker_haircut=1.0,
+            target_allocations=pos_1,
+        )
+        expected_gross_1 = 50_000.0 * 0.02 + 30_000.0 * 0.01
+        expected_net_1 = expected_gross_1 - f_1
+        assert abs(rec_1.gross_pnl - expected_gross_1) < 1e-6
+        assert abs(rec_1.net_pnl - expected_net_1) < 1e-6
+        w_1 = w_0 + expected_net_1
+        assert abs(rec_1.portfolio_equity - w_1) < 1e-6
+
+        # Bar 2: Return vector r_2 = [-0.03, 0.05]. Earned on pos_1!
+        # gross_pnl_2 = 40_000 * (-0.03) + 40_000 * (0.05) = -1200 + 2000 = 800.0
+        pos_2 = np.array([0.0, 0.0], dtype=np.float64)
+        ret_2 = np.array([-0.03, 0.05], dtype=np.float64)
+        f_2 = 30.0
+        rec_2 = ledger.update(
+            step_index=2,
+            timestamp=3000,
+            return_vector=ret_2,
+            new_positions=pos_2,
+            friction_cost=f_2,
+            circuit_breaker_tier="NORMAL",
+            circuit_breaker_haircut=1.0,
+            target_allocations=pos_2,
+        )
+        expected_gross_2 = 40_000.0 * (-0.03) + 40_000.0 * 0.05
+        expected_net_2 = expected_gross_2 - f_2
+        assert abs(rec_2.gross_pnl - expected_gross_2) < 1e-6
+        assert abs(rec_2.net_pnl - expected_net_2) < 1e-6
+        w_2 = w_1 + expected_net_2
+        assert abs(rec_2.portfolio_equity - w_2) < 1e-6
+
+        # Verify compounding matches telescopic product: prod(1 + r_t) == W_T / W_init
+        rets = ledger.get_net_returns()
+        compounded = float(np.prod(1.0 + rets))
+        assert abs(compounded - (w_2 / init_cap)) < 1e-5
+
+    def test_capital_conservation_inv_sim_002_multi_asset(self) -> None:
+        """Verify capital conservation identity W_t == cash_t + sum(nu_t) across 100 bars with long and short positions."""
+        np.random.seed(42)
+        n_assets = 5
+        n_bars = 100
+        init_cap = 500_000.0
+        ledger = PortfolioLedger(initial_capital=init_cap)
+
+        for t in range(n_bars):
+            # Returns random normal ~ N(0.0005, 0.015)
+            r_t = np.random.normal(0.0005, 0.015, size=n_assets)
+            # Mixed long and short positions bounded by 60% of equity
+            target_p = np.random.uniform(-0.3, 0.3, size=n_assets) * ledger.current_equity
+            f_t = float(np.random.uniform(5.0, 25.0))
+
+            rec = ledger.update(
+                step_index=t,
+                timestamp=1000 * (t + 1),
+                return_vector=r_t,
+                new_positions=target_p,
+                friction_cost=f_t,
+                circuit_breaker_tier="NORMAL" if t < 80 else "MODERATE",
+                circuit_breaker_haircut=1.0 if t < 80 else 0.75,
+                target_allocations=target_p,
+            )
+
+            # INV-SIM-002: W_t == cash_t + sum(nu_i, t)
+            pos_sum = float(np.sum(target_p))
+            assert abs(rec.portfolio_equity - (rec.cash_balance + pos_sum)) < 1e-5
+            assert abs(ledger.current_equity - (ledger.current_cash + pos_sum)) < 1e-5
+
+    def test_drawdown_and_hwm_tracking(self) -> None:
+        """Verify high-water mark monotonically expands on rallies and drawdown calculates peak-to-trough drop."""
+        ledger = PortfolioLedger(initial_capital=100_000.0)
+        pos = np.array([100_000.0], dtype=np.float64)
+
+        # Bar 0: Enter position with 0 friction
+        ledger.update(0, 1000, np.array([0.0]), pos, 0.0, "NORMAL", 1.0, pos)
+        assert ledger.high_water_mark == 100_000.0
+        assert ledger.current_drawdown == 0.0
+
+        # Bar 1: Gain 20% -> equity = 120,000, HWM = 120,000, DD = 0
+        ledger.update(1, 2000, np.array([0.20]), pos, 0.0, "NORMAL", 1.0, pos)
+        assert ledger.current_equity == 120_000.0
+        assert ledger.high_water_mark == 120_000.0
+        assert ledger.current_drawdown == 0.0
+
+        # Bar 2: Lose 10% (on 100k pos) -> gross PnL = -10,000 -> equity = 110,000
+        # HWM stays 120,000, DD = (120k - 110k) / 120k = 10k / 120k = 1/12
+        ledger.update(2, 3000, np.array([-0.10]), pos, 0.0, "NORMAL", 1.0, pos)
+        assert ledger.current_equity == 110_000.0
+        assert ledger.high_water_mark == 120_000.0
+        assert abs(ledger.current_drawdown - (10_000.0 / 120_000.0)) < 1e-6
+
+        # Bar 3: Lose another 20,000 -> equity = 90,000
+        # HWM stays 120,000, DD = 30k / 120k = 0.25
+        ledger.update(3, 4000, np.array([-0.20]), pos, 0.0, "NORMAL", 1.0, pos)
+        assert ledger.current_equity == 90_000.0
+        assert ledger.high_water_mark == 120_000.0
+        assert abs(ledger.current_drawdown - 0.25) < 1e-6
+
+        # Bar 4: Massive rally +40k -> equity = 130,000
+        # HWM = 130,000, DD = 0.0
+        ledger.update(4, 5000, np.array([0.40]), pos, 0.0, "NORMAL", 1.0, pos)
+        assert ledger.current_equity == 130_000.0
+        assert ledger.high_water_mark == 130_000.0
+        assert ledger.current_drawdown == 0.0
+
+    def test_total_ruin_detection_at_step_k(self) -> None:
+        """Verify capital ruin (W_t <= 0.0) raises DegenerateSimulationException (ERR-SIM-003)."""
+        ledger = PortfolioLedger(initial_capital=100_000.0)
+        pos = np.array([100_000.0], dtype=np.float64)
+
+        # Bar 0: Enter position
+        ledger.update(0, 1000, np.array([0.0]), pos, 0.0, "NORMAL", 1.0, pos)
+
+        # Bar 1: Return of -1.05 (wipeout) -> equity = 100k - 105k = -5k <= 0
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(1, 2000, np.array([-1.05]), pos, 0.0, "NORMAL", 1.0, pos)
+        assert exc_info.value.code == ERR_SIM_CAPITAL_RUIN
+
+    def test_strict_causal_sequencing_out_of_order_rejection(self) -> None:
+        """Verify non-sequential step index raises LookaheadViolationException (ERR-SIM-001)."""
+        ledger = PortfolioLedger(initial_capital=100_000.0)
+        pos = np.array([10_000.0], dtype=np.float64)
+        ret = np.array([0.01], dtype=np.float64)
+
+        # Step 0 succeeds
+        ledger.update(0, 1000, ret, pos, 0.0, "NORMAL", 1.0, pos)
+
+        # Step 2 instead of Step 1 (temporal jump) raises ERR-SIM-001
+        with pytest.raises(LookaheadViolationException) as exc_info:
+            ledger.update(2, 2000, ret, pos, 0.0, "NORMAL", 1.0, pos)
+        assert exc_info.value.code == ERR_SIM_LOOKAHEAD_VIOLATION
+
+        # Step 0 repeated raises ERR-SIM-001
+        with pytest.raises(LookaheadViolationException) as exc_info:
+            ledger.update(0, 2000, ret, pos, 0.0, "NORMAL", 1.0, pos)
+        assert exc_info.value.code == ERR_SIM_LOOKAHEAD_VIOLATION
+
+    def test_temporal_jump_initial_step_must_be_zero(self) -> None:
+        """Verify starting simulation at step != 0 raises LookaheadViolationException (ERR-SIM-001)."""
+        ledger = PortfolioLedger(initial_capital=100_000.0)
+        pos = np.array([10_000.0], dtype=np.float64)
+        ret = np.array([0.01], dtype=np.float64)
+
+        with pytest.raises(LookaheadViolationException) as exc_info:
+            ledger.update(1, 1000, ret, pos, 0.0, "NORMAL", 1.0, pos)
+        assert exc_info.value.code == ERR_SIM_LOOKAHEAD_VIOLATION
+
+    def test_dimension_mismatch_rejection(self) -> None:
+        """Verify mismatched vector dimensions raise DegenerateSimulationException (ERR-SIM-006)."""
+        ledger = PortfolioLedger()
+        ret = np.array([0.01, 0.02])
+        pos_wrong = np.array([10_000.0, 20_000.0, 30_000.0])
+        target = np.array([10_000.0, 20_000.0])
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos_wrong, 0.0, "NORMAL", 1.0, target)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, target, 0.0, "NORMAL", 1.0, pos_wrong)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+    def test_position_dimension_change_across_bars_rejection(self) -> None:
+        """Verify asset universe size cannot change mid-simulation (ERR-SIM-006)."""
+        ledger = PortfolioLedger()
+        ret_2 = np.array([0.01, 0.02])
+        pos_2 = np.array([10_000.0, 20_000.0])
+
+        ledger.update(0, 1000, ret_2, pos_2, 0.0, "NORMAL", 1.0, pos_2)
+
+        # Bar 1 with 3 assets
+        ret_3 = np.array([0.01, 0.02, 0.03])
+        pos_3 = np.array([10_000.0, 20_000.0, 30_000.0])
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(1, 2000, ret_3, pos_3, 0.0, "NORMAL", 1.0, pos_3)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+    def test_multidimensional_array_rejection(self) -> None:
+        """Verify 2D or higher dimensional arrays are rejected with ERR-SIM-006."""
+        ledger = PortfolioLedger()
+        ret_2d = np.array([[0.01], [0.02]])
+        pos_1d = np.array([10_000.0, 20_000.0])
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret_2d, pos_1d, 0.0, "NORMAL", 1.0, pos_1d)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+    @pytest.mark.parametrize("bad_val", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_inputs_rejection(self, bad_val: float) -> None:
+        """Verify NaN/Inf in returns, positions, targets, or friction raises ERR-SIM-002."""
+        ledger = PortfolioLedger()
+        pos = np.array([10_000.0, 20_000.0])
+        ret = np.array([0.01, 0.02])
+
+        # Bad in returns
+        ret_bad = np.array([0.01, bad_val])
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret_bad, pos, 0.0, "NORMAL", 1.0, pos)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Bad in positions
+        pos_bad = np.array([bad_val, 20_000.0])
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos_bad, 0.0, "NORMAL", 1.0, pos)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Bad in target allocations
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos, 0.0, "NORMAL", 1.0, pos_bad)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Bad in friction
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos, bad_val, "NORMAL", 1.0, pos)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_negative_friction_cost_rejection(self) -> None:
+        """Verify negative friction cost raises InfeasibleSimulationException (ERR-SIM-004)."""
+        ledger = PortfolioLedger()
+        pos = np.array([10_000.0, 20_000.0])
+        ret = np.array([0.01, 0.02])
+
+        with pytest.raises(InfeasibleSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos, -5.0, "NORMAL", 1.0, pos)
+        assert exc_info.value.code == ERR_SIM_NEGATIVE_FRICTION
+
+    def test_circuit_breaker_inputs_validation(self) -> None:
+        """Verify invalid circuit breaker tier or haircut raises ERR-SIM-002."""
+        ledger = PortfolioLedger()
+        pos = np.array([10_000.0])
+        ret = np.array([0.01])
+
+        # Empty tier string
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos, 0.0, "", 1.0, pos)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Haircut > 1.0
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos, 0.0, "NORMAL", 1.5, pos)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Haircut < 0.0
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos, 0.0, "NORMAL", -0.1, pos)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_defensive_copies_prevent_state_corruption(self) -> None:
+        """Verify mutating arrays returned by properties does not corrupt ledger internal state."""
+        ledger = PortfolioLedger(initial_capital=100_000.0)
+        pos = np.array([10_000.0, 20_000.0])
+        ret = np.array([0.01, 0.02])
+
+        ledger.update(0, 1000, ret, pos, 0.0, "NORMAL", 1.0, pos)
+
+        # Mutate current_positions copy
+        positions_copy = ledger.current_positions
+        positions_copy[0] = 999_999.0
+        assert ledger.current_positions[0] == 10_000.0
+
+        # Mutate history copy
+        hist_copy = ledger.history
+        hist_copy.clear()
+        assert len(ledger.history) == 1
+
+        # Mutate equity curve copy
+        eq_curve = ledger.get_equity_curve()
+        eq_curve[0] = 0.0
+        assert ledger.get_equity_curve()[0] == 100_000.0
+
+    def test_empty_asset_universe_support(self) -> None:
+        """Verify ledger correctly handles empty asset universe (N=0 assets)."""
+        ledger = PortfolioLedger(initial_capital=50_000.0)
+        ret_0 = np.empty(0, dtype=np.float64)
+        pos_0 = np.empty(0, dtype=np.float64)
+
+        rec = ledger.update(
+            step_index=0,
+            timestamp=1000,
+            return_vector=ret_0,
+            new_positions=pos_0,
+            friction_cost=0.0,
+            circuit_breaker_tier="NORMAL",
+            circuit_breaker_haircut=1.0,
+            target_allocations=pos_0,
+        )
+        assert rec.gross_pnl == 0.0
+        assert rec.net_pnl == 0.0
+        assert rec.portfolio_equity == 50_000.0
+        assert rec.cash_balance == 50_000.0
+        assert rec.effective_leverage == 0.0
+        assert rec.target_allocations == ()
+        assert rec.discretized_allocations == ()
+
+    def test_step_index_type_and_negative_rejection(self) -> None:
+        """Verify invalid step_index types and negative step_index raise ERR-SIM-002."""
+        ledger = PortfolioLedger()
+        pos = np.array([10_000.0])
+        ret = np.array([0.01])
+
+        # Boolean step_index
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(True, 1000, ret, pos, 0.0, "NORMAL", 1.0, pos)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # String step_index
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update("0", 1000, ret, pos, 0.0, "NORMAL", 1.0, pos)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Negative step_index
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(-1, 1000, ret, pos, 0.0, "NORMAL", 1.0, pos)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_timestamp_type_and_negative_rejection(self) -> None:
+        """Verify invalid timestamp types and negative timestamp raise ERR-SIM-002."""
+        ledger = PortfolioLedger()
+        pos = np.array([10_000.0])
+        ret = np.array([0.01])
+
+        # Boolean timestamp
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, False, ret, pos, 0.0, "NORMAL", 1.0, pos)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # String timestamp
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, "1000", ret, pos, 0.0, "NORMAL", 1.0, pos)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Negative timestamp
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, -500, ret, pos, 0.0, "NORMAL", 1.0, pos)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_friction_cost_type_rejection(self) -> None:
+        """Verify non-numeric or boolean friction cost raises ERR-SIM-002."""
+        ledger = PortfolioLedger()
+        pos = np.array([10_000.0])
+        ret = np.array([0.01])
+
+        # Boolean friction
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos, True, "NORMAL", 1.0, pos)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # String friction
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos, "5.0", "NORMAL", 1.0, pos)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_circuit_breaker_haircut_type_rejection(self) -> None:
+        """Verify boolean or non-numeric circuit breaker haircut raises ERR-SIM-002."""
+        ledger = PortfolioLedger()
+        pos = np.array([10_000.0])
+        ret = np.array([0.01])
+
+        # Boolean haircut
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos, 0.0, "NORMAL", True, pos)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # String haircut
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos, 0.0, "NORMAL", "0.5", pos)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_array_input_type_and_dtype_rejection(self) -> None:
+        """Verify list or non-numeric dtype array inputs raise ERR-SIM-002."""
+        ledger = PortfolioLedger()
+        pos = np.array([10_000.0])
+        ret = np.array([0.01])
+
+        # List instead of ndarray for return_vector
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, [0.01], pos, 0.0, "NORMAL", 1.0, pos)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # List instead of ndarray for new_positions
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, [10_000.0], 0.0, "NORMAL", 1.0, pos)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # List instead of ndarray for target_allocations
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, pos, 0.0, "NORMAL", 1.0, [10_000.0])  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Boolean array for returns
+        bool_arr = np.array([True])
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, bool_arr, pos, 0.0, "NORMAL", 1.0, pos)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Object array with strings for positions
+        str_arr = np.array(["10000.0"], dtype=object)
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ledger.update(0, 1000, ret, str_arr, 0.0, "NORMAL", 1.0, pos)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_inv_sim_006_portfolio_ledger_latency_sla(self) -> None:
+        """Verify INV-SIM-006: Hot-path per-bar ledger update latency SLA <= 0.050ms (50 microseconds)."""
+        n_assets = 10
+        ledger = PortfolioLedger(initial_capital=1_000_000.0)
+        ret = np.full(n_assets, 0.001, dtype=np.float64)
+        pos = np.full(n_assets, 50_000.0, dtype=np.float64)
+
+        # Warm up
+        for s in range(20):
+            ledger.update(s, 1000 + s, ret, pos, 1.0, "NORMAL", 1.0, pos)
+
+        gc_was_enabled = gc.isenabled()
+        gc.collect()
+        gc.disable()
+        old_trace = sys.gettrace()
+        num_batches = 10
+        batch_size = 100
+        latencies_ms: list[float] = []
+
+        fresh_ledger = PortfolioLedger(initial_capital=1_000_000.0)
+        step = 0
+        try:
+            sys.settrace(None)
+            for _ in range(num_batches):
+                t0 = time.perf_counter()
+                for _ in range(batch_size):
+                    fresh_ledger.update(step, 1000 + step, ret, pos, 0.5, "NORMAL", 1.0, pos)
+                    step += 1
+                latencies_ms.append(((time.perf_counter() - t0) / batch_size) * 1000.0)
+        finally:
+            sys.settrace(old_trace)
+            if gc_was_enabled:
+                gc.enable()
+
+        is_traced = (
+            old_trace is not None
+            or "coverage" in sys.modules
+            or "pytest_cov" in sys.modules
+            or (
+                hasattr(sys, "monitoring")
+                and any(sys.monitoring.get_tool(i) is not None for i in range(6))
+            )
+        )
+        threshold_ms = 0.150 if is_traced else 0.050
+        min_latency = float(np.min(latencies_ms))
+        assert min_latency <= threshold_ms, (
+            f"INV-SIM-006 SLA breached: min ledger update took {min_latency:.5f}ms > {threshold_ms}ms"
         )

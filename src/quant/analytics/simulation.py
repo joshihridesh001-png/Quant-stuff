@@ -1039,3 +1039,408 @@ class ExecutionCostModel:
                 code=ERR_SIM_NEGATIVE_FRICTION,
             )
         return total_cost
+
+
+# ============================================================================
+# Portfolio Accounting Ledger (Rule 1 & Rule 4: Causal Accounting Engine)
+# ============================================================================
+
+
+class PortfolioLedger:
+    """Causal portfolio accounting ledger and capital conservation state machine.
+
+    Mathematical Formulation:
+        Let T be the number of discrete simulation bars, N be the number of tradeable assets.
+        At each bar t in [0, T-1]:
+        1. Causal Mark-to-Market PnL:
+           - Step t = 0:
+             Initial positions prior to t=0 are nu_{-1} = 0.
+             Gross mark-to-market trading profit/loss is:
+                 PnL_0^{gross} = 0.0
+             Net profit/loss deducting initial execution friction C_0 >= 0:
+                 PnL_0^{net} = -C_0
+             Portfolio equity immediately following execution:
+                 W_0 = initial_capital - C_0
+             Cash balance:
+                 cash_0 = W_0 - sum_{i=1}^N nu_{i, 0}
+           - Step t >= 1:
+             Held positions nu_{t-1} earn return r_t over [t-1, t]:
+                 PnL_t^{gross} = sum_{i=1}^N nu_{i, t-1} * r_{i, t}
+             Net profit/loss deducting friction C_t >= 0:
+                 PnL_t^{net} = PnL_t^{gross} - C_t
+             Portfolio marked equity:
+                 W_t = W_{t-1} + PnL_t^{net}
+             Cash balance:
+                 cash_t = W_t - sum_{i=1}^N nu_{i, t}
+        2. High-Water Mark (HWM) & Peak-to-Trough Drawdown:
+           - HWM_t = max(HWM_{t-1}, W_t), with HWM_{-1} = initial_capital
+           - DD_t = max(0.0, min(1.0, (HWM_t - W_t) / HWM_t))
+        3. Gross Leverage:
+           - L_t = (sum_{i=1}^N |nu_{i, t}|) / W_t if W_t > 0 else 0.0
+        4. Net Fractional Returns:
+           - r_0^{net} = (W_0 - initial_capital) / initial_capital
+           - r_t^{net} = (W_t - W_{t-1}) / W_{t-1} = PnL_t^{net} / W_{t-1} for t >= 1
+             Satisfies exact telescopic compounding: prod_{s=0}^t (1 + r_s^{net}) = W_t / initial_capital.
+
+    Defensive Invariants:
+        - INV-SIM-001 (Zero-Lookahead Causality): Strict sequential progression (step_index == last_step + 1).
+        - INV-SIM-002 (Conservation of Capital): |W_t - (cash_t + sum nu_{i, t})| < 1e-5 everywhere.
+        - INV-SIM-003 (Non-Negative Execution Friction): C_t >= 0.0.
+        - INV-SIM-005 (Statistical Rigor & Non-Finite Protection): Rejection of NaN, Inf, non-numeric.
+        - INV-SIM-006 (Execution Latency SLA): Sub-microsecond ledger update (<= 0.05ms for N=10).
+        - Fail-fast ruin check: If W_t <= 0.0, raises DegenerateSimulationException(ERR-SIM-003).
+    """
+
+    def __init__(self, initial_capital: float = 1_000_000.0) -> None:
+        """Initialize the portfolio accounting ledger with initial capital.
+
+        Args:
+            initial_capital: Initial cash endowment W_0 > 0.0 (default 1,000,000.0).
+
+        Raises:
+            DegenerateSimulationException: If initial_capital is non-numeric, boolean, non-finite (ERR-SIM-002),
+                or <= 0.0 (ERR-SIM-003).
+        """
+        # Functional Purpose: Initialize accounting state with validated positive starting capital endowment.
+        # Explicit Dependency Tracking: math.isfinite, DegenerateSimulationException, ERR_SIM_NON_FINITE_INPUT, ERR_SIM_CAPITAL_RUIN.
+        # Structural Relationship: Instantiated by ReplayEngine or standalone backtesters; tracks portfolio state.
+        # Defensive Invariant: initial_capital must be finite numeric scalar > 0.0; rejects bool.
+
+        # 1. Type and finiteness validation
+        if not (
+            isinstance(initial_capital, (int, float)) and not isinstance(initial_capital, bool)
+        ):
+            raise DegenerateSimulationException(
+                f"PortfolioLedger initial_capital must be numeric, got {type(initial_capital).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not math.isfinite(initial_capital):
+            raise DegenerateSimulationException(
+                f"PortfolioLedger initial_capital must be a finite float, got {initial_capital}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        # 2. Strict positive capital boundary (W_0 > 0)
+        if initial_capital <= 0.0:
+            raise DegenerateSimulationException(
+                f"PortfolioLedger initial_capital must be strictly positive, got {initial_capital}",
+                code=ERR_SIM_CAPITAL_RUIN,
+            )
+
+        self.initial_capital: float = float(initial_capital)
+        self._equity: float = self.initial_capital
+        self._cash: float = self.initial_capital
+        self._positions: np.ndarray | None = None
+        self._hwm: float = self.initial_capital
+        self._drawdown: float = 0.0
+        self._last_step_index: int = -1
+        self._history: list[BarExecutionRecord] = []
+        self._net_returns: list[float] = []
+        self._equity_curve: list[float] = []
+
+    def update(
+        self,
+        step_index: int,
+        timestamp: int,
+        return_vector: np.ndarray,
+        new_positions: np.ndarray,
+        friction_cost: float,
+        circuit_breaker_tier: str,
+        circuit_breaker_haircut: float,
+        target_allocations: np.ndarray,
+    ) -> BarExecutionRecord:
+        """Advance portfolio accounting state by one discrete simulation bar.
+
+        Args:
+            step_index: Chronological discrete bar sequence index t >= 0 (must equal last_step + 1).
+            timestamp: Bar evaluation epoch timestamp in nanoseconds >= 0.
+            return_vector: Contemporaneous realized asset return vector r_t in R^N over [t-1, t].
+            new_positions: Updated executed asset dollar positions nu_t in R^N.
+            friction_cost: Total execution friction C_t >= 0.0 incurred on bar t trades.
+            circuit_breaker_tier: Active discrete circuit breaker risk tier label.
+            circuit_breaker_haircut: Continuous logistic haircut multiplier kappa_t in [0.0, 1.0].
+            target_allocations: Continuous target portfolio dollar allocations nu_t* in R^N.
+
+        Returns:
+            Immutable BarExecutionRecord capturing bar mark-to-market PnL, wealth, cash, and leverage.
+
+        Raises:
+            LookaheadViolationException: On non-sequential step index jump or out-of-order execution (ERR-SIM-001).
+            DegenerateSimulationException: On dimension mismatch (ERR-SIM-006), non-finite inputs (ERR-SIM-002),
+                or portfolio capital ruin / bankruptcy (ERR-SIM-003).
+            InfeasibleSimulationException: On negative friction cost (INV-SIM-003 / ERR-SIM-004).
+        """
+        # Functional Purpose: Execute strictly causal portfolio accounting, settle mark-to-market PnL, deduct trade friction, enforce conservation of capital, and guard against capital ruin.
+        # Explicit Dependency Tracking: numpy dot product/sum, math.isfinite, BarExecutionRecord, DegenerateSimulationException, LookaheadViolationException, InfeasibleSimulationException, ERR_SIM_LOOKAHEAD_VIOLATION, ERR_SIM_NON_FINITE_INPUT, ERR_SIM_CAPITAL_RUIN, ERR_SIM_NEGATIVE_FRICTION, ERR_SIM_DIMENSION_MISMATCH.
+        # Structural Relationship: Called on every simulation bar by ReplayEngine; emits BarExecutionRecord consumed by listeners and BenchmarkAuditor.
+        # Defensive Invariant: Sequential step progression (t == t_last + 1); identical vector dimensions N; non-negative friction; W_t > 0; exact capital conservation |W_t - (cash_t + sum nu_t)| < 1e-5.
+
+        # 1. Validate discrete step index and strict causal sequencing (INV-SIM-001)
+        if not (isinstance(step_index, int) and not isinstance(step_index, bool)):
+            raise DegenerateSimulationException(
+                f"step_index must be an integer, got {type(step_index).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if step_index < 0:
+            raise DegenerateSimulationException(
+                f"step_index must be non-negative, got {step_index}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if step_index != self._last_step_index + 1:
+            raise LookaheadViolationException(
+                f"Out-of-order execution step index: expected {self._last_step_index + 1}, got {step_index} (INV-SIM-001)",
+                code=ERR_SIM_LOOKAHEAD_VIOLATION,
+            )
+
+        # 2. Validate timestamp
+        if not (isinstance(timestamp, int) and not isinstance(timestamp, bool)):
+            raise DegenerateSimulationException(
+                f"timestamp must be an integer, got {type(timestamp).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if timestamp < 0:
+            raise DegenerateSimulationException(
+                f"timestamp must be non-negative, got {timestamp}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        # 3. Validate friction cost finiteness and non-negativity (INV-SIM-003)
+        if not (isinstance(friction_cost, (int, float)) and not isinstance(friction_cost, bool)):
+            raise DegenerateSimulationException(
+                f"friction_cost must be numeric, got {type(friction_cost).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not math.isfinite(friction_cost):
+            raise DegenerateSimulationException(
+                f"friction_cost must be a finite float, got {friction_cost}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if friction_cost < 0.0:
+            raise InfeasibleSimulationException(
+                f"friction_cost must be non-negative (INV-SIM-003), got {friction_cost}",
+                code=ERR_SIM_NEGATIVE_FRICTION,
+            )
+
+        # 4. Validate circuit breaker tier and haircut
+        if not (isinstance(circuit_breaker_tier, str) and len(circuit_breaker_tier.strip()) > 0):
+            raise DegenerateSimulationException(
+                f"circuit_breaker_tier must be a non-empty string, got {circuit_breaker_tier!r}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not (
+            isinstance(circuit_breaker_haircut, (int, float))
+            and not isinstance(circuit_breaker_haircut, bool)
+        ):
+            raise DegenerateSimulationException(
+                f"circuit_breaker_haircut must be numeric, got {type(circuit_breaker_haircut).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not math.isfinite(circuit_breaker_haircut) or not (
+            0.0 <= circuit_breaker_haircut <= 1.0
+        ):
+            raise DegenerateSimulationException(
+                f"circuit_breaker_haircut must be in [0.0, 1.0], got {circuit_breaker_haircut}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        # 5. Validate vector array types, dimensions, and finiteness
+        for arr_name, arr in (
+            ("return_vector", return_vector),
+            ("new_positions", new_positions),
+            ("target_allocations", target_allocations),
+        ):
+            if not isinstance(arr, np.ndarray):
+                raise DegenerateSimulationException(
+                    f"{arr_name} must be a numpy ndarray, got {type(arr).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if not (np.issubdtype(arr.dtype, np.number) and not np.issubdtype(arr.dtype, np.bool_)):
+                raise DegenerateSimulationException(
+                    f"{arr_name} must have numeric dtype, got {arr.dtype}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if arr.ndim != 1:
+                raise DegenerateSimulationException(
+                    f"{arr_name} must be 1-dimensional, got ndim={arr.ndim}",
+                    code=ERR_SIM_DIMENSION_MISMATCH,
+                )
+
+        # 6. Dimension consistency check across all vectors
+        n = return_vector.shape[0]
+        if new_positions.shape[0] != n:
+            raise DegenerateSimulationException(
+                f"Dimension mismatch between return_vector ({n}) and new_positions ({new_positions.shape[0]})",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+        if target_allocations.shape[0] != n:
+            raise DegenerateSimulationException(
+                f"Dimension mismatch between new_positions ({n}) and target_allocations ({target_allocations.shape[0]})",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+        if self._positions is not None and self._positions.shape[0] != n:
+            raise DegenerateSimulationException(
+                f"Asset universe dimension changed from {self._positions.shape[0]} to {n}",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+
+        # 7. Non-finite array element check
+        if not np.isfinite(return_vector).all():
+            raise DegenerateSimulationException(
+                "return_vector contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not np.isfinite(new_positions).all():
+            raise DegenerateSimulationException(
+                "new_positions contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not np.isfinite(target_allocations).all():
+            raise DegenerateSimulationException(
+                "target_allocations contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        # 8. Causal Mark-to-Market PnL Settlement (INV-SIM-001)
+        friction_float = float(friction_cost)
+        if step_index == 0:
+            # At bar 0, prior positions were nu_{-1} = 0; gross PnL is bit-exact 0.0.
+            gross_pnl = 0.0
+            net_pnl = -friction_float
+            equity = self.initial_capital + net_pnl
+            prev_equity = self.initial_capital
+        else:
+            # At bar t >= 1, return is earned on previously committed positions nu_{t-1}.
+            assert self._positions is not None
+            gross_pnl = float(np.dot(self._positions, return_vector)) if n > 0 else 0.0
+            net_pnl = gross_pnl - friction_float
+            prev_equity = self._equity
+            equity = prev_equity + net_pnl
+
+        # 9. Capital Ruin Tripwire (W_t <= 0.0 -> ERR-SIM-003)
+        if equity <= 0.0:
+            raise DegenerateSimulationException(
+                f"Total capital ruin detected at step {step_index}: equity={equity:.4f} <= 0.0 (INV-SIM-002)",
+                code=ERR_SIM_CAPITAL_RUIN,
+            )
+
+        # 10. Cash balance and capital conservation verification (INV-SIM-002)
+        pos_sum = float(np.sum(new_positions)) if n > 0 else 0.0
+        cash = equity - pos_sum
+        capital_discrepancy = abs(equity - (cash + pos_sum))
+        if capital_discrepancy >= 1e-5:
+            raise DegenerateSimulationException(
+                f"Capital conservation identity violated (INV-SIM-002): |{equity} - ({cash} + {pos_sum})| = {capital_discrepancy} >= 1e-5",
+                code=ERR_SIM_CAPITAL_RUIN,
+            )
+
+        # 11. High-Water Mark and Peak-to-Trough Drawdown calculation
+        hwm = max(self._hwm, equity)
+        self._hwm = hwm
+        drawdown = max(0.0, min(1.0, (hwm - equity) / hwm))
+        self._drawdown = drawdown
+
+        # 12. Gross leverage calculation
+        abs_pos_sum = float(np.sum(np.abs(new_positions))) if n > 0 else 0.0
+        effective_leverage = abs_pos_sum / equity if equity > 0.0 else 0.0
+
+        # 13. Track fractional net return and equity curve
+        net_return = (equity - prev_equity) / prev_equity
+        self._net_returns.append(net_return)
+        self._equity_curve.append(equity)
+
+        # 14. Advance internal state
+        self._equity = equity
+        self._cash = cash
+        self._positions = new_positions.copy()
+        self._last_step_index = step_index
+
+        # 15. Construct and record immutable BarExecutionRecord
+        record = BarExecutionRecord(
+            step_index=step_index,
+            timestamp=timestamp,
+            gross_pnl=gross_pnl,
+            net_pnl=net_pnl,
+            friction_cost=friction_float,
+            portfolio_equity=equity,
+            cash_balance=cash,
+            effective_leverage=effective_leverage,
+            drawdown=drawdown,
+            circuit_breaker_tier=circuit_breaker_tier,
+            circuit_breaker_haircut=float(circuit_breaker_haircut),
+            target_allocations=tuple(float(x) for x in target_allocations),
+            discretized_allocations=tuple(float(x) for x in new_positions),
+        )
+        self._history.append(record)
+        return record
+
+    @property
+    def current_equity(self) -> float:
+        """Return the current marked portfolio net wealth W_t."""
+        # Functional Purpose: Provide instant read access to active portfolio mark-to-market wealth.
+        # Explicit Dependency Tracking: self._equity internal state.
+        # Structural Relationship: Queried by ReplayEngine, risk limit monitors, and test fixtures.
+        # Defensive Invariant: Returns strictly positive float W_t > 0.0.
+        return self._equity
+
+    @property
+    def current_cash(self) -> float:
+        """Return the current available cash liquidity balance cash_t."""
+        # Functional Purpose: Expose unallocated liquid cash reserves available for collateral or new trades.
+        # Explicit Dependency Tracking: self._cash internal state.
+        # Structural Relationship: Ingested by margin models and portfolio rebalancers.
+        # Defensive Invariant: Satisfies W_t == cash_t + sum nu_{i, t} (INV-SIM-002).
+        return self._cash
+
+    @property
+    def current_positions(self) -> np.ndarray:
+        """Return a defensive copy of currently held asset positions nu_t."""
+        # Functional Purpose: Expose active position holdings while preventing caller mutation of internal state.
+        # Explicit Dependency Tracking: self._positions numpy ndarray.
+        # Structural Relationship: Consumed by ExecutionCostModel to compute Delta nu_t and ExecutionSizer.
+        # Defensive Invariant: Returns isolated copy; returns empty array if no bars have executed.
+        if self._positions is None:
+            return np.zeros(0, dtype=np.float64)
+        return self._positions.copy()
+
+    @property
+    def high_water_mark(self) -> float:
+        """Return the historical peak portfolio equity HWM_t."""
+        # Functional Purpose: Provide reference peak equity level for institutional drawdown auditing.
+        # Explicit Dependency Tracking: self._hwm internal state.
+        # Structural Relationship: Ingested by BenchmarkAuditor and circuit breaker risk monitors.
+        # Defensive Invariant: Monotonically non-decreasing; HWM_t >= initial_capital.
+        return self._hwm
+
+    @property
+    def current_drawdown(self) -> float:
+        """Return the current peak-to-trough equity drawdown fraction DD_t in [0.0, 1.0]."""
+        # Functional Purpose: Provide instantaneous drawdown metric for stop-loss and circuit breaker activation.
+        # Explicit Dependency Tracking: self._drawdown internal state.
+        # Structural Relationship: Queried by CircuitBreakerOverlayEngine to trigger haircuts and halts.
+        # Defensive Invariant: Strictly bounded in [0.0, 1.0].
+        return self._drawdown
+
+    @property
+    def history(self) -> list[BarExecutionRecord]:
+        """Return a defensive shallow copy of historical bar execution records."""
+        # Functional Purpose: Provide read-only chronological record audit trail of all executed simulation bars.
+        # Explicit Dependency Tracking: self._history internal list container.
+        # Structural Relationship: Ingested by BenchmarkAuditor and tear sheet report generators.
+        # Defensive Invariant: Returns shallow copy containing immutable frozen BarExecutionRecord value objects.
+        return list(self._history)
+
+    def get_equity_curve(self) -> np.ndarray:
+        """Return 1D array of marked portfolio equity across all executed bars."""
+        # Functional Purpose: Export continuous equity trajectory for time-series visualization and CAGR auditing.
+        # Explicit Dependency Tracking: self._equity_curve internal list.
+        # Structural Relationship: Consumed by BenchmarkAuditor to compute equity metrics and tear sheets.
+        # Defensive Invariant: Returns newly constructed 1D numpy array with float64 dtype.
+        return np.array(self._equity_curve, dtype=np.float64)
+
+    def get_net_returns(self) -> np.ndarray:
+        """Return 1D array of fractional net returns across all executed bars."""
+        # Functional Purpose: Export discrete per-bar net return series r_t^{net} for statistical benchmarking.
+        # Explicit Dependency Tracking: self._net_returns internal list.
+        # Structural Relationship: Ingested by DeflatedSharpeEngine, VaR/CVaR estimators, and BenchmarkAuditor.
+        # Defensive Invariant: Returns newly constructed 1D numpy array satisfying telescopic compounding.
+        return np.array(self._net_returns, dtype=np.float64)
