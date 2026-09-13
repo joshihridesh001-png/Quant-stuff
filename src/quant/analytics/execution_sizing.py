@@ -466,6 +466,11 @@ def _validate_2d_matrix(
             raise DegenerateSizingException(
                 f"{ERR_SZ_SINGULAR_COVARIANCE}: {name} contains negative diagonal variances"
             )
+        eigvals = np.linalg.eigvalsh(mat)
+        if float(np.min(eigvals)) < -1e-8:
+            raise DegenerateSizingException(
+                f"{ERR_SZ_SINGULAR_COVARIANCE}: {name} is not positive semi-definite (min eigenvalue {float(np.min(eigvals)):.6e} < -1e-8)"
+            )
     return np.ascontiguousarray(mat, dtype=np.float64)
 
 
@@ -542,6 +547,8 @@ class UncertaintyShrunkKellyUtility:
     def __init__(self, config: SizingConfig | None = None) -> None:
         """Initialize utility engine with optional institutional SizingConfig."""
         self.config: SizingConfig = config if config is not None else _DEFAULT_SIZING_CONFIG
+        self._lambda: float = float(self.config.epistemic_shrinkage_lambda)
+        self._gamma: float = float(self.config.risk_aversion_gamma)
 
     def compute_shrunk_returns(
         self,
@@ -549,10 +556,10 @@ class UncertaintyShrunkKellyUtility:
         sigma2_epistemic: np.ndarray,
         validate: bool = True,
     ) -> np.ndarray:
-        """Compute epistemic-uncertainty-shrunk expected returns vector.
+        """Compute sign-preserving epistemic-uncertainty-shrunk expected returns vector.
 
         Formula:
-            mu_shrunk = mu - lambda_shrink * sigma2_epistemic
+            mu_shrunk = sign(mu) * max(0.0, abs(mu) - lambda_shrink * sigma2_epistemic)
 
         Args:
             mu: Expected return vector (N,) from RD-DMA.
@@ -562,10 +569,10 @@ class UncertaintyShrunkKellyUtility:
         Returns:
             Shrunk expected return vector (N,) as float64.
         """
-        # Functional Purpose: Penalize assets with high model disagreement.
+        # Functional Purpose: Penalize assets with high model disagreement, shrinking toward cash (0.0).
         # Explicit Dependency Tracking: mu, sigma2_epistemic, self.config.epistemic_shrinkage_lambda.
         # Structural Relationship: Feeds linear term in Kelly quadratic utility and gradient.
-        # Defensive Invariant: Non-negative epistemic variances, dimensional match.
+        # Defensive Invariant: Non-negative epistemic variances, dimensional match, sign preservation.
         if validate:
             mu_clean = _validate_1d_array("mu", mu)
             n_assets = mu_clean.shape[0]
@@ -578,8 +585,12 @@ class UncertaintyShrunkKellyUtility:
             mu_clean = mu
             sig2_clean = sigma2_epistemic
 
+        shrinkage_magnitude = np.maximum(
+            0.0,
+            np.abs(mu_clean) - self.config.epistemic_shrinkage_lambda * sig2_clean,
+        )
         return np.asarray(
-            mu_clean - self.config.epistemic_shrinkage_lambda * sig2_clean,
+            np.sign(mu_clean) * shrinkage_magnitude,
             dtype=np.float64,
         )
 
@@ -627,12 +638,12 @@ class UncertaintyShrunkKellyUtility:
             cov_clean = cov_aleatoric
             w_clean = total_capital
 
-        shrunk_mu = mu_clean - self.config.epistemic_shrinkage_lambda * sig2_clean
+        shrunk_mu = np.sign(mu_clean) * np.maximum(
+            0.0, np.abs(mu_clean) - self._lambda * sig2_clean
+        )
         linear_term = float(np.dot(nu_clean, shrunk_mu))
         cov_nu = cov_clean @ nu_clean
-        risk_penalty = (
-            0.5 * (self.config.risk_aversion_gamma / w_clean) * float(np.dot(nu_clean, cov_nu))
-        )
+        risk_penalty = 0.5 * (self._gamma / w_clean) * float(np.dot(nu_clean, cov_nu))
         return linear_term - risk_penalty
 
     def evaluate_utility_and_gradient(
@@ -679,9 +690,11 @@ class UncertaintyShrunkKellyUtility:
             cov_clean = cov_aleatoric
             w_clean = total_capital
 
-        shrunk_mu = mu_clean - self.config.epistemic_shrinkage_lambda * sig2_clean
+        shrunk_mu = np.sign(mu_clean) * np.maximum(
+            0.0, np.abs(mu_clean) - self._lambda * sig2_clean
+        )
         cov_nu = cov_clean @ nu_clean
-        gamma_w = self.config.risk_aversion_gamma / w_clean
+        gamma_w = self._gamma / w_clean
         scaled_cov_nu = gamma_w * cov_nu
         u_val = float(np.dot(nu_clean, shrunk_mu)) - 0.5 * float(np.dot(nu_clean, scaled_cov_nu))
         grad = np.asarray(shrunk_mu - scaled_cov_nu, dtype=np.float64)
@@ -734,10 +747,12 @@ class UncertaintyShrunkKellyUtility:
             cov_clean = cov_aleatoric
             w_clean = total_capital
 
-        shrunk_mu = mu_clean - self.config.epistemic_shrinkage_lambda * sig2_clean
+        shrunk_mu = np.sign(mu_clean) * np.maximum(
+            0.0, np.abs(mu_clean) - self._lambda * sig2_clean
+        )
         cov_nu = cov_clean @ nu_clean
         return np.asarray(
-            shrunk_mu - (self.config.risk_aversion_gamma / w_clean) * cov_nu,
+            shrunk_mu - (self._gamma / w_clean) * cov_nu,
             dtype=np.float64,
         )
 
@@ -758,12 +773,12 @@ class UncertaintyShrunkKellyUtility:
             validate: If True, executes input validation.
 
         Returns:
-            Negative semi-definite Hessian matrix (N, N) as float64.
+            Strictly negative-semi-definite Hessian matrix (N, N) as float64.
         """
-        # Functional Purpose: Evaluate closed-form Hessian matrix for Kelly utility term.
-        # Explicit Dependency Tracking: cov_aleatoric, total_capital, self.config.risk_aversion_gamma.
-        # Structural Relationship: Ingested by Newton step calculation in convex optimizer.
-        # Defensive Invariant: INV-TR-004 negative semi-definiteness: nabla^2 U <= 0.
+        # Functional Purpose: Evaluate analytical Hessian matrix for Newton-Raphson steps.
+        # Explicit Dependency Tracking: cov_aleatoric, total_capital, config.
+        # Structural Relationship: Ingested by Hessian assembler in UnifiedConvexObjective.
+        # Defensive Invariant: INV-TR-004: Negative semi-definite (all eigenvalues <= 0.0).
         if validate:
             cov_clean = _validate_2d_matrix("cov_aleatoric", cov_aleatoric)
             w_clean = _validate_positive_capital(total_capital)
@@ -771,8 +786,9 @@ class UncertaintyShrunkKellyUtility:
             cov_clean = cov_aleatoric
             w_clean = total_capital
 
+        gamma_w = self._gamma / w_clean
         return np.asarray(
-            -(self.config.risk_aversion_gamma / w_clean) * cov_clean,
+            -gamma_w * cov_clean,
             dtype=np.float64,
         )
 
