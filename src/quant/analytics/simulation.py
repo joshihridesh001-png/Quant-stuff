@@ -579,7 +579,6 @@ class BenchmarkAuditReport:
             "tail_ratio",
             "peak_leverage",
             "deflated_sharpe_ratio",
-            "min_backtest_length",
             "total_friction_cost",
         )
         for field_name in float_fields:
@@ -630,10 +629,18 @@ class BenchmarkAuditReport:
                 code=ERR_SIM_NON_FINITE_INPUT,
             )
 
-        # 8. Minimum backtest length bounds (>= 0.0)
-        if self.min_backtest_length < 0.0:
+        # 8. Minimum backtest length bounds (>= 0.0 or positive infinity for sub-benchmark SR)
+        if not (
+            isinstance(self.min_backtest_length, (int, float))
+            and not isinstance(self.min_backtest_length, bool)
+        ):
             raise DegenerateSimulationException(
-                f"BenchmarkAuditReport min_backtest_length must be non-negative, got {self.min_backtest_length}",
+                f"BenchmarkAuditReport min_backtest_length must be numeric, got {type(self.min_backtest_length).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if math.isnan(self.min_backtest_length) or self.min_backtest_length < 0.0:
+            raise DegenerateSimulationException(
+                f"BenchmarkAuditReport min_backtest_length must be non-negative and non-NaN, got {self.min_backtest_length}",
                 code=ERR_SIM_NON_FINITE_INPUT,
             )
 

@@ -729,6 +729,14 @@ class TestBenchmarkAuditReport:
         with pytest.raises(DegenerateSimulationException):
             BenchmarkAuditReport(**valid_report_kwargs)  # type: ignore[arg-type]
 
+    def test_min_backtest_length_permits_infinity(
+        self, valid_report_kwargs: dict[str, object]
+    ) -> None:
+        """Verify min_backtest_length permits float('inf') for sub-benchmark strategies."""
+        valid_report_kwargs["min_backtest_length"] = float("inf")
+        report = BenchmarkAuditReport(**valid_report_kwargs)  # type: ignore[arg-type]
+        assert report.min_backtest_length == float("inf")
+
     @pytest.mark.parametrize("bad_friction", [-0.01, -100.0])
     def test_total_friction_cost_non_negative(
         self, valid_report_kwargs: dict[str, object], bad_friction: float
