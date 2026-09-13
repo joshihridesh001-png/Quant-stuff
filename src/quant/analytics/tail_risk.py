@@ -39,6 +39,7 @@ from functools import lru_cache
 from typing import Final
 
 import numpy as np
+from scipy.special import stdtrit
 
 # Diagnostic Fault Vector Constants (Rule 2: Deterministic Diagnostics)
 ERR_TR_ORDERING: Final[str] = "ERR-TR-001: Coherent Risk Ordering violated (cvar_alpha < var_alpha)"
@@ -658,3 +659,462 @@ class ProbabilityWeightedMomentsEstimator:
             total_observations=total_observations,
             method="EVT_PWM",
         )
+
+
+class EVTTailRiskEngine:
+    """Semi-Parametric Extreme Value Theory (EVT-POT) Tail Risk Engine with Cold-Start Ladder.
+
+    Purpose:
+        Provides institutional-grade, mathematically coherent Value-at-Risk (VaR_alpha) and
+        Expected Shortfall (CVaR_alpha) modeling with Fréchet tail stability and zero iterative
+        numerical solvers (Rule 4.3).
+        Operates a 3-tier cold-start degradation ladder:
+            - Tier 1 (EMPIRICAL): Severe starvation (N < 30 or N_u < 10) evaluating empirical
+              order statistics and sample mean excess losses.
+            - Tier 2 (STUDENT_T): Maturing history (30 <= N < 250, or N_u < 15, or 1 - alpha >= N_u / N)
+              with closed-form method-of-moments degrees of freedom nu, analytical Student-t PDF,
+              and coherent Expected Shortfall integral.
+            - Tier 3 (EVT_PWM): Fully hydrated history (N >= 250, N_u >= 15, 1 - alpha < N_u / N)
+              with algebraic Hosking & Wallis (1987) Probability Weighted Moments GPD calibration.
+        Supports both stateless calculation over historical loss arrays and stateful rolling ring
+        buffer tracking with strictly lagged zero-lookahead causality (INV-TR-007).
+
+    Mathematical Foundation:
+        1. Dynamic High Threshold:
+            u_t = mu_{t-1} + k_{threshold} * sigma_{t-1},  where sigma uses ddof=1.
+        2. Tier 1 Empirical Quantiles:
+            VaR_alpha = Percentile_{Empirical}(X, 100 * alpha)
+            CVaR_alpha = Mean(X | X >= VaR_alpha)
+        3. Tier 2 Parametric Student-t Method of Moments:
+            nu = 4.0 + 6.0 / gamma_4  if gamma_4 > 0 else 100.0,  clamped to [2.10, 100.0]
+            sigma_{scale} = s * sqrt((nu - 2.0) / nu)
+            q_alpha = stdtrit(nu, alpha)
+            VaR_alpha = mu + sigma_{scale} * q_alpha
+            CVaR_alpha = mu + sigma_{scale} * [ f_nu(q_alpha) / (1 - alpha) ] * [ (nu + q_alpha^2) / (nu - 1.0) ]
+        4. Tier 3 Semi-Parametric EVT-POT GPD via PWM:
+            z = (N / N_u) * (1 - alpha)
+            VaR_alpha = u_t + (beta / xi) * [ z^{-xi} - 1.0 ]  (or u_t - beta * ln(z) if xi <= 1e-6)
+            CVaR_alpha = (VaR_alpha + beta - xi * u_t) / (1.0 - xi)  (or VaR_alpha + beta if xi <= 1e-6)
+
+    Invariants Enforced:
+        - INV-TR-001: Coherent Risk Ordering (cvar_alpha >= var_alpha).
+        - INV-TR-002: Fréchet Tail Stability (xi in [0.001, 0.999]; xi >= 1.0 triggers InfiniteVarianceException).
+        - INV-TR-003: Artzner Subadditivity (CVaR_alpha(w1*X1 + w2*X2) <= w1*CVaR_alpha(X1) + w2*CVaR_alpha(X2)).
+        - INV-TR-005: Non-finite input protection (NaN/Inf raises DegenerateTailRiskException).
+        - INV-TR-006: Hot-path execution latency SLA <= 0.05ms for N = 500.
+        - INV-TR-007: Zero-Lookahead Causality (strictly lagged window [t-W, t-1]).
+        - Rule 4.3: Zero iterative numerical solvers (scipy.optimize strictly banned).
+    """
+
+    def __init__(self, config: TailRiskConfig | None = None) -> None:
+        """Initialize EVTTailRiskEngine with optional configuration and preallocated ring buffer.
+
+        Args:
+            config: Optional TailRiskConfig specifying hyperparameters and buffer capacity.
+
+        Raises:
+            InvalidTailRiskInputException: If config is not an instance of TailRiskConfig.
+        """
+        # Functional Purpose: Initialize engine configuration, algebraic PWM estimator, and ring buffer.
+        # Explicit Dependency Tracking: config, TailRiskConfig, ProbabilityWeightedMomentsEstimator.
+        # Structural Relationship: Ingested by convex execution sizer and risk overlay pipelines.
+        # Defensive Invariant: Valid configuration hierarchy; preallocated fixed-capacity buffer.
+        self._config: TailRiskConfig = config if config is not None else _DEFAULT_TAIL_CONFIG
+        if not isinstance(self._config, TailRiskConfig):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: config must be an instance of TailRiskConfig, "
+                f"got {type(self._config).__name__}"
+            )
+        self._estimator: ProbabilityWeightedMomentsEstimator = ProbabilityWeightedMomentsEstimator(
+            self._config
+        )
+        self._capacity: int = self._config.rolling_window_size
+        self._buffer: np.ndarray = np.zeros(self._capacity, dtype=np.float64)
+        self._head: int = 0
+        self._count: int = 0
+
+    @property
+    def config(self) -> TailRiskConfig:
+        """Return the immutable TailRiskConfig governing this engine."""
+        return self._config
+
+    @property
+    def estimator(self) -> ProbabilityWeightedMomentsEstimator:
+        """Return the underlying ProbabilityWeightedMomentsEstimator instance."""
+        return self._estimator
+
+    @property
+    def capacity(self) -> int:
+        """Return the maximum rolling window capacity W of the stateful ring buffer."""
+        return self._capacity
+
+    @property
+    def count(self) -> int:
+        """Return the current number of observations accumulated in the rolling ring buffer."""
+        return self._count
+
+    def clear(self) -> None:
+        """Reset the internal stateful ring buffer to zero observations."""
+        # Functional Purpose: Flush rolling buffer during state reinitialization or regime shifts.
+        # Explicit Dependency Tracking: self._buffer, self._head, self._count.
+        # Structural Relationship: Invoked on instrument transitions or circuit breaker resets.
+        # Defensive Invariant: Clean zero-state with head=0 and count=0.
+        self._buffer.fill(0.0)
+        self._head = 0
+        self._count = 0
+
+    def update(self, loss: float) -> None:
+        """Append a strictly lagged historical loss innovation X_{t-1} = -r_{t-1} to the rolling ring buffer.
+
+        Args:
+            loss: Negative return innovation scalar (X = -r).
+
+        Raises:
+            InvalidTailRiskInputException: If loss is not numeric or is boolean.
+            DegenerateTailRiskException: If loss is non-finite (NaN / Inf) (INV-TR-005).
+        """
+        # Functional Purpose: Record incoming loss innovation into fixed-capacity ring buffer in O(1) time.
+        # Explicit Dependency Tracking: self._buffer, self._head, self._count, self._capacity.
+        # Structural Relationship: Driven by bar completion events in execution orchestrator.
+        # Defensive Invariant: Non-finite protection (INV-TR-005); bounded circular buffer capacity.
+        if not (isinstance(loss, (int, float)) and not isinstance(loss, bool)):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: loss must be numeric, got {type(loss).__name__}"
+            )
+        loss_val = float(loss)
+        if not math.isfinite(loss_val):
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: Cannot update ring buffer with non-finite loss: {loss}"
+            )
+        self._buffer[self._head] = loss_val
+        self._head = (self._head + 1) % self._capacity
+        if self._count < self._capacity:
+            self._count += 1
+
+    def get_rolling_risk_metrics(
+        self,
+        step_index: int,
+        confidence_level: float | None = None,
+    ) -> TailRiskMetrics:
+        """Calculate tail risk metrics over the current rolling buffer window.
+
+        Args:
+            step_index: Sequential bar or execution step index >= 0.
+            confidence_level: Optional override for confidence level alpha in (0.50, 1.0).
+
+        Returns:
+            Calibrated TailRiskMetrics container with VaR_alpha, CVaR_alpha, and tail parameters.
+
+        Raises:
+            DegenerateTailRiskException: If buffer has fewer than 2 observations (ERR_TR_STARVATION).
+        """
+        # Functional Purpose: Extract strictly lagged rolling historical window and evaluate tail metrics.
+        # Explicit Dependency Tracking: self._buffer, self._head, self._count, calculate_risk_metrics.
+        # Structural Relationship: Consumed by convex execution sizer on each trading bar t.
+        # Defensive Invariant: Buffer starvation protection (count >= 2); zero-lookahead causality (INV-TR-007).
+        if self._count < 2:
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_STARVATION}: Rolling buffer starvation: at least 2 observations required, "
+                f"got {self._count}"
+            )
+        if self._count < self._capacity:
+            losses = self._buffer[: self._count].copy()
+        else:
+            # Chronologically reconstruct window: oldest to newest
+            losses = np.empty(self._capacity, dtype=np.float64)
+            tail_len = self._capacity - self._head
+            losses[:tail_len] = self._buffer[self._head :]
+            losses[tail_len:] = self._buffer[: self._head]
+
+        return self.calculate_risk_metrics(
+            losses=losses,
+            step_index=step_index,
+            confidence_level=confidence_level,
+        )
+
+    def calculate_risk_metrics(
+        self,
+        losses: np.ndarray,
+        step_index: int = 0,
+        confidence_level: float | None = None,
+    ) -> TailRiskMetrics:
+        """Evaluate VaR_alpha and coherent CVaR_alpha across 3-tier cold-start degradation ladder.
+
+        Args:
+            losses: 1D numpy array of historical loss innovations X = -r.
+            step_index: Sequential bar or execution step index >= 0.
+            confidence_level: Optional override for confidence level alpha in (0.50, 1.0).
+
+        Returns:
+            Calibrated TailRiskMetrics container.
+
+        Raises:
+            InvalidTailRiskInputException: If arguments are typed incorrectly or step_index < 0.
+            DegenerateTailRiskException: If losses contain non-finite elements (NaN/Inf) (INV-TR-005)
+                or sample size N < 2 (ERR_TR_STARVATION).
+            InfiniteVarianceException: If theoretical tail shape index xi >= 1.0 (INV-TR-002).
+        """
+        # Functional Purpose: Evaluate coherent VaR/CVaR across Empirical, Student-t, and EVT-PWM tiers.
+        # Explicit Dependency Tracking: self._config, self._estimator, losses, step_index, confidence_level.
+        # Structural Relationship: Ingested by convex execution sizer and circuit breaker overlay engine.
+        # Defensive Invariant: INV-TR-001 (CVaR >= VaR), INV-TR-002 (xi < 1.0), INV-TR-005 (finite inputs).
+        if not isinstance(losses, np.ndarray):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: losses must be a numpy ndarray, got {type(losses).__name__}"
+            )
+        if losses.ndim != 1:
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: losses array must be 1-dimensional, got shape {losses.shape}"
+            )
+        n = int(losses.size)
+        if n < 2:
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_STARVATION}: Minimum sample size N >= 2 required for tail risk evaluation, "
+                f"got {n}"
+            )
+        if not (isinstance(step_index, int) and not isinstance(step_index, bool)):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: step_index must be an integer, got {type(step_index).__name__}"
+            )
+        if step_index < 0:
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: step_index must be >= 0, got {step_index}"
+            )
+
+        alpha = self._config.confidence_level if confidence_level is None else confidence_level
+        if not (isinstance(alpha, (int, float)) and not isinstance(alpha, bool)):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: confidence_level must be numeric, got {type(alpha).__name__}"
+            )
+        alpha = float(alpha)
+        if not math.isfinite(alpha):
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: confidence_level must be finite, got {alpha}"
+            )
+        if not (0.50 < alpha < 1.0):
+            raise InvalidTailRiskInputException(
+                f"{ERR_TR_INVALID_CONFIG}: confidence_level must be in (0.50, 1.0), got {alpha}"
+            )
+
+        # Fast O(1) IEEE 754 non-finite check on sample mean (INV-TR-005)
+        # Any NaN or Inf in losses propagates to non-finite mean
+        mu = float(np.mean(losses))
+        if not math.isfinite(mu):
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_DEGENERATE}: losses contain non-finite elements (NaN or Inf)"
+            )
+
+        diff = losses - mu
+        s2 = float(np.dot(diff, diff)) / (n - 1.0)
+        s = math.sqrt(max(0.0, s2))
+
+        # Zero-volatility defensive handling for constant losses (all-zero or constant c)
+        if s <= 1e-12:
+            return self._calculate_empirical_risk_metrics(
+                losses=losses,
+                u_t=mu,
+                n_u=0,
+                n=n,
+                alpha=alpha,
+                step_index=step_index,
+            )
+
+        u_t = mu + self._config.threshold_k * s
+
+        exceedances = losses[losses > u_t] - u_t
+        n_u = int(exceedances.size)
+
+        min_obs_student = self._config.min_observations_student_t
+        min_obs_evt = self._config.min_observations_evt
+        min_exc_evt = self._config.min_exceedances_evt
+
+        # Ladder Selection:
+        # Tier 1: Severe Starvation: N < 30 or (N >= 250 and N_u < 10)
+        if n < min_obs_student or (n >= min_obs_evt and n_u < 10):
+            return self._calculate_empirical_risk_metrics(
+                losses=losses,
+                u_t=u_t,
+                n_u=n_u,
+                n=n,
+                alpha=alpha,
+                step_index=step_index,
+            )
+
+        # Tier 3: Fully Hydrated History: N >= 250 and N_u >= 15 and (1 - alpha) < N_u / N
+        if n >= min_obs_evt and n_u >= min_exc_evt and (1.0 - alpha) < (n_u / n):
+            return self._calculate_evt_pwm_risk_metrics(
+                exceedances=exceedances,
+                u_t=u_t,
+                n_u=n_u,
+                n=n,
+                alpha=alpha,
+                step_index=step_index,
+            )
+
+        # Tier 2: Maturing History: 30 <= N < 250 or (N >= 250 and N_u < 15) or (1 - alpha >= N_u / N)
+        return self._calculate_student_t_risk_metrics(
+            losses=losses,
+            mu=mu,
+            s=s,
+            u_t=u_t,
+            n_u=n_u,
+            n=n,
+            alpha=alpha,
+            step_index=step_index,
+        )
+
+    def _calculate_empirical_risk_metrics(
+        self,
+        losses: np.ndarray,
+        u_t: float,
+        n_u: int,
+        n: int,
+        alpha: float,
+        step_index: int,
+    ) -> TailRiskMetrics:
+        """Calculate Tier 1 Empirical Quantile tail risk metrics (INV-TR-001)."""
+        # Functional Purpose: Fallback to non-parametric empirical order statistics under sample starvation.
+        # Explicit Dependency Tracking: losses, alpha, u_t, n_u, n, step_index.
+        # Structural Relationship: Emits TailRiskMetrics when N < 30 or N_u < 10.
+        # Defensive Invariant: INV-TR-001 (CVaR >= VaR); shape_xi = 0.0, scale_beta = 0.0.
+        var_alpha = float(np.percentile(losses, 100.0 * alpha))
+        tail_losses = losses[losses >= var_alpha]
+        cvar_alpha = float(np.mean(tail_losses)) if tail_losses.size > 0 else var_alpha
+        cvar_alpha = max(cvar_alpha, var_alpha)
+
+        tail_params = EVTTailParameters(
+            threshold_u=float(u_t),
+            shape_xi=0.0,
+            scale_beta=0.0,
+            num_exceedances=n_u,
+            total_observations=n,
+            method="EMPIRICAL",
+        )
+        return TailRiskMetrics(
+            var_alpha=var_alpha,
+            cvar_alpha=cvar_alpha,
+            confidence_level=alpha,
+            tail_parameters=tail_params,
+            step_index=step_index,
+        )
+
+    def _calculate_student_t_risk_metrics(
+        self,
+        losses: np.ndarray,
+        mu: float,
+        s: float,
+        u_t: float,
+        n_u: int,
+        n: int,
+        alpha: float,
+        step_index: int,
+    ) -> TailRiskMetrics:
+        """Calculate Tier 2 Student-t Method-of-Moments tail risk metrics (INV-TR-001)."""
+        # Functional Purpose: Parametric Student-t tail modeling with closed-form degrees of freedom.
+        # Explicit Dependency Tracking: losses, mu, s, u_t, n_u, n, alpha, stdtrit, math.lgamma.
+        # Structural Relationship: Emits TailRiskMetrics for maturing history (30 <= N < 250).
+        # Defensive Invariant: INV-TR-001 (CVaR >= VaR); nu in [2.10, 100.0]; beta > 0.
+        diff = losses - mu
+        diff2 = diff * diff
+        m4 = float(np.mean(diff2 * diff2))
+        s2 = s * s
+        s4 = s2 * s2
+
+        if s4 > 1e-16:
+            gamma4 = (m4 / s4) - 3.0
+            nu = (4.0 + (6.0 / gamma4)) if gamma4 > 0.0 else 100.0
+        else:
+            nu = 100.0
+
+        nu = max(2.10, min(100.0, nu))
+        sigma_scale = max(s * math.sqrt((nu - 2.0) / nu), 1e-8)
+
+        q_alpha = float(stdtrit(nu, alpha))
+
+        log_c_nu = (
+            math.lgamma((nu + 1.0) / 2.0) - math.lgamma(nu / 2.0) - 0.5 * math.log(nu * math.pi)
+        )
+        log_pdf = log_c_nu - 0.5 * (nu + 1.0) * math.log(1.0 + (q_alpha * q_alpha) / nu)
+        pdf_q = math.exp(log_pdf)
+
+        var_alpha = mu + sigma_scale * q_alpha
+        cvar_factor = (pdf_q / (1.0 - alpha)) * ((nu + q_alpha * q_alpha) / (nu - 1.0))
+        cvar_alpha = mu + sigma_scale * cvar_factor
+        cvar_alpha = max(cvar_alpha, var_alpha)
+
+        tail_params = EVTTailParameters(
+            threshold_u=float(u_t),
+            shape_xi=1.0 / nu,
+            scale_beta=sigma_scale,
+            num_exceedances=n_u,
+            total_observations=n,
+            method="STUDENT_T",
+        )
+        return TailRiskMetrics(
+            var_alpha=var_alpha,
+            cvar_alpha=cvar_alpha,
+            confidence_level=alpha,
+            tail_parameters=tail_params,
+            step_index=step_index,
+        )
+
+    def _calculate_evt_pwm_risk_metrics(
+        self,
+        exceedances: np.ndarray,
+        u_t: float,
+        n_u: int,
+        n: int,
+        alpha: float,
+        step_index: int,
+    ) -> TailRiskMetrics:
+        """Calculate Tier 3 Semi-Parametric EVT-POT GPD tail risk metrics via PWM (INV-TR-001, INV-TR-002)."""
+        # Functional Purpose: Extreme Value Theory Peaks-Over-Threshold closed-form algebraic evaluation.
+        # Explicit Dependency Tracking: self._estimator.fit, exceedances, n, u_t, alpha, step_index.
+        # Structural Relationship: Emits institutional TailRiskMetrics when fully hydrated (N >= 250).
+        # Defensive Invariant: INV-TR-001 (CVaR >= VaR); INV-TR-002 (xi < 1.0 or InfiniteVarianceException).
+        fit_params = self._estimator.fit(
+            exceedances=exceedances,
+            total_observations=n,
+            threshold_u=u_t,
+            config=self._config,
+        )
+        xi = fit_params.shape_xi
+        beta = fit_params.scale_beta
+        z = (n / n_u) * (1.0 - alpha)
+
+        if xi <= 1e-6:
+            var_alpha = u_t - beta * math.log(z)
+            cvar_alpha = var_alpha + beta
+        else:
+            var_alpha = u_t + (beta / xi) * (math.pow(z, -xi) - 1.0)
+            cvar_alpha = (var_alpha + beta - xi * u_t) / (1.0 - xi)
+
+        cvar_alpha = max(cvar_alpha, var_alpha)
+
+        return TailRiskMetrics(
+            var_alpha=var_alpha,
+            cvar_alpha=cvar_alpha,
+            confidence_level=alpha,
+            tail_parameters=fit_params,
+            step_index=step_index,
+        )
+
+
+__all__ = [
+    "ERR_TR_DEGENERATE",
+    "ERR_TR_INFINITE_VARIANCE",
+    "ERR_TR_INVALID_CONFIG",
+    "ERR_TR_LATENCY",
+    "ERR_TR_ORDERING",
+    "ERR_TR_STARVATION",
+    "VALID_TAIL_METHODS",
+    "DegenerateTailRiskException",
+    "EVTTailParameters",
+    "EVTTailRiskEngine",
+    "InfiniteVarianceException",
+    "InvalidTailRiskInputException",
+    "ProbabilityWeightedMomentsEstimator",
+    "TailRiskConfig",
+    "TailRiskError",
+    "TailRiskMetrics",
+]
