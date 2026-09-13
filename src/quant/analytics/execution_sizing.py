@@ -1740,12 +1740,12 @@ def project_two_l1_constraints(
         return np.ascontiguousarray(res2, dtype=np.float64)
 
     # Step 3: Both constraints strictly active - 2D Semismooth Newton method
-    lam1 = max(0.0, th1 * 0.5)
-    lam2_curr = max(0.0, lam2 * 0.5)
+    lam1 = 0.0
+    lam2_curr = 0.0
     solved = False
     x_opt = x2
     if not _force_dykstra:
-        for _ in range(10):
+        for _ in range(15):
             x = np.maximum(0.0, a - lam1 - lam2_curr * c_clean)
             mask = x > 0
             k_act = int(np.sum(mask))
@@ -1759,19 +1759,23 @@ def project_two_l1_constraints(
             Scc = float(np.dot(c_m, c_m))
             det = k_act * Scc - Sc * Sc
             if det < 1e-12:
-                # Parallel constraints: b_eff = min(b1, b2 / mean(c))
-                mean_c = Sc / k_act
-                b_eff = min(b1_val, b2_val / mean_c)
-                cum_deg = 0.0
-                th_deg = 0.0
-                for j in range(n):
-                    cum_deg += s[j]
-                    t = (cum_deg - b_eff) / (j + 1)
-                    if s[j] - t > 0:
-                        th_deg = t
-                x_opt = np.maximum(0.0, a - th_deg)
-                solved = True
-                break
+                if float(np.ptp(c_clean)) < 1e-12:
+                    # Genuinely parallel constraints across entire portfolio: b_eff = min(b1, b2 / mean(c))
+                    mean_c = Sc / k_act
+                    b_eff = min(b1_val, b2_val / mean_c)
+                    cum_deg = 0.0
+                    th_deg = 0.0
+                    for j in range(n):
+                        cum_deg += s[j]
+                        t = (cum_deg - b_eff) / (j + 1)
+                        if s[j] - t > 0:
+                            th_deg = t
+                    x_opt = np.maximum(0.0, a - th_deg)
+                    solved = True
+                    break
+                else:
+                    # Single-asset active set or localized tie on heterogeneous universe: fall through to Dykstra
+                    break
             lam1_new = (Scc * (Sa - b1_val) - Sc * (Sca - b2_val)) / det
             lam2_new = (k_act * (Sca - b2_val) - Sc * (Sa - b1_val)) / det
             if lam1_new >= -1e-12 and lam2_new >= -1e-12:
@@ -1790,8 +1794,9 @@ def project_two_l1_constraints(
         q_corr = np.zeros_like(x_d)
         for _ in range(40):
             y1 = x_d + p_corr
-            if float(np.sum(y1)) > b1_val:
-                s1 = sorted(y1.tolist(), reverse=True)
+            y1_pos = np.maximum(0.0, y1)
+            if float(np.sum(y1_pos)) > b1_val:
+                s1 = sorted(y1_pos.tolist(), reverse=True)
                 cum1 = 0.0
                 th1_d = 0.0
                 for j in range(n):
@@ -1799,28 +1804,29 @@ def project_two_l1_constraints(
                     t = (cum1 - b1_val) / (j + 1)
                     if s1[j] - t > 0:
                         th1_d = t
-                y_step = np.maximum(0.0, y1 - th1_d)
+                y_step = np.maximum(0.0, y1_pos - th1_d)
             else:
-                y_step = np.maximum(0.0, y1)
+                y_step = y1_pos
             p_corr = y1 - y_step
 
             y2 = y_step + q_corr
-            if float(np.dot(c_clean, y2)) > b2_val:
-                r2 = sorted([(y2[i] / c_clean[i], i) for i in range(n)], reverse=True)
+            y2_pos = np.maximum(0.0, y2)
+            if float(np.dot(c_clean, y2_pos)) > b2_val:
+                r2 = sorted([(y2_pos[i] / c_clean[i], i) for i in range(n)], reverse=True)
                 cum_cy2 = 0.0
                 cum_c22 = 0.0
                 lam2_d = 0.0
                 for k in range(n):
                     idx_k = r2[k][1]
-                    cum_cy2 += c_clean[idx_k] * y2[idx_k]
+                    cum_cy2 += c_clean[idx_k] * y2_pos[idx_k]
                     cum_c22 += c_clean[idx_k] * c_clean[idx_k]
                     l_cand = (cum_cy2 - b2_val) / cum_c22
                     if l_cand < r2[k][0] and (k == n - 1 or l_cand >= r2[k + 1][0]):
                         lam2_d = l_cand
                         break
-                x_step = np.maximum(0.0, y2 - lam2_d * c_clean)
+                x_step = np.maximum(0.0, y2_pos - lam2_d * c_clean)
             else:
-                x_step = np.maximum(0.0, y2)
+                x_step = y2_pos
             q_corr = y2 - x_step
 
             if float(np.max(np.abs(x_step - x_d))) < 1e-7:
