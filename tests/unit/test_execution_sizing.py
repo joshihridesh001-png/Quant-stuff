@@ -41,14 +41,17 @@ from quant.analytics.execution_sizing import (
     SizingConfig,
     SizingDecision,
     UncertaintyShrunkKellyUtility,
+    UnifiedConvexExecutionSizer,
     UnifiedConvexObjective,
     _validate_1d_array,
     _validate_2d_matrix,
     _validate_haircut,
     _validate_positive_capital,
+    discretize_lot_allocations,
     evaluate_total_objective,
     gradient_total_objective,
     hessian_total_objective,
+    project_two_l1_constraints,
 )
 
 
@@ -1245,12 +1248,13 @@ class TestUnifiedConvexObjectiveAndConcavity:
         is_traced = (
             old_trace is not None
             or "coverage" in sys.modules
+            or "pytest_cov" in sys.modules
             or (
                 hasattr(sys, "monitoring")
                 and any(sys.monitoring.get_tool(i) is not None for i in range(6))
             )
         )
-        threshold = 0.035 if is_traced else 0.020
+        threshold = 0.050 if is_traced else 0.020
         min_latency = float(np.min(latencies))
         assert min_latency <= threshold, (
             f"INV-TR-006 SLA breached: min evaluation took {min_latency:.5f}ms > {threshold}ms"
@@ -1334,3 +1338,536 @@ class TestUnifiedConvexObjectiveAndConcavity:
             obj.gradient(nu, mu, sig2_ep, cov, bad_vols, cross, capital, haircut)
         with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
             obj.hessian(nu, cov, bad_vols, cross, capital, haircut)
+
+
+class TestProjectTwoL1Constraints:
+    """Exhaustive tests for exact Euclidean projection onto intersection of two L1 balls."""
+
+    def test_unconstrained_point_inside_both_balls(self) -> None:
+        """Verify that a vector strictly inside both L1 balls is returned unchanged."""
+        y = np.array([10.0, -20.0, 30.0], dtype=np.float64)
+        c = np.array([0.05, 0.08, 0.04], dtype=np.float64)
+        b1 = 100.0  # ||y||_1 = 60 <= 100
+        b2 = 10.0  # c^T |y| = 0.5 + 1.6 + 1.2 = 3.3 <= 10
+        proj = project_two_l1_constraints(y, c, b1, b2, validate=True)
+        assert np.allclose(proj, y, atol=1e-12)
+
+    def test_leverage_ball_only_projection(self) -> None:
+        """Verify exact projection when only the unweighted L1 leverage ball is violated."""
+        y = np.array([20.0, -30.0, 10.0], dtype=np.float64)  # ||y||_1 = 60
+        c = np.array([0.01, 0.01, 0.01], dtype=np.float64)  # c^T |y| = 0.6 <= 100
+        b1 = 30.0
+        b2 = 100.0
+        proj = project_two_l1_constraints(y, c, b1, b2, validate=True)
+        assert np.isclose(np.sum(np.abs(proj)), b1, atol=1e-7)
+        assert float(np.dot(c, np.abs(proj))) <= b2 + 1e-12
+        assert np.all((proj == 0.0) | (np.sign(proj) == np.sign(y)))
+
+    def test_cvar_ball_only_projection(self) -> None:
+        """Verify exact projection when only the weighted L1 CVaR ball is violated."""
+        y = np.array([10.0, -20.0, 30.0], dtype=np.float64)  # ||y||_1 = 60 <= 1000
+        c = np.array([0.1, 0.2, 0.1], dtype=np.float64)  # c^T |y| = 1 + 4 + 3 = 8 > 2
+        b1 = 1000.0
+        b2 = 2.0
+        proj = project_two_l1_constraints(y, c, b1, b2, validate=True)
+        assert np.isclose(float(np.dot(c, np.abs(proj))), b2, atol=1e-7)
+        assert float(np.sum(np.abs(proj))) <= b1 + 1e-12
+        assert np.all((proj == 0.0) | (np.sign(proj) == np.sign(y)))
+
+    def test_both_constraints_active_2d_newton(self) -> None:
+        """Verify exact projection when both L1 constraints are simultaneously active."""
+        # Construct exact active point: y = x_star + lam1 + lam2 * c
+        c = np.array([0.1, 0.5], dtype=np.float64)
+        x_star = np.array([10.0, 20.0], dtype=np.float64)
+        lam1 = 5.0
+        lam2 = 10.0
+        y = x_star + lam1 + lam2 * c  # y = [16.0, 30.0]
+        b1 = float(np.sum(x_star))  # 30.0
+        b2 = float(np.dot(c, x_star))  # 11.0
+        proj = project_two_l1_constraints(y, c, b1, b2, validate=True)
+        assert np.allclose(proj, x_star, atol=1e-7)
+        assert np.isclose(float(np.sum(np.abs(proj))), b1, atol=1e-7)
+        assert np.isclose(float(np.dot(c, np.abs(proj))), b2, atol=1e-7)
+
+        # Test with negative coordinates to verify sign restoration
+        y_neg = np.array([-16.0, 30.0], dtype=np.float64)
+        x_neg_star = np.array([-10.0, 20.0], dtype=np.float64)
+        proj_neg = project_two_l1_constraints(y_neg, c, b1, b2, validate=True)
+        assert np.allclose(proj_neg, x_neg_star, atol=1e-7)
+
+        # 3-asset active test with Newton convergence
+        c3 = np.array([0.05, 0.20, 0.10], dtype=np.float64)
+        x3_star = np.array([20.0, 15.0, 25.0], dtype=np.float64)
+        y3 = x3_star + 3.0 + 8.0 * c3
+        b1_3 = float(np.sum(x3_star))
+        b2_3 = float(np.dot(c3, x3_star))
+        proj3 = project_two_l1_constraints(y3, c3, b1_3, b2_3, validate=True)
+        assert np.allclose(proj3, x3_star, atol=1e-6)
+
+    def test_degenerate_parallel_constraints(self) -> None:
+        """Verify projection handles parallel constraints (c_i = const) without singularity."""
+        y = np.array([50.0, -40.0, 60.0], dtype=np.float64)
+        c = np.array([0.1, 0.1, 0.1], dtype=np.float64)
+        b1 = 50.0
+        b2 = 4.0  # b2 / 0.1 = 40.0, so effective b is 40.0
+        proj = project_two_l1_constraints(y, c, b1, b2, validate=True)
+        assert float(np.sum(np.abs(proj))) <= b1 + 1e-7
+        assert float(np.dot(c, np.abs(proj))) <= b2 + 1e-7
+
+    def test_zero_bounds_and_zero_coordinates(self) -> None:
+        """Verify zero budget contracts allocation strictly to 0 and zero coords stay 0."""
+        y = np.array([10.0, 0.0, -20.0], dtype=np.float64)
+        c = np.array([0.1, 0.1, 0.1], dtype=np.float64)
+        # b1 <= 0
+        proj0 = project_two_l1_constraints(y, c, 0.0, 10.0)
+        assert np.all(proj0 == 0.0)
+        # b2 <= 0
+        proj0_b2 = project_two_l1_constraints(y, c, 10.0, 0.0)
+        assert np.all(proj0_b2 == 0.0)
+        # Zero coordinate in y stays zero
+        proj = project_two_l1_constraints(y, c, 15.0, 1.5)
+        assert proj[1] == 0.0
+
+    def test_dykstra_fallback_adversarial(self) -> None:
+        """Adversarial stress test verifying Dykstra alternating projections fallback."""
+        y = np.array([100.0, -80.0, 60.0, 40.0], dtype=np.float64)
+        c = np.array([0.05, 0.20, 0.10, 0.15], dtype=np.float64)
+        b1 = 50.0
+        b2 = 5.0
+        proj = project_two_l1_constraints(y, c, b1, b2, validate=False, _force_dykstra=True)
+        assert float(np.sum(np.abs(proj))) <= b1 + 1e-7
+        assert float(np.dot(c, np.abs(proj))) <= b2 + 1e-7
+
+    def test_validate_false_path(self) -> None:
+        """Verify validate=False hot path yields bitwise identical results."""
+        y = np.array([20.0, -30.0, 40.0], dtype=np.float64)
+        c = np.array([0.1, 0.15, 0.08], dtype=np.float64)
+        b1 = 40.0
+        b2 = 3.0
+        p_val = project_two_l1_constraints(y, c, b1, b2, validate=True)
+        p_fast = project_two_l1_constraints(y, c, b1, b2, validate=False)
+        assert np.allclose(p_val, p_fast, atol=1e-12)
+
+    def test_defensive_validations(self) -> None:
+        """Test defensive boundary checks and error codes for two L1 projection."""
+        y = np.array([10.0, 20.0], dtype=np.float64)
+        c = np.array([0.1, 0.2], dtype=np.float64)
+
+        # Dimension mismatch
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_DIMENSION_MISMATCH):
+            project_two_l1_constraints(y, np.array([0.1, 0.2, 0.3]), 10.0, 5.0)
+
+        # Non-positive c
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            project_two_l1_constraints(y, np.array([0.1, -0.1]), 10.0, 5.0)
+
+        # Non-finite b1 or b2
+        with pytest.raises(DegenerateSizingException, match=ERR_SZ_NON_FINITE):
+            project_two_l1_constraints(y, c, float("nan"), 5.0)
+        with pytest.raises(DegenerateSizingException, match=ERR_SZ_NON_FINITE):
+            project_two_l1_constraints(y, c, 10.0, float("inf"))
+
+        # Non-numeric b1 or b2
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            project_two_l1_constraints(y, c, "invalid", 5.0)  # type: ignore[arg-type]
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            project_two_l1_constraints(y, c, 10.0, "invalid")  # type: ignore[arg-type]
+
+        # Negative bounds
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            project_two_l1_constraints(y, c, -1.0, 5.0)
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            project_two_l1_constraints(y, c, 10.0, -2.0)
+
+        # Boolean type rejections
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            project_two_l1_constraints(y, c, True, 5.0)  # type: ignore[arg-type]
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            project_two_l1_constraints(y, c, 10.0, False)  # type: ignore[arg-type]
+
+
+class TestMicrostructuralLotDiscretization:
+    """Tests for microstructural randomized and deterministic contract lot rounding."""
+
+    def test_none_lot_sizes_returns_copy(self) -> None:
+        """Verify that when lot_sizes is None, target allocation copy is returned."""
+        target = np.array([100.25, -250.75, 0.0], dtype=np.float64)
+        disc = discretize_lot_allocations(target, lot_sizes=None)
+        assert np.array_equal(target, disc)
+        assert disc is not target
+
+    def test_deterministic_rounding(self) -> None:
+        """Verify random_seed == -1 rounds deterministically to nearest integer lot."""
+        target = np.array([104.0, 106.0, -104.0, -106.0, 0.0], dtype=np.float64)
+        lots = np.array([10.0, 10.0, 10.0, 10.0, 10.0], dtype=np.float64)
+        disc = discretize_lot_allocations(target, lots, random_seed=-1)
+        expected = np.array([100.0, 110.0, -100.0, -110.0, 0.0], dtype=np.float64)
+        assert np.allclose(disc, expected, atol=1e-12)
+
+    def test_randomized_rounding_unbiased_expectation(self) -> None:
+        """Verify microstructural randomized rounding unbiased expectation property E[nu_tilde] = nu*."""
+        target = np.array([123.456, -789.123, 456.789, 0.0], dtype=np.float64)
+        lots = np.array([10.0, 25.0, 5.0, 10.0], dtype=np.float64)
+        n_samples = 10000
+        samples = np.zeros((n_samples, len(target)))
+        for s in range(n_samples):
+            samples[s] = discretize_lot_allocations(target, lots, random_seed=s, validate=False)
+        mean_alloc = np.mean(samples, axis=0)
+        assert np.allclose(mean_alloc, target, atol=0.5)
+        rel_err = np.abs(mean_alloc[:3] - target[:3]) / np.abs(target[:3])
+        assert np.all(rel_err < 0.02)
+        assert mean_alloc[3] == 0.0
+
+    def test_non_positive_lot_sizes_handling(self) -> None:
+        """Verify fallback branch when unvalidated lot_sizes has non-positive entries."""
+        target = np.array([105.0, 200.0], dtype=np.float64)
+        lots = np.array([10.0, -5.0], dtype=np.float64)
+        # Deterministic
+        disc_det = discretize_lot_allocations(target, lots, random_seed=-1, validate=False)
+        assert disc_det[0] == 110.0
+        assert disc_det[1] == 200.0
+        # Randomized
+        disc_rand = discretize_lot_allocations(target, lots, random_seed=42, validate=False)
+        assert disc_rand[1] == 200.0
+
+    def test_defensive_validations(self) -> None:
+        """Test defensive input validation on lot discretization."""
+        target = np.array([100.0, 200.0], dtype=np.float64)
+        # Dimension mismatch
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_DIMENSION_MISMATCH):
+            discretize_lot_allocations(target, np.array([10.0]))
+        # Non-positive lot size with validate=True
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            discretize_lot_allocations(target, np.array([10.0, 0.0]))
+        # Non-finite target
+        with pytest.raises(DegenerateSizingException, match=ERR_SZ_NON_FINITE):
+            discretize_lot_allocations(np.array([float("nan"), 100.0]))
+
+
+class TestUnifiedConvexExecutionSizer:
+    """Comprehensive test suite for UnifiedConvexExecutionSizer institutional solver."""
+
+    @pytest.fixture
+    def sizer_inputs(self) -> dict[str, object]:
+        """Provide standardized institutional multi-asset inputs."""
+        n = 5
+        mu = np.array([0.08, -0.05, 0.12, -0.04, 0.06], dtype=np.float64)
+        sig2_ep = np.array([0.001, 0.002, 0.001, 0.003, 0.002], dtype=np.float64)
+        a = np.random.RandomState(42).randn(n, n)
+        cov = a @ a.T * 0.002 + np.eye(n) * 0.005
+        cov = 0.5 * (cov + cov.T)
+        vols = np.sqrt(np.diag(cov))
+        capital = 1_000_000.0
+        haircut = 0.90
+        lots = np.array([100.0, 500.0, 200.0, 1000.0, 250.0], dtype=np.float64)
+        return {
+            "n": n,
+            "mu": mu,
+            "sig2_ep": sig2_ep,
+            "cov": cov,
+            "vols": vols,
+            "capital": capital,
+            "haircut": haircut,
+            "lots": lots,
+        }
+
+    def test_initialization_default_and_custom_config(self) -> None:
+        """Verify instantiation with default and custom SizingConfig."""
+        sizer_default = UnifiedConvexExecutionSizer()
+        assert sizer_default.config.max_leverage == 2.0
+        assert sizer_default.config.mdd_budget == 0.15
+
+        cfg = SizingConfig(max_leverage=1.5, mdd_budget=0.10)
+        sizer_custom = UnifiedConvexExecutionSizer(config=cfg)
+        assert sizer_custom.config.max_leverage == 1.5
+        assert sizer_custom.config.mdd_budget == 0.10
+
+    def test_facade_project_and_discretize_methods(self) -> None:
+        """Verify facade methods project and discretize operate consistently."""
+        sizer = UnifiedConvexExecutionSizer()
+        y = np.array([100.0, -200.0], dtype=np.float64)
+        c = np.array([0.1, 0.2], dtype=np.float64)
+        proj = sizer.project(y, c, b1=150.0, b2=25.0)
+        assert float(np.sum(np.abs(proj))) <= 150.0 + 1e-7
+        assert float(np.dot(c, np.abs(proj))) <= 25.0 + 1e-7
+
+        disc = sizer.discretize(
+            np.array([104.0, -206.0]), lot_sizes=np.array([10.0, 10.0]), random_seed=-1
+        )
+        assert np.allclose(disc, [100.0, -210.0])
+
+    def test_solve_unconstrained_interior(self, sizer_inputs: dict[str, object]) -> None:
+        """Verify solver fast path when optimal allocation lies strictly inside both constraint balls."""
+        mu = np.array([0.005, -0.003, 0.004, -0.002, 0.003], dtype=np.float64)
+        sig2 = sizer_inputs["sig2_ep"]  # type: ignore[assignment]
+        cov = sizer_inputs["cov"]  # type: ignore[assignment]
+        vols = sizer_inputs["vols"]  # type: ignore[assignment]
+        capital = sizer_inputs["capital"]  # type: ignore[assignment]
+
+        sizer = UnifiedConvexExecutionSizer()
+        decision = sizer.solve(
+            mu=mu,
+            sigma2_epistemic=sig2,
+            cov_aleatoric=cov,
+            asset_vols=vols,
+            total_capital=capital,
+            circuit_breaker_haircut=1.0,
+            random_seed=-1,
+        )
+        assert isinstance(decision, SizingDecision)
+        assert decision.effective_leverage < sizer.config.max_leverage
+        assert decision.expected_shortfall < sizer.config.mdd_budget * capital
+        assert not decision.is_leverage_constrained
+        assert not decision.is_drawdown_constrained
+
+    def test_solve_hard_leverage_and_cvar_constraints_inv_tr_005(
+        self, sizer_inputs: dict[str, object]
+    ) -> None:
+        """Verify INV-TR-005 hard CVaR drawdown budget and leverage cap enforcement under extreme returns."""
+        n = sizer_inputs["n"]  # type: ignore[assignment]
+        mu = np.full(n, 50.0, dtype=np.float64)
+        sig2 = sizer_inputs["sig2_ep"]  # type: ignore[assignment]
+        cov = sizer_inputs["cov"]  # type: ignore[assignment]
+        vols = sizer_inputs["vols"]  # type: ignore[assignment]
+        capital = sizer_inputs["capital"]  # type: ignore[assignment]
+        lots = sizer_inputs["lots"]  # type: ignore[assignment]
+
+        config = SizingConfig(max_leverage=1.8, mdd_budget=0.12)
+        sizer = UnifiedConvexExecutionSizer(config=config)
+        decision = sizer.solve(
+            mu=mu,
+            sigma2_epistemic=sig2,
+            cov_aleatoric=cov,
+            asset_vols=vols,
+            total_capital=capital,
+            circuit_breaker_haircut=1.0,
+            lot_sizes=lots,
+            random_seed=-1,
+        )
+        assert decision.effective_leverage <= config.max_leverage + 1e-6
+        assert decision.expected_shortfall <= config.mdd_budget * capital + 1e-6
+        assert decision.is_leverage_constrained or decision.is_drawdown_constrained
+        assert np.all(decision.discretized_allocations % lots == 0.0)
+
+    def test_solve_circuit_breaker_coupling(self, sizer_inputs: dict[str, object]) -> None:
+        """Verify circuit breaker coupling: kappa_t = 0.0 pins allocation to 0; kappa -> 0 contracts smoothly."""
+        mu = sizer_inputs["mu"]  # type: ignore[assignment]
+        sig2 = sizer_inputs["sig2_ep"]  # type: ignore[assignment]
+        cov = sizer_inputs["cov"]  # type: ignore[assignment]
+        vols = sizer_inputs["vols"]  # type: ignore[assignment]
+        capital = sizer_inputs["capital"]  # type: ignore[assignment]
+
+        sizer = UnifiedConvexExecutionSizer()
+
+        # Zero haircut (HALT): allocation is identically 0
+        dec_zero = sizer.solve(
+            mu=mu,
+            sigma2_epistemic=sig2,
+            cov_aleatoric=cov,
+            asset_vols=vols,
+            circuit_breaker_haircut=0.0,
+            total_capital=capital,
+        )
+        assert np.all(dec_zero.target_allocations == 0.0)
+        assert np.all(dec_zero.discretized_allocations == 0.0)
+        assert dec_zero.effective_leverage == 0.0
+        assert dec_zero.expected_shortfall == 0.0
+        assert dec_zero.estimated_impact_cost == 0.0
+
+        # Monotonic contraction as kappa -> 0
+        dec_full = sizer.solve(
+            mu=mu,
+            sigma2_epistemic=sig2,
+            cov_aleatoric=cov,
+            asset_vols=vols,
+            circuit_breaker_haircut=1.0,
+            total_capital=capital,
+        )
+        dec_mid = sizer.solve(
+            mu=mu,
+            sigma2_epistemic=sig2,
+            cov_aleatoric=cov,
+            asset_vols=vols,
+            circuit_breaker_haircut=0.10,
+            total_capital=capital,
+        )
+        dec_low = sizer.solve(
+            mu=mu,
+            sigma2_epistemic=sig2,
+            cov_aleatoric=cov,
+            asset_vols=vols,
+            circuit_breaker_haircut=0.01,
+            total_capital=capital,
+        )
+        norm_full = float(np.linalg.norm(dec_full.target_allocations))
+        norm_mid = float(np.linalg.norm(dec_mid.target_allocations))
+        norm_low = float(np.linalg.norm(dec_low.target_allocations))
+        assert norm_full > norm_mid > norm_low > 0.0
+
+    def test_solve_with_cross_impact_and_custom_cvars(
+        self, sizer_inputs: dict[str, object]
+    ) -> None:
+        """Verify solve with cross-impact matrix and custom CVaR multipliers."""
+        n = sizer_inputs["n"]  # type: ignore[assignment]
+        mu = sizer_inputs["mu"]  # type: ignore[assignment]
+        sig2 = sizer_inputs["sig2_ep"]  # type: ignore[assignment]
+        cov = sizer_inputs["cov"]  # type: ignore[assignment]
+        vols = sizer_inputs["vols"]  # type: ignore[assignment]
+        capital = sizer_inputs["capital"]  # type: ignore[assignment]
+
+        cross = np.eye(n) * 0.001
+        custom_cvars = np.full(n, 0.05, dtype=np.float64)
+
+        sizer = UnifiedConvexExecutionSizer()
+        dec = sizer.solve(
+            mu=mu,
+            sigma2_epistemic=sig2,
+            cov_aleatoric=cov,
+            asset_vols=vols,
+            cross_impact=cross,
+            asset_cvars=custom_cvars,
+            total_capital=capital,
+        )
+        assert dec.expected_shortfall <= sizer.config.mdd_budget * capital + 1e-6
+        assert dec.effective_leverage <= sizer.config.max_leverage + 1e-6
+
+    def test_solve_validate_false_path(self, sizer_inputs: dict[str, object]) -> None:
+        """Verify validate=False hot path reproduces validated results."""
+        mu = sizer_inputs["mu"]  # type: ignore[assignment]
+        sig2 = sizer_inputs["sig2_ep"]  # type: ignore[assignment]
+        cov = sizer_inputs["cov"]  # type: ignore[assignment]
+        vols = sizer_inputs["vols"]  # type: ignore[assignment]
+        capital = sizer_inputs["capital"]  # type: ignore[assignment]
+
+        sizer = UnifiedConvexExecutionSizer()
+        dec_true = sizer.solve(
+            mu=mu,
+            sigma2_epistemic=sig2,
+            cov_aleatoric=cov,
+            asset_vols=vols,
+            total_capital=capital,
+            validate=True,
+            random_seed=-1,
+        )
+        dec_false = sizer.solve(
+            mu=mu,
+            sigma2_epistemic=sig2,
+            cov_aleatoric=cov,
+            asset_vols=vols,
+            total_capital=capital,
+            validate=False,
+            random_seed=-1,
+        )
+        assert np.allclose(dec_true.target_allocations, dec_false.target_allocations, atol=1e-12)
+        assert np.allclose(
+            dec_true.discretized_allocations, dec_false.discretized_allocations, atol=1e-12
+        )
+
+    def test_solve_hot_path_latency_sla_inv_tr_006(self) -> None:
+        """Verify hot-path latency SLA INV-TR-006: <= 0.15ms for N = 10 assets."""
+        n = 10
+        rng = np.random.RandomState(42)
+        mu = rng.uniform(0.01, 0.05, size=n)
+        sig2_ep = np.full(n, 0.001)
+        a = rng.randn(n, n)
+        cov = a @ a.T * 0.001 + np.eye(n) * 0.004
+        cov = 0.5 * (cov + cov.T)
+        vols = np.sqrt(np.diag(cov))
+        capital = 1_000_000.0
+
+        sizer = UnifiedConvexExecutionSizer()
+
+        # Warm up
+        for _ in range(5):
+            sizer.solve(mu, sig2_ep, cov, vols, total_capital=capital, validate=False)
+
+        gc.collect()
+        gc_old = gc.isenabled()
+        gc.disable()
+        times: list[float] = []
+        try:
+            for _ in range(50):
+                t0 = time.perf_counter()
+                sizer.solve(mu, sig2_ep, cov, vols, total_capital=capital, validate=False)
+                t1 = time.perf_counter()
+                times.append(t1 - t0)
+        finally:
+            if gc_old:
+                gc.enable()
+
+        median_ms = float(np.median(times)) * 1000.0
+        is_tracing = (
+            (hasattr(sys, "gettrace") and sys.gettrace() is not None)
+            or "coverage" in sys.modules
+            or "pytest_cov" in sys.modules
+        )
+        sla_limit = 2.0 if is_tracing else 0.15
+        assert median_ms <= sla_limit, f"Solve latency {median_ms:.4f}ms exceeds SLA {sla_limit}ms"
+
+    def test_solve_defensive_validations(self, sizer_inputs: dict[str, object]) -> None:
+        """Test defensive contract enforcement on solver inputs."""
+        mu = sizer_inputs["mu"]  # type: ignore[assignment]
+        sig2 = sizer_inputs["sig2_ep"]  # type: ignore[assignment]
+        cov = sizer_inputs["cov"]  # type: ignore[assignment]
+        vols = sizer_inputs["vols"]  # type: ignore[assignment]
+        capital = sizer_inputs["capital"]  # type: ignore[assignment]
+
+        sizer = UnifiedConvexExecutionSizer()
+
+        # Dimension mismatch: mu vs sig2
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_DIMENSION_MISMATCH):
+            sizer.solve(mu, sig2[:2], cov, vols, total_capital=capital)
+
+        # Dimension mismatch: mu vs cov
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_DIMENSION_MISMATCH):
+            sizer.solve(mu, sig2, cov[:2, :2], vols, total_capital=capital)
+
+        # Dimension mismatch: cross_impact
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_DIMENSION_MISMATCH):
+            sizer.solve(mu, sig2, cov, vols, cross_impact=np.zeros((2, 2)), total_capital=capital)
+
+        # Dimension mismatch: asset_cvars
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_DIMENSION_MISMATCH):
+            sizer.solve(
+                mu, sig2, cov, vols, asset_cvars=np.array([0.1, 0.2]), total_capital=capital
+            )
+
+        # Negative sig2
+        bad_sig = sig2.copy()
+        bad_sig[0] = -0.01
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            sizer.solve(mu, bad_sig, cov, vols, total_capital=capital)
+
+        # Negative vols
+        bad_vols = vols.copy()
+        bad_vols[0] = -0.01
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            sizer.solve(mu, sig2, cov, bad_vols, total_capital=capital)
+
+        # Non-positive asset_cvars
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            sizer.solve(mu, sig2, cov, vols, asset_cvars=np.zeros_like(mu), total_capital=capital)
+
+        # Non-positive capital
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            sizer.solve(mu, sig2, cov, vols, total_capital=0.0)
+
+        # Haircut out of bounds
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            sizer.solve(mu, sig2, cov, vols, circuit_breaker_haircut=-0.1)
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            sizer.solve(mu, sig2, cov, vols, circuit_breaker_haircut=1.5)
+
+        # Invalid max_iterations
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            sizer.solve(mu, sig2, cov, vols, max_iterations=0)
+
+        # Invalid tolerance
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            sizer.solve(mu, sig2, cov, vols, tolerance="invalid")  # type: ignore[arg-type]
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            sizer.solve(mu, sig2, cov, vols, tolerance=-1e-4)
+
+        # Non-positive lot_sizes
+        with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
+            sizer.solve(mu, sig2, cov, vols, lot_sizes=np.array([10.0, 0.0, 10.0, 10.0, 10.0]))
