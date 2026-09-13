@@ -24,6 +24,7 @@ from quant.analytics.simulation import (
     ERR_SIM_NON_FINITE_INPUT,
     ERR_SIM_STARVATION,
     BarExecutionRecord,
+    BenchmarkAuditor,
     BenchmarkAuditReport,
     BenchmarkComparison,
     DegenerateSimulationException,
@@ -1889,4 +1890,553 @@ class TestPortfolioLedger:
         min_latency = float(np.min(latencies_ms))
         assert min_latency <= threshold_ms, (
             f"INV-SIM-006 SLA breached: min ledger update took {min_latency:.5f}ms > {threshold_ms}ms"
+        )
+
+
+class TestBenchmarkAuditor:
+    """Test suite for BenchmarkAuditor institutional benchmarking & DSR certification engine."""
+
+    def _create_synthetic_records(
+        self,
+        n_bars: int,
+        initial_capital: float = 1_000_000.0,
+        returns: np.ndarray | None = None,
+        friction_per_bar: float = 10.0,
+        circuit_breaker_tier: str = "NORMAL",
+        leverage: float = 0.8,
+    ) -> list[BarExecutionRecord]:
+        """Helper to generate a sequence of valid BarExecutionRecord objects."""
+        if returns is None:
+            returns = np.full(n_bars, 0.001, dtype=np.float64)
+
+        records: list[BarExecutionRecord] = []
+        equity = initial_capital
+        hwm = initial_capital
+        for step in range(n_bars):
+            ret = float(returns[step])
+            gross_pnl = equity * ret
+            net_pnl = gross_pnl - friction_per_bar
+            equity += net_pnl
+            hwm = max(hwm, equity)
+            dd = max(0.0, min(1.0, (hwm - equity) / hwm))
+            rec = BarExecutionRecord(
+                step_index=step,
+                timestamp=1_700_000_000_000_000_000 + step * 60_000_000_000,
+                gross_pnl=gross_pnl,
+                net_pnl=net_pnl,
+                friction_cost=friction_per_bar,
+                portfolio_equity=equity,
+                cash_balance=equity * 0.2,
+                effective_leverage=leverage,
+                drawdown=dd,
+                circuit_breaker_tier=circuit_breaker_tier,
+                circuit_breaker_haircut=1.0,
+                target_allocations=(equity * 0.4, equity * 0.4),
+                discretized_allocations=(equity * 0.4, equity * 0.4),
+            )
+            records.append(rec)
+        return records
+
+    def test_constructor_valid(self) -> None:
+        """Verify valid constructor instantiation with default and custom DSR engines."""
+        cfg = SimulationConfig(initial_capital=500_000.0, confidence_level=0.99)
+        auditor = BenchmarkAuditor(config=cfg)
+        assert auditor.config == cfg
+        assert auditor._dsr_engine is not None
+
+        # Custom mock DSR engine
+        class DummyDSREngine:
+            def evaluate_strategy(self, *args: Any, **kwargs: Any) -> Any:
+                pass
+
+        dummy = DummyDSREngine()
+        auditor_custom = BenchmarkAuditor(config=cfg, dsr_engine=dummy)
+        assert auditor_custom._dsr_engine is dummy
+
+    @pytest.mark.parametrize("bad_cfg", [None, "config", 100_000.0, {"initial_capital": 100_000.0}])
+    def test_constructor_config_type_rejection(self, bad_cfg: object) -> None:
+        """Verify non-SimulationConfig raises ERR-SIM-002."""
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            BenchmarkAuditor(config=bad_cfg)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_constructor_invalid_dsr_engine_rejection(self) -> None:
+        """Verify dsr_engine without evaluate_strategy raises ERR-SIM-002."""
+        cfg = SimulationConfig()
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            BenchmarkAuditor(config=cfg, dsr_engine="not_an_engine")
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        class UncallableDSREngine:
+            evaluate_strategy = "not_callable"
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            BenchmarkAuditor(config=cfg, dsr_engine=UncallableDSREngine())
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_audit_sample_starvation_rejection_err_sim_005(self) -> None:
+        """Verify len(records) < 30 raises ERR-SIM-005 (INV-SIM-005)."""
+        cfg = SimulationConfig()
+        auditor = BenchmarkAuditor(config=cfg)
+
+        # 29 records < 30
+        records_29 = self._create_synthetic_records(n_bars=29)
+        asset_returns = np.zeros((29, 3), dtype=np.float64)
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(records=records_29, asset_returns=asset_returns)
+        assert exc_info.value.code == ERR_SIM_STARVATION
+
+        # Empty records
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(records=[], asset_returns=np.zeros((0, 3), dtype=np.float64))
+        assert exc_info.value.code == ERR_SIM_STARVATION
+
+    def test_audit_records_container_and_element_type_rejection(self) -> None:
+        """Verify records must be a list of BarExecutionRecord instances."""
+        cfg = SimulationConfig()
+        auditor = BenchmarkAuditor(config=cfg)
+        records = self._create_synthetic_records(n_bars=35)
+        asset_returns = np.zeros((35, 2), dtype=np.float64)
+
+        # Tuple instead of list
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(records=tuple(records), asset_returns=asset_returns)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Bad element inside records
+        corrupt_records = list(records)
+        corrupt_records[5] = "NotARecord"  # type: ignore[assignment]
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(records=corrupt_records, asset_returns=asset_returns)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_audit_dimension_mismatch_rejection_err_sim_006(self) -> None:
+        """Verify dimension mismatch between records and asset_returns raises ERR-SIM-006."""
+        cfg = SimulationConfig()
+        auditor = BenchmarkAuditor(config=cfg)
+        records_35 = self._create_synthetic_records(n_bars=35)
+
+        # Shape mismatch: 34 rows != 35 bars
+        returns_34 = np.zeros((34, 2), dtype=np.float64)
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(records=records_35, asset_returns=returns_34)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # 1D array instead of 2D
+        returns_1d = np.zeros(35, dtype=np.float64)
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(records=records_35, asset_returns=returns_1d)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # 3D array instead of 2D
+        returns_3d = np.zeros((35, 2, 1), dtype=np.float64)
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(records=records_35, asset_returns=returns_3d)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+    def test_audit_asset_returns_type_and_non_finite_rejection(self) -> None:
+        """Verify non-ndarray, boolean dtype, and NaN/Inf in asset_returns raise ERR-SIM-002."""
+        cfg = SimulationConfig()
+        auditor = BenchmarkAuditor(config=cfg)
+        records = self._create_synthetic_records(n_bars=35)
+
+        # List instead of ndarray
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(records=records, asset_returns=[[0.01, 0.02]] * 35)  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Boolean ndarray
+        bool_returns = np.ones((35, 2), dtype=bool)
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(records=records, asset_returns=bool_returns)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # NaN in asset returns
+        nan_returns = np.zeros((35, 2), dtype=np.float64)
+        nan_returns[10, 0] = float("nan")
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(records=records, asset_returns=nan_returns)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Inf in asset returns
+        inf_returns = np.zeros((35, 2), dtype=np.float64)
+        inf_returns[10, 0] = float("inf")
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(records=records, asset_returns=inf_returns)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_audit_benchmark_returns_validation(self) -> None:
+        """Verify custom benchmark_returns mapping validation and error handling."""
+        cfg = SimulationConfig()
+        auditor = BenchmarkAuditor(config=cfg)
+        records = self._create_synthetic_records(n_bars=35)
+        asset_returns = np.zeros((35, 2), dtype=np.float64)
+
+        # benchmark_returns not a dict
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(
+                records=records,
+                asset_returns=asset_returns,
+                benchmark_returns=[np.zeros(35)],  # type: ignore[arg-type]
+            )
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Empty string benchmark name
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(
+                records=records,
+                asset_returns=asset_returns,
+                benchmark_returns={"": np.zeros(35)},
+            )
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Non-ndarray benchmark value
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(
+                records=records,
+                asset_returns=asset_returns,
+                benchmark_returns={"SPY": list(np.zeros(35))},  # type: ignore[arg-type]
+            )
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Length mismatch in benchmark series
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(
+                records=records,
+                asset_returns=asset_returns,
+                benchmark_returns={"SPY": np.zeros(30)},
+            )
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # 2D benchmark series
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(
+                records=records,
+                asset_returns=asset_returns,
+                benchmark_returns={"SPY": np.zeros((35, 1))},
+            )
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # Non-finite value in benchmark series
+        nan_bench = np.zeros(35, dtype=np.float64)
+        nan_bench[5] = float("nan")
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(
+                records=records,
+                asset_returns=asset_returns,
+                benchmark_returns={"SPY": nan_bench},
+            )
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_audit_capital_ruin_in_records_err_sim_003(self) -> None:
+        """Verify non-positive equity in records raises ERR-SIM-003."""
+        cfg = SimulationConfig(initial_capital=100_000.0)
+        auditor = BenchmarkAuditor(config=cfg)
+        records = self._create_synthetic_records(n_bars=35, initial_capital=100_000.0)
+
+        # Corrupt one record with 0.0 equity
+        corrupt_records = list(records)
+        bad_rec = dataclasses.replace(corrupt_records[20], portfolio_equity=0.0)
+        corrupt_records[20] = bad_rec
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            auditor.audit(records=corrupt_records, asset_returns=np.zeros((35, 2)))
+        assert exc_info.value.code == ERR_SIM_CAPITAL_RUIN
+
+    def test_exact_mathematical_accuracy_hand_computed(self) -> None:
+        """Verify exact mathematical accuracy of Sharpe, Sortino, Calmar, VaR/CVaR, and Tail Ratio."""
+        w0 = 100_000.0
+        ann = 252
+        rf = 0.02
+        cfg = SimulationConfig(
+            initial_capital=w0,
+            annualization_factor=ann,
+            risk_free_rate=rf,
+            confidence_level=0.95,
+            num_trials=1,
+        )
+        auditor = BenchmarkAuditor(config=cfg)
+
+        # Construct a 40-bar deterministic return pattern
+        n_bars = 40
+        # Deterministic fractional net returns:
+        # 30 positive returns (+0.01) and 10 negative returns (-0.02)
+        r_net = np.array([0.01] * 30 + [-0.02] * 10, dtype=np.float64)
+        equities = [w0]
+        for r in r_net:
+            equities.append(equities[-1] * (1.0 + r))
+
+        records: list[BarExecutionRecord] = []
+        hwm = w0
+        for step in range(n_bars):
+            eq = equities[step + 1]
+            hwm = max(hwm, eq)
+            dd = (hwm - eq) / hwm
+            tier = "CAUTION" if dd > 0.05 else "NORMAL"
+            rec = BarExecutionRecord(
+                step_index=step,
+                timestamp=1000 + step,
+                gross_pnl=equities[step] * r_net[step] + 5.0,
+                net_pnl=equities[step] * r_net[step],
+                friction_cost=5.0,
+                portfolio_equity=eq,
+                cash_balance=eq * 0.1,
+                effective_leverage=0.90,
+                drawdown=dd,
+                circuit_breaker_tier=tier,
+                circuit_breaker_haircut=1.0,
+                target_allocations=(eq * 0.9,),
+                discretized_allocations=(eq * 0.9,),
+            )
+            records.append(rec)
+
+        asset_returns = np.column_stack([r_net, r_net * 0.5])
+        report = auditor.audit(records=records, asset_returns=asset_returns)
+
+        # 1. Total Return
+        expected_w_t = equities[-1]
+        expected_total_return = (expected_w_t - w0) / w0
+        assert np.isclose(report.total_return, expected_total_return, atol=1e-10)
+
+        # 2. CAGR
+        expected_cagr = (expected_w_t / w0) ** (ann / n_bars) - 1.0
+        assert np.isclose(report.cagr, expected_cagr, atol=1e-10)
+
+        # 3. Annualized Volatility
+        expected_std = float(np.std(r_net, ddof=1))
+        expected_ann_vol = float(np.sqrt(ann) * expected_std)
+        assert np.isclose(report.annualized_volatility, expected_ann_vol, atol=1e-10)
+
+        # 4. Sharpe Ratio
+        rf_bar = rf / ann
+        expected_mean = float(np.mean(r_net))
+        expected_sharpe = float(np.sqrt(ann) * (expected_mean - rf_bar) / expected_std)
+        assert np.isclose(report.sharpe_ratio, expected_sharpe, atol=1e-10)
+
+        # 5. Sortino Ratio
+        downside_diff = np.minimum(0.0, r_net - rf_bar)
+        downside_dev = float(np.sqrt(np.mean(downside_diff**2)))
+        expected_sortino = float(np.sqrt(ann) * (expected_mean - rf_bar) / downside_dev)
+        assert np.isclose(report.sortino_ratio, expected_sortino, atol=1e-10)
+
+        # 6. Max Drawdown and Calmar Ratio
+        expected_mdd = float(max(rec.drawdown for rec in records))
+        expected_calmar = expected_cagr / expected_mdd
+        assert np.isclose(report.max_drawdown, expected_mdd, atol=1e-10)
+        assert np.isclose(report.calmar_ratio, expected_calmar, atol=1e-10)
+
+        # 7. Realized VaR & CVaR (in loss space, positive)
+        expected_q05 = float(np.quantile(r_net, 0.05))
+        expected_var_95 = -expected_q05
+        tail_95 = r_net[r_net <= expected_q05]
+        expected_cvar_95 = float(-np.mean(tail_95))
+        assert np.isclose(report.realized_var_95, expected_var_95, atol=1e-10)
+        assert np.isclose(report.realized_cvar_95, expected_cvar_95, atol=1e-10)
+        assert report.realized_cvar_95 >= report.realized_var_95
+
+        expected_q01 = float(np.quantile(r_net, 0.01))
+        expected_var_99 = -expected_q01
+        tail_99 = r_net[r_net <= expected_q01]
+        expected_cvar_99 = float(-np.mean(tail_99))
+        assert np.isclose(report.realized_var_99, expected_var_99, atol=1e-10)
+        assert np.isclose(report.realized_cvar_99, expected_cvar_99, atol=1e-10)
+        assert report.realized_cvar_99 >= report.realized_var_99
+
+        # 8. Tail Ratio
+        expected_q95 = float(np.quantile(r_net, 0.95))
+        expected_tail_ratio = expected_q95 / abs(expected_q05)
+        assert np.isclose(report.tail_ratio, expected_tail_ratio, atol=1e-10)
+
+        # 9. Friction, Leverage, and Circuit Breakers
+        assert report.total_friction_cost == 5.0 * n_bars
+        assert report.peak_leverage == 0.90
+        assert sum(report.circuit_breaker_counts.values()) == n_bars
+
+    def test_all_default_benchmarks_and_custom_benchmarks(self) -> None:
+        """Verify EqualWeight, RiskParity, InverseVolatility, Cash, and custom benchmarks."""
+        cfg = SimulationConfig(
+            initial_capital=100_000.0, annualization_factor=252, risk_free_rate=0.02
+        )
+        auditor = BenchmarkAuditor(config=cfg)
+
+        t_bars = 50
+        n_assets = 3
+        rng = np.random.default_rng(42)
+        asset_returns = rng.normal(loc=0.001, scale=0.015, size=(t_bars, n_assets))
+        records = self._create_synthetic_records(n_bars=t_bars, returns=asset_returns[:, 0])
+
+        custom_spy = rng.normal(loc=0.0008, scale=0.012, size=t_bars)
+        report = auditor.audit(
+            records=records,
+            asset_returns=asset_returns,
+            benchmark_returns={"SPY_Benchmark": custom_spy},
+        )
+
+        comparisons = report.benchmark_comparisons
+        # All 4 default benchmarks must be present
+        assert "EqualWeight" in comparisons
+        assert "RiskParity" in comparisons
+        assert "InverseVolatility" in comparisons
+        assert "Cash" in comparisons
+        # Custom benchmark must be present
+        assert "SPY_Benchmark" in comparisons
+
+        # Verify Cash properties
+        cash_comp = comparisons["Cash"]
+        assert cash_comp.beta == 0.0
+        assert np.isclose(cash_comp.annualized_volatility, 0.0, atol=1e-10)
+        assert cash_comp.max_drawdown == 0.0
+        assert np.isclose(cash_comp.annualized_return, 0.02, atol=1e-3)
+
+        # Verify OLS consistency: alpha + beta * mean(b - rf) == mean(strat - rf)
+        rf_bar = 0.02 / 252.0
+        equities = [100_000.0] + [r.portfolio_equity for r in records]
+        eq_arr = np.array(equities)
+        strat_r = (eq_arr[1:] - eq_arr[:-1]) / eq_arr[:-1]
+        y_mean = float(np.mean(strat_r - rf_bar))
+
+        for b_name, comp in comparisons.items():
+            assert comp.name == b_name
+            assert comp.annualized_volatility >= 0.0
+            assert 0.0 <= comp.max_drawdown <= 1.0
+            assert comp.tracking_error >= 0.0
+            if b_name != "Cash":
+                b_ret = (
+                    custom_spy
+                    if b_name == "SPY_Benchmark"
+                    else (np.mean(asset_returns, axis=1) if b_name == "EqualWeight" else None)
+                )
+                if b_ret is not None:
+                    x_mean = float(np.mean(b_ret - rf_bar))
+                    reconstructed_y_mean = (comp.alpha / 252.0) + comp.beta * x_mean
+                    assert np.isclose(y_mean, reconstructed_y_mean, atol=1e-10)
+
+    def test_dsr_and_min_btl_integration(self) -> None:
+        """Verify DSR statistical certification and sub-benchmark infinite min_backtest_length."""
+        cfg = SimulationConfig(
+            initial_capital=100_000.0, annualization_factor=252, confidence_level=0.95
+        )
+        auditor = BenchmarkAuditor(config=cfg)
+
+        # Sub-benchmark losing strategy (SR < 0.0)
+        losing_returns = np.full(50, -0.005, dtype=np.float64)
+        losing_records = self._create_synthetic_records(
+            n_bars=50,
+            initial_capital=cfg.initial_capital,
+            returns=losing_returns,
+        )
+        losing_assets = np.column_stack([losing_returns, losing_returns])
+
+        losing_report = auditor.audit(records=losing_records, asset_returns=losing_assets)
+        assert losing_report.sharpe_ratio < 0.0
+        assert losing_report.min_backtest_length == float("inf")
+        assert losing_report.is_statistically_significant is False
+
+        # Outstanding genuine strategy (SR ~ 3.0 over 252 bars)
+        rng = np.random.default_rng(123)
+        winning_returns = rng.normal(loc=0.002, scale=0.01, size=252)
+        winning_records = self._create_synthetic_records(
+            n_bars=252,
+            initial_capital=cfg.initial_capital,
+            returns=winning_returns,
+        )
+        winning_assets = np.column_stack([winning_returns, winning_returns])
+
+        winning_report = auditor.audit(records=winning_records, asset_returns=winning_assets)
+        assert winning_report.sharpe_ratio > 2.0
+        assert winning_report.deflated_sharpe_ratio >= 0.95
+        assert winning_report.min_backtest_length < 252.0
+        assert winning_report.is_statistically_significant is True
+
+    def test_zero_variance_flatline_and_edge_cases(self) -> None:
+        """Verify edge cases: flatline equity, single asset universe, empty universe."""
+        cfg = SimulationConfig(
+            initial_capital=100_000.0, annualization_factor=252, risk_free_rate=0.0
+        )
+        auditor = BenchmarkAuditor(config=cfg)
+
+        # 1. Zero-variance flatline (identical equity on every bar)
+        flat_records = self._create_synthetic_records(
+            n_bars=35,
+            initial_capital=cfg.initial_capital,
+            returns=np.zeros(35),
+            friction_per_bar=0.0,
+        )
+        flat_assets = np.zeros((35, 2), dtype=np.float64)
+        report_flat = auditor.audit(records=flat_records, asset_returns=flat_assets)
+        assert report_flat.annualized_volatility == 0.0
+        assert report_flat.sharpe_ratio == 0.0
+        assert report_flat.sortino_ratio == 0.0
+        assert report_flat.max_drawdown == 0.0
+        assert report_flat.calmar_ratio == 0.0
+        assert report_flat.tail_ratio == 0.0
+
+        # 2. Single asset universe (N=1)
+        single_asset = np.full((35, 1), 0.001, dtype=np.float64)
+        single_records = self._create_synthetic_records(
+            n_bars=35,
+            initial_capital=cfg.initial_capital,
+            returns=single_asset[:, 0],
+        )
+        report_single = auditor.audit(records=single_records, asset_returns=single_asset)
+        assert "EqualWeight" in report_single.benchmark_comparisons
+        assert "RiskParity" in report_single.benchmark_comparisons
+        assert "InverseVolatility" in report_single.benchmark_comparisons
+
+        # 3. Empty asset universe (N=0)
+        empty_asset = np.empty((35, 0), dtype=np.float64)
+        empty_records = self._create_synthetic_records(
+            n_bars=35,
+            initial_capital=cfg.initial_capital,
+            returns=np.zeros(35),
+        )
+        report_empty = auditor.audit(records=empty_records, asset_returns=empty_asset)
+        assert len(report_empty.benchmark_comparisons) == 4
+
+    def test_inv_sim_006_benchmark_auditor_latency_sla(self) -> None:
+        """Verify INV-SIM-006: Hot-path auditing 1000 bars executes in < 5.0ms."""
+        cfg = SimulationConfig(initial_capital=1_000_000.0, annualization_factor=252)
+        auditor = BenchmarkAuditor(config=cfg)
+
+        n_bars = 1000
+        n_assets = 10
+        rng = np.random.default_rng(42)
+        asset_returns = rng.normal(loc=0.0005, scale=0.01, size=(n_bars, n_assets))
+        records = self._create_synthetic_records(n_bars=n_bars, returns=asset_returns[:, 0])
+
+        # Warm-up run
+        auditor.audit(records=records, asset_returns=asset_returns)
+
+        gc_was_enabled = gc.isenabled()
+        gc.collect()
+        gc.disable()
+        old_trace = sys.gettrace()
+        num_runs = 10
+        latencies_ms: list[float] = []
+
+        try:
+            sys.settrace(None)
+            for _ in range(num_runs):
+                t0 = time.perf_counter()
+                auditor.audit(records=records, asset_returns=asset_returns)
+                t1 = time.perf_counter()
+                latencies_ms.append((t1 - t0) * 1000.0)
+        finally:
+            sys.settrace(old_trace)
+            if gc_was_enabled:
+                gc.enable()
+
+        is_traced = (
+            old_trace is not None
+            or "coverage" in sys.modules
+            or "pytest_cov" in sys.modules
+            or (
+                hasattr(sys, "monitoring")
+                and any(sys.monitoring.get_tool(i) is not None for i in range(6))
+            )
+        )
+        threshold_ms = 15.0 if is_traced else 5.0
+        min_latency = float(np.min(latencies_ms))
+        assert min_latency <= threshold_ms, (
+            f"INV-SIM-006 SLA breached: min auditor time was {min_latency:.3f}ms > {threshold_ms}ms"
         )

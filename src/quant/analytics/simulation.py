@@ -44,6 +44,8 @@ from typing import Any, Final, Protocol, runtime_checkable
 
 import numpy as np
 
+from quant.analytics.deflated_sharpe import DeflatedSharpeEngine, DSRConfig
+
 # ============================================================================
 # Diagnostic Fault Vector Constants (Rule 2: Zero-Execution Diagnostics)
 # ============================================================================
@@ -1444,3 +1446,459 @@ class PortfolioLedger:
         # Structural Relationship: Ingested by DeflatedSharpeEngine, VaR/CVaR estimators, and BenchmarkAuditor.
         # Defensive Invariant: Returns newly constructed 1D numpy array satisfying telescopic compounding.
         return np.array(self._net_returns, dtype=np.float64)
+
+
+# ============================================================================
+# Institutional Benchmark & Statistical Auditor (Rule 1 & Rule 4: Auditor Architecture)
+# ============================================================================
+
+
+class BenchmarkAuditor:
+    """Institutional performance auditor and statistical significance certification engine.
+
+    Evaluates simulated trading trajectories against institutional benchmarks and rigorous
+    statistical tests:
+        1. Compounded Annual Growth Rate (CAGR), Annualized Volatility, Sharpe, Sortino, Calmar.
+        2. Realized Empirical Value-at-Risk (VaR 95%, 99%) and Expected Shortfall (CVaR 95%, 99%).
+        3. Tail Ratio, Peak Gross Leverage, and Total Transaction Friction.
+        4. Deflated Sharpe Ratio (DSR) and Minimum Backtest Length (MinBTL) via DeflatedSharpeEngine.
+        5. Relative performance attribution (Jensen's Alpha, Beta, Tracking Error, Information Ratio)
+           against institutional baselines: Equal Weight, Risk Parity, Inverse Volatility, and Cash.
+
+    Invariants Enforced:
+        - INV-SIM-005 (Statistical Rigor & Sample Sufficiency): Requires T >= 30 bars; rejection
+          of NaN, Inf, and non-finite values in records, asset returns, and benchmark series.
+        - Non-negative volatility, tracking error, tail ratio, peak leverage, and friction cost.
+        - Drawdown bounded strictly in [0.0, 1.0].
+        - CVaR >= VaR everywhere in loss space.
+        - Deflated Sharpe Ratio bounded strictly in [0.0, 1.0].
+        - MinBTL >= 0.0 (or float('inf') when strategy underperforms hurdle).
+        - INV-SIM-006 (Execution Latency SLA): Vectorized closed-form evaluation; 1000 bars in < 5ms.
+    """
+
+    def __init__(
+        self,
+        config: SimulationConfig,
+        dsr_engine: Any | None = None,
+    ) -> None:
+        """Initialize the institutional benchmark and statistical significance auditor.
+
+        Args:
+            config: SimulationConfig containing capital, rates, confidence levels, and trial count.
+            dsr_engine: Optional DeflatedSharpeEngine instance or mock; instantiates default if None.
+
+        Raises:
+            DegenerateSimulationException: If config is not a SimulationConfig instance (ERR-SIM-002)
+                or if dsr_engine does not provide a callable evaluate_strategy method.
+        """
+        # Functional Purpose: Initialize institutional auditor with validated configuration and DSR certification engine.
+        # Explicit Dependency Tracking: SimulationConfig, DeflatedSharpeEngine, DSRConfig, DegenerateSimulationException, ERR_SIM_NON_FINITE_INPUT.
+        # Structural Relationship: Instantiated by ReplayEngine or standalone backtesting audit pipelines; emits BenchmarkAuditReport.
+        # Defensive Invariant: config must strictly be an instance of SimulationConfig; dsr_engine must provide evaluate_strategy.
+
+        # 1. Validate configuration entity type
+        if not isinstance(config, SimulationConfig):
+            raise DegenerateSimulationException(
+                f"BenchmarkAuditor config must be a SimulationConfig instance, got {type(config).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        self.config: SimulationConfig = config
+
+        # 2. Configure Deflated Sharpe Ratio engine (Phase 2 Step 6 integration)
+        if dsr_engine is not None:
+            if not hasattr(dsr_engine, "evaluate_strategy") or not callable(
+                dsr_engine.evaluate_strategy
+            ):
+                raise DegenerateSimulationException(
+                    f"dsr_engine must provide a callable evaluate_strategy method, got {type(dsr_engine).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            self._dsr_engine: Any = dsr_engine
+        else:
+            dsr_cfg = DSRConfig(
+                significance_level=config.confidence_level,
+                benchmark_sharpe=0.0,
+                annualization_factor=float(config.annualization_factor),
+                min_sample_length=10,
+            )
+            self._dsr_engine = DeflatedSharpeEngine(config=dsr_cfg)
+
+    def audit(
+        self,
+        records: list[BarExecutionRecord],
+        asset_returns: np.ndarray,
+        benchmark_returns: dict[str, np.ndarray] | None = None,
+    ) -> BenchmarkAuditReport:
+        """Perform comprehensive institutional performance, risk, DSR, and benchmark audit.
+
+        Args:
+            records: Chronological list of BarExecutionRecord objects from simulation replay (T >= 30).
+            asset_returns: 2D numpy array of shape (T, N) containing contemporaneous asset returns.
+            benchmark_returns: Optional mapping of custom benchmark names to 1D return series of shape (T,).
+
+        Returns:
+            Frozen, immutable BenchmarkAuditReport containing institutional metrics and attributions.
+
+        Raises:
+            DegenerateSimulationException: On starvation (T < 30, ERR-SIM-005), dimension mismatch
+                (shape[0] != T or ndim != 2, ERR-SIM-006), capital ruin (ERR-SIM-003), or non-finite
+                inputs / NaN poisoning (ERR-SIM-002).
+        """
+        # Functional Purpose: Execute end-to-end post-simulation institutional tear sheet auditing, DSR certification, and multi-benchmark relative attribution.
+        # Explicit Dependency Tracking: DeflatedSharpeEngine, BenchmarkAuditReport, BenchmarkComparison, numpy statistics, math.isfinite.
+        # Structural Relationship: Primary reporting interface of the simulation module; consumed by executive tear sheets and strategy fitness selectors.
+        # Defensive Invariant: INV-SIM-005 sample sufficiency T >= 30; non-finite rejection; CVaR >= VaR; valid DSR in [0.0, 1.0]; non-negative friction.
+
+        # 1. Validate records container type and sample sufficiency (INV-SIM-005)
+        if not isinstance(records, list):
+            raise DegenerateSimulationException(
+                f"records must be a list of BarExecutionRecord, got {type(records).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        t_len = len(records)
+        if t_len < 30:
+            raise DegenerateSimulationException(
+                f"Simulation record starvation: {t_len} bars < 30 required (INV-SIM-005)",
+                code=ERR_SIM_STARVATION,
+            )
+
+        for idx, rec in enumerate(records):
+            if not isinstance(rec, BarExecutionRecord):
+                raise DegenerateSimulationException(
+                    f"records[{idx}] must be a BarExecutionRecord instance, got {type(rec).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+
+        # 2. Validate asset_returns array type, numeric dtype, and dimensions
+        if not isinstance(asset_returns, np.ndarray):
+            raise DegenerateSimulationException(
+                f"asset_returns must be a numpy ndarray, got {type(asset_returns).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not (
+            np.issubdtype(asset_returns.dtype, np.number)
+            and not np.issubdtype(asset_returns.dtype, np.bool_)
+        ):
+            raise DegenerateSimulationException(
+                f"asset_returns must have numeric dtype, got {asset_returns.dtype}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if asset_returns.ndim != 2:
+            raise DegenerateSimulationException(
+                f"asset_returns must be 2-dimensional (T, N), got ndim={asset_returns.ndim}",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+        if asset_returns.shape[0] != t_len:
+            raise DegenerateSimulationException(
+                f"Dimension mismatch: asset_returns length ({asset_returns.shape[0]}) != records length ({t_len})",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+        if not np.isfinite(asset_returns).all():
+            raise DegenerateSimulationException(
+                "asset_returns contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        # 3. Validate custom benchmark returns mapping if provided
+        if benchmark_returns is not None:
+            if not isinstance(benchmark_returns, dict):
+                raise DegenerateSimulationException(
+                    f"benchmark_returns must be a dict if provided, got {type(benchmark_returns).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            for b_name, b_ret in benchmark_returns.items():
+                if not isinstance(b_name, str) or len(b_name.strip()) == 0:
+                    raise DegenerateSimulationException(
+                        f"benchmark_returns key must be a non-empty string, got {b_name!r}",
+                        code=ERR_SIM_NON_FINITE_INPUT,
+                    )
+                if not isinstance(b_ret, np.ndarray):
+                    raise DegenerateSimulationException(
+                        f"benchmark_returns[{b_name}] must be a numpy ndarray, got {type(b_ret).__name__}",
+                        code=ERR_SIM_NON_FINITE_INPUT,
+                    )
+                if not (
+                    np.issubdtype(b_ret.dtype, np.number)
+                    and not np.issubdtype(b_ret.dtype, np.bool_)
+                ):
+                    raise DegenerateSimulationException(
+                        f"benchmark_returns[{b_name}] must have numeric dtype, got {b_ret.dtype}",
+                        code=ERR_SIM_NON_FINITE_INPUT,
+                    )
+                if b_ret.ndim != 1:
+                    raise DegenerateSimulationException(
+                        f"benchmark_returns[{b_name}] must be 1-dimensional, got ndim={b_ret.ndim}",
+                        code=ERR_SIM_DIMENSION_MISMATCH,
+                    )
+                if b_ret.shape[0] != t_len:
+                    raise DegenerateSimulationException(
+                        f"Dimension mismatch: benchmark_returns[{b_name}] length ({b_ret.shape[0]}) != records length ({t_len})",
+                        code=ERR_SIM_DIMENSION_MISMATCH,
+                    )
+                if not np.isfinite(b_ret).all():
+                    raise DegenerateSimulationException(
+                        f"benchmark_returns[{b_name}] contains non-finite values (NaN or Inf)",
+                        code=ERR_SIM_NON_FINITE_INPUT,
+                    )
+
+        # 4. Extract portfolio equity curve and compute discrete net return series
+        w_0 = float(self.config.initial_capital)
+        equities = np.empty(t_len + 1, dtype=np.float64)
+        equities[0] = w_0
+        for i, rec in enumerate(records):
+            equities[i + 1] = rec.portfolio_equity
+
+        if not np.isfinite(equities).all():
+            raise DegenerateSimulationException(
+                "Simulation record equity curve contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        # Capital ruin tripwire
+        if (equities <= 0.0).any():
+            raise DegenerateSimulationException(
+                "Simulation records contain non-positive portfolio equity (capital ruin)",
+                code=ERR_SIM_CAPITAL_RUIN,
+            )
+
+        # Causal fractional net returns r_t^{net} = (W_t - W_{t-1}) / W_{t-1}
+        r_net = (equities[1:] - equities[:-1]) / equities[:-1]
+        if not np.isfinite(r_net).all():
+            raise DegenerateSimulationException(
+                "Computed net return series contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        # 5. Compute institutional growth, volatility, and risk-adjusted return ratios
+        w_t = float(equities[-1])
+        total_return = float((w_t - w_0) / w_0)
+        ann_factor = float(self.config.annualization_factor)
+        t_float = float(t_len)
+        rf_rate = float(self.config.risk_free_rate)
+        rf_bar = rf_rate / ann_factor
+
+        # CAGR calculation (guarded against negative or zero final wealth)
+        cagr = -1.0 if w_t <= 0.0 else float((w_t / w_0) ** (ann_factor / t_float) - 1.0)
+
+        # Sample moments with ddof=1
+        mean_r = float(np.mean(r_net))
+        std_r = float(np.std(r_net, ddof=1))
+        annualized_vol = max(0.0, float(np.sqrt(ann_factor) * std_r)) if std_r >= 1e-12 else 0.0
+
+        # Sharpe Ratio
+        if std_r < 1e-12:
+            sharpe_ratio = 0.0
+        else:
+            sharpe_ratio = float(np.sqrt(ann_factor) * (mean_r - rf_bar) / std_r)
+
+        # Sortino Ratio (downside semi-deviation below risk-free benchmark)
+        downside_diff = np.minimum(0.0, r_net - rf_bar)
+        downside_variance = float(np.mean(downside_diff**2))
+        downside_dev = float(np.sqrt(downside_variance))
+        if downside_dev < 1e-12:
+            sortino_ratio = 0.0
+        else:
+            sortino_ratio = float(np.sqrt(ann_factor) * (mean_r - rf_bar) / downside_dev)
+
+        # Maximum Drawdown and Calmar Ratio
+        max_drawdown = float(max(rec.drawdown for rec in records))
+        max_drawdown = min(1.0, max(0.0, max_drawdown))
+        calmar_ratio = 0.0 if max_drawdown < 1e-12 else float(cagr / max_drawdown)
+
+        # 6. Realized Empirical Tail Risk (VaR & CVaR in loss space, Tail Ratio)
+        q01, q05, q95 = (float(v) for v in np.quantile(r_net, [0.01, 0.05, 0.95]))
+        realized_var_95 = float(-q05)
+        tail_losses_95 = r_net[r_net <= q05]
+        mean_loss_95 = (
+            float(-np.mean(tail_losses_95)) if len(tail_losses_95) > 0 else realized_var_95
+        )
+        realized_cvar_95 = float(max(realized_var_95, mean_loss_95))
+
+        realized_var_99 = float(-q01)
+        tail_losses_99 = r_net[r_net <= q01]
+        mean_loss_99 = (
+            float(-np.mean(tail_losses_99)) if len(tail_losses_99) > 0 else realized_var_99
+        )
+        realized_cvar_99 = float(max(realized_var_99, mean_loss_99))
+
+        denom_tail = abs(q05)
+        tail_ratio = float(max(0.0, q95 / denom_tail)) if denom_tail >= 1e-12 else 0.0
+
+        # Peak leverage, friction cost, and circuit breaker operational counts
+        peak_leverage = float(max(rec.effective_leverage for rec in records))
+        total_friction_cost = float(sum(rec.friction_cost for rec in records))
+
+        circuit_breaker_counts: dict[str, int] = {}
+        for rec in records:
+            circuit_breaker_counts[rec.circuit_breaker_tier] = (
+                circuit_breaker_counts.get(rec.circuit_breaker_tier, 0) + 1
+            )
+
+        # 7. Statistical Significance Certification via Deflated Sharpe Ratio
+        dsr_result = self._dsr_engine.evaluate_strategy(
+            returns=r_net,
+            n_trials=self.config.num_trials,
+        )
+        deflated_sharpe = float(dsr_result.deflated_sharpe_ratio)
+        min_btl = float(dsr_result.min_backtest_length)
+        is_statistically_significant = bool(
+            deflated_sharpe >= self.config.confidence_level and t_len >= min_btl
+        )
+
+        # 8. Institutional Baseline Benchmarks Construction
+        n_assets = asset_returns.shape[1]
+
+        # 8.1 Equal Weight (EW): r_t^{EW} = (1/N) sum r_{i, t}
+        if n_assets > 0:
+            r_ew = np.asarray(np.mean(asset_returns, axis=1), dtype=np.float64)
+        else:
+            r_ew = np.zeros(t_len, dtype=np.float64)
+
+        # 8.2 Risk Parity (RP): weights inversely proportional to trailing volatility (vectorized)
+        if n_assets > 0:
+            r_rp = np.empty(t_len, dtype=np.float64)
+            r_rp[0] = float(np.mean(asset_returns[0]))
+            if t_len > 1:
+                r_rp[1] = float(np.mean(asset_returns[1]))
+            if t_len > 2:
+                window = 20
+                u = asset_returns - np.mean(asset_returns, axis=0, keepdims=True)
+                cumsum_u = np.vstack(
+                    [np.zeros((1, n_assets), dtype=np.float64), np.cumsum(u, axis=0)]
+                )
+                cumsum_u2 = np.vstack(
+                    [np.zeros((1, n_assets), dtype=np.float64), np.cumsum(u**2, axis=0)]
+                )
+                t_idx = np.arange(2, t_len, dtype=np.int64)
+                s_idx = np.maximum(0, t_idx - window)
+                k_vec = (t_idx - s_idx)[:, np.newaxis]
+                sum_u = cumsum_u[t_idx] - cumsum_u[s_idx]
+                sum_u2 = cumsum_u2[t_idx] - cumsum_u2[s_idx]
+                var_t = np.maximum(0.0, (sum_u2 - (sum_u**2) / k_vec) / (k_vec - 1.0))
+                vols_t = np.sqrt(np.maximum(var_t, 1e-24))
+                vols_t = np.where(vols_t < 1e-12, 1e-12, vols_t)
+                inv_vols_t = 1.0 / vols_t
+                tot_inv = np.sum(inv_vols_t, axis=1, keepdims=True)
+                w_rp = np.where(tot_inv > 0.0, inv_vols_t / tot_inv, 1.0 / float(n_assets))
+                r_rp[2:] = np.sum(w_rp * asset_returns[2:], axis=1)
+        else:
+            r_rp = np.zeros(t_len, dtype=np.float64)
+
+        # 8.3 Inverse Volatility: weights inversely proportional to sigma_i^2
+        if n_assets > 0:
+            sample_vars = np.var(asset_returns, axis=0, ddof=1)
+            sample_vars = np.where(sample_vars < 1e-12, 1e-12, sample_vars)
+            inv_vars = 1.0 / sample_vars
+            tot_inv_var = float(np.sum(inv_vars))
+            w_inv_vol = (
+                inv_vars / tot_inv_var
+                if tot_inv_var > 0.0
+                else np.full(n_assets, 1.0 / float(n_assets), dtype=np.float64)
+            )
+            r_inv_vol = np.asarray(asset_returns @ w_inv_vol, dtype=np.float64)
+        else:
+            r_inv_vol = np.zeros(t_len, dtype=np.float64)
+
+        # 8.4 Cash: r_t^{Cash} = r_f / A
+        r_cash = np.full(t_len, rf_bar, dtype=np.float64)
+
+        # Merge standard benchmarks and optional caller benchmarks
+        all_benchmarks: dict[str, np.ndarray] = {
+            "EqualWeight": r_ew,
+            "RiskParity": r_rp,
+            "InverseVolatility": r_inv_vol,
+            "Cash": r_cash,
+        }
+        if benchmark_returns is not None:
+            for b_name, b_series in benchmark_returns.items():
+                all_benchmarks[b_name] = b_series
+
+        # 9. Compute comparative attribution metrics against each benchmark
+        comparisons: dict[str, BenchmarkComparison] = {}
+        for b_name, b_ret in all_benchmarks.items():
+            b_total_return = float(np.prod(1.0 + b_ret) - 1.0)
+            b_cagr = (
+                -1.0
+                if 1.0 + b_total_return <= 0.0
+                else float((1.0 + b_total_return) ** (ann_factor / t_float) - 1.0)
+            )
+
+            b_std = float(np.std(b_ret, ddof=1))
+            b_vol = max(0.0, float(np.sqrt(ann_factor) * b_std)) if b_std >= 1e-12 else 0.0
+            b_mean = float(np.mean(b_ret))
+            if b_std < 1e-12:
+                b_sharpe = 0.0
+            else:
+                b_sharpe = float(np.sqrt(ann_factor) * (b_mean - rf_bar) / b_std)
+
+            # Benchmark peak-to-trough drawdown
+            b_wealth = np.cumprod(np.insert(1.0 + b_ret, 0, 1.0))
+            b_hwm = np.maximum.accumulate(b_wealth)
+            b_dd = (b_hwm - b_wealth) / np.maximum(b_hwm, 1e-12)
+            b_mdd = min(1.0, max(0.0, float(np.max(b_dd))))
+
+            # OLS Alpha and Beta regression: r_net - rf_bar = alpha_daily + beta * (b_ret - rf_bar)
+            y = r_net - rf_bar
+            x = b_ret - rf_bar
+            x_bar = float(np.mean(x))
+            y_bar = float(np.mean(y))
+            dx = x - x_bar
+            dy = y - y_bar
+            var_x = float(np.dot(dx, dx) / (t_float - 1.0))
+            if var_x < 1e-12:
+                beta = 0.0
+                alpha_daily = y_bar
+            else:
+                cov_xy = float(np.dot(dx, dy) / (t_float - 1.0))
+                beta = float(cov_xy / var_x)
+                alpha_daily = float(y_bar - beta * x_bar)
+            alpha = float(alpha_daily * ann_factor)
+
+            # Tracking Error and Information Ratio
+            diff = r_net - b_ret
+            std_diff = float(np.std(diff, ddof=1))
+            te = max(0.0, float(np.sqrt(ann_factor) * std_diff)) if std_diff >= 1e-12 else 0.0
+            if te < 1e-12 or std_diff < 1e-12:
+                ir = 0.0
+            else:
+                ir = float(np.sqrt(ann_factor) * float(np.mean(diff)) / std_diff)
+
+            comparisons[b_name] = BenchmarkComparison(
+                name=b_name,
+                total_return=b_total_return,
+                annualized_return=b_cagr,
+                annualized_volatility=b_vol,
+                sharpe_ratio=b_sharpe,
+                max_drawdown=b_mdd,
+                alpha=alpha,
+                beta=beta,
+                tracking_error=te,
+                information_ratio=ir,
+            )
+
+        # 10. Construct and return frozen BenchmarkAuditReport
+        return BenchmarkAuditReport(
+            initial_capital=w_0,
+            final_equity=w_t,
+            total_return=total_return,
+            cagr=cagr,
+            annualized_volatility=annualized_vol,
+            sharpe_ratio=sharpe_ratio,
+            sortino_ratio=sortino_ratio,
+            calmar_ratio=calmar_ratio,
+            max_drawdown=max_drawdown,
+            realized_var_95=realized_var_95,
+            realized_cvar_95=realized_cvar_95,
+            realized_var_99=realized_var_99,
+            realized_cvar_99=realized_cvar_99,
+            tail_ratio=tail_ratio,
+            peak_leverage=peak_leverage,
+            deflated_sharpe_ratio=deflated_sharpe,
+            min_backtest_length=min_btl,
+            is_statistically_significant=is_statistically_significant,
+            total_friction_cost=total_friction_cost,
+            circuit_breaker_counts=circuit_breaker_counts,
+            benchmark_comparisons=comparisons,
+        )
