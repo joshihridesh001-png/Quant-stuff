@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Final
 
 import numpy as np
@@ -201,10 +202,26 @@ class TailRiskConfig:
                 f"{ERR_TR_INFINITE_VARIANCE}: Estimated shape_xi={xi} >= 1.0 violates INV-TR-002. "
                 "Theoretical variance is infinite; emergency HALT required."
             )
-        return float(np.clip(xi, self.tail_index_lower_bound, self.tail_index_upper_bound))
+        if xi < self.tail_index_lower_bound:
+            return self.tail_index_lower_bound
+        if xi > self.tail_index_upper_bound:
+            return self.tail_index_upper_bound
+        return float(xi)
 
 
 _DEFAULT_TAIL_CONFIG: Final[TailRiskConfig] = TailRiskConfig()
+
+
+@lru_cache(maxsize=4096)
+def _get_pwm_weights(n_u: int) -> np.ndarray:
+    """Compute and cache normalized PWM weights vector for sample size n_u.
+
+    Mathematical Definition:
+        w_i = (N_u - i + 0.35) / N_u^2  for i = 1, ..., N_u
+    """
+    w = np.arange(n_u - 0.65, -0.65, -1.0, dtype=np.float64) / (n_u * n_u)
+    w.flags.writeable = False
+    return w
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,12 +424,13 @@ class ProbabilityWeightedMomentsEstimator:
 
         Raises:
             InvalidTailRiskInputException: If losses is not a 1D ndarray or threshold_k <= 0.
-            DegenerateTailRiskException: If losses is empty, non-finite, or threshold_k is non-finite.
+            DegenerateTailRiskException: If losses has n < 2 observations (ERR_TR_STARVATION),
+                contains non-finite elements, or threshold_k is non-finite.
         """
         # Functional Purpose: Evaluate dynamic threshold u_t = mu + k * sigma.
         # Explicit Dependency Tracking: losses, threshold_k.
         # Structural Relationship: Feeds extract_exceedances in EVT-POT pipeline.
-        # Defensive Invariant: Non-empty array, finite values, k > 0.
+        # Defensive Invariant: n >= 2 (ERR_TR_STARVATION), finite values, k > 0, ddof=1.
         if not isinstance(losses, np.ndarray):
             raise InvalidTailRiskInputException(
                 f"{ERR_TR_INVALID_CONFIG}: losses must be a numpy ndarray, got {type(losses).__name__}"
@@ -421,9 +439,12 @@ class ProbabilityWeightedMomentsEstimator:
             raise InvalidTailRiskInputException(
                 f"{ERR_TR_INVALID_CONFIG}: losses array must be 1-dimensional, got shape {losses.shape}"
             )
-        if losses.size == 0:
-            raise DegenerateTailRiskException(f"{ERR_TR_DEGENERATE}: losses array cannot be empty")
-        if not np.all(np.isfinite(losses)):
+        if losses.size < 2:
+            raise DegenerateTailRiskException(
+                f"{ERR_TR_STARVATION}: Minimum sample size n >= 2 required for dynamic threshold estimation, "
+                f"got {losses.size}"
+            )
+        if not np.isfinite(losses).all():
             raise DegenerateTailRiskException(
                 f"{ERR_TR_DEGENERATE}: losses contain non-finite elements (NaN or Inf)"
             )
@@ -440,7 +461,7 @@ class ProbabilityWeightedMomentsEstimator:
                 f"{ERR_TR_INVALID_CONFIG}: threshold_k must be strictly positive, got {threshold_k}"
             )
         mu = float(np.mean(losses))
-        sigma = float(np.std(losses))
+        sigma = float(np.std(losses, ddof=1))
         return float(mu + threshold_k * sigma)
 
     @staticmethod
@@ -567,27 +588,39 @@ class ProbabilityWeightedMomentsEstimator:
             if exceedances.dtype == np.float64
             else np.sort(np.asarray(exceedances, dtype=np.float64))
         )
-        min_val = float(y_sorted[0])
-        max_val = float(y_sorted[-1])
-        if not (math.isfinite(min_val) and math.isfinite(max_val)):
+        # Fast O(1) non-finite check: IEEE 754 sort places -inf at 0, +inf and NaN at -1
+        if not (math.isfinite(float(y_sorted[0])) and math.isfinite(float(y_sorted[-1]))):
             raise DegenerateTailRiskException(
                 f"{ERR_TR_DEGENERATE}: exceedances contain non-finite values"
             )
-        if min_val < 0.0:
+        if float(y_sorted[0]) < 0.0:
             raise DegenerateTailRiskException(
                 f"{ERR_TR_DEGENERATE}: exceedances must be non-negative"
             )
 
+        # INV-TR-002: Algebraic Hill tail index pre-filter on top k extreme exceedances
+        if n_u >= 3:
+            k = min(max(2, int(0.10 * n_u)), n_u - 1)
+            y_ref = float(y_sorted[n_u - k - 1])
+            if y_ref > 0.0:
+                top_k = y_sorted[-k:]
+                xi_hill = float(np.log(top_k).sum()) / k - math.log(y_ref)
+                if xi_hill >= 1.0:
+                    raise InfiniteVarianceException(
+                        f"{ERR_TR_INFINITE_VARIANCE}: Hill tail index pre-filter xi_hill={xi_hill:.4f} >= 1.0 "
+                        "violates INV-TR-002. Theoretical variance is infinite; emergency HALT required."
+                    )
+
         # 2. Vectorized Probability Weighted Moments: M0 and M1
         # M0 = (1 / N_u) * sum(y_i)
         inv_n_u = 1.0 / n_u
-        m0 = float(np.sum(y_sorted)) * inv_n_u
+        m0 = float(y_sorted.sum()) * inv_n_u
 
         # i = 1, 2, ..., N_u
         # M1 = (1 / N_u) * sum((1 - (i - 0.35) / N_u) * y_{(i)})
-        # Unnormalized weights: w_i * N_u = N_u - i + 0.35
-        unnorm_w = np.arange(n_u - 0.65, -0.65, -1.0, dtype=np.float64)
-        m1 = float(np.dot(unnorm_w, y_sorted)) * (inv_n_u * inv_n_u)
+        # Pre-calculated and cached weights: w_i = (N_u - i + 0.35) / N_u^2
+        weights = _get_pwm_weights(n_u)
+        m1 = float(np.dot(weights, y_sorted))
 
         # 3. Closed-form algebraic estimators
         denom = m0 - 2.0 * m1
@@ -606,13 +639,14 @@ class ProbabilityWeightedMomentsEstimator:
                 beta = max(m0, 1e-8)
 
         # INV-TR-002: Infinite theoretical variance tripwire
-        if xi >= 1.0:
+        if xi >= cfg.tail_index_upper_bound:
             raise InfiniteVarianceException(
-                f"{ERR_TR_INFINITE_VARIANCE}: Estimated shape_xi={xi} >= 1.0 violates INV-TR-002. "
+                f"{ERR_TR_INFINITE_VARIANCE}: Estimated shape_xi={xi:.6f} >= "
+                f"tail_index_upper_bound={cfg.tail_index_upper_bound} violates INV-TR-002. "
                 "Theoretical variance is infinite; emergency HALT required."
             )
 
-        # Fréchet stability clamp
+        # Fréchet stability clamp (native Python scalar)
         xi = cfg.clamp_tail_index(xi)
         beta = max(beta, 1e-8)
 

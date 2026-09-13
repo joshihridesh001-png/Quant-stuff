@@ -8,7 +8,9 @@ Validates Invariants:
 
 from __future__ import annotations
 
+import gc
 import inspect
+import math
 import sys
 import time
 from dataclasses import FrozenInstanceError
@@ -566,10 +568,10 @@ class TestProbabilityWeightedMomentsEstimator:
     """Validate closed-form Probability Weighted Moments (PWM) parameter estimation and bounds."""
 
     def test_compute_dynamic_threshold_analytical(self) -> None:
-        """Verify dynamic threshold calculation against analytical mean + k * std."""
+        """Verify dynamic threshold calculation against analytical mean + k * sample_std (ddof=1)."""
         losses = np.array([0.01, 0.02, 0.03, 0.04, 0.05], dtype=np.float64)
         mu = float(np.mean(losses))
-        sigma = float(np.std(losses))
+        sigma = float(np.std(losses, ddof=1))
 
         # Default k = 1.645
         expected_u = mu + 1.645 * sigma
@@ -585,10 +587,14 @@ class TestProbabilityWeightedMomentsEstimator:
 
     def test_compute_dynamic_threshold_validation(self) -> None:
         """Verify defensive boundary checks on dynamic threshold computation."""
-        # Empty array
-        with pytest.raises(DegenerateTailRiskException):
+        # Insufficient observations check (n < 2 -> ERR-TR-005 starvation)
+        with pytest.raises(DegenerateTailRiskException, match="ERR-TR-005"):
             ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
                 np.array([], dtype=np.float64)
+            )
+        with pytest.raises(DegenerateTailRiskException, match="ERR-TR-005"):
+            ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
+                np.array([0.05], dtype=np.float64)
             )
 
         # Non-finite values
@@ -723,16 +729,41 @@ class TestProbabilityWeightedMomentsEstimator:
         assert params_tiny.scale_beta == 1e-8
 
     def test_pwm_infinite_variance_tripwire(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """INV-TR-002: Raise InfiniteVarianceException if xi >= 1.0."""
-        # Monkeypatch dot product so that M1 = 0.0, forcing xi = 2.0 - 1.0 = 1.0 >= 1.0
-        exceedances = np.array([0.01, 0.02, 0.03, 0.04, 0.05], dtype=np.float64)
-        monkeypatch.setattr(np, "dot", lambda *args, **kwargs: 0.0)
+        """INV-TR-002: Raise InfiniteVarianceException if xi >= 1.0 or xi >= tail_index_upper_bound."""
+        # 1. Real heavy-tailed Pareto shock (xi = 1.25 >= 1.0) via Hill pre-filter
+        np.random.seed(42)
+        u_rand = np.random.uniform(0.0, 1.0, size=500)
+        xi_heavy = 1.25
+        beta_heavy = 0.05
+        pareto_exceedances = (beta_heavy / xi_heavy) * ((1.0 - u_rand) ** (-xi_heavy) - 1.0)
+        with pytest.raises(InfiniteVarianceException, match="INV-TR-002"):
+            ProbabilityWeightedMomentsEstimator.fit(
+                exceedances=pareto_exceedances,
+                total_observations=1000,
+                threshold_u=0.02,
+            )
 
+        # 2. Real Lévy extreme market shock (alpha = 0.5 => xi = 2.0 >= 1.0) via Hill pre-filter
+        np.random.seed(42)
+        levy_exceedances = 1.0 / (np.random.standard_normal(500) ** 2)
+        with pytest.raises(InfiniteVarianceException, match="INV-TR-002"):
+            ProbabilityWeightedMomentsEstimator.fit(
+                exceedances=levy_exceedances,
+                total_observations=1000,
+                threshold_u=0.01,
+            )
+
+        # 3. PWM shape tripwire at tail_index_upper_bound
+        cfg_strict = TailRiskConfig(tail_index_upper_bound=0.30)
+        exceedances = np.array([0.01, 0.02, 0.03, 0.04, 0.05], dtype=np.float64)
+        # Monkeypatch dot product so that M1 = 0.0, forcing xi = 2.0 - 1.0 = 1.0 >= 0.30
+        monkeypatch.setattr(np, "dot", lambda *args, **kwargs: 0.0)
         with pytest.raises(InfiniteVarianceException, match="INV-TR-002"):
             ProbabilityWeightedMomentsEstimator.fit(
                 exceedances=exceedances,
                 total_observations=100,
                 threshold_u=0.01,
+                config=cfg_strict,
             )
 
     def test_pwm_zero_iterative_solvers(self) -> None:
@@ -759,10 +790,13 @@ class TestProbabilityWeightedMomentsEstimator:
                 threshold_u=threshold_u,
             )
 
-        # Timed benchmark without profiler/coverage tracing overhead (INV-TR-006)
+        # Timed benchmark without profiler/coverage tracing overhead or GC jitter (INV-TR-006)
         # Batched runs eliminate timer quantization error on Windows
         batch_size = 20
         num_batches = 10
+        gc.collect()
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
         old_trace = sys.gettrace()
         try:
             sys.settrace(None)
@@ -778,6 +812,8 @@ class TestProbabilityWeightedMomentsEstimator:
                 latencies.append(((time.perf_counter() - t0) / batch_size) * 1000.0)
         finally:
             sys.settrace(old_trace)
+            if gc_was_enabled:
+                gc.enable()
 
         median_latency = float(np.median(latencies))
         assert median_latency <= 0.02, f"Latency SLA violated: {median_latency:.4f}ms > 0.02ms"
@@ -873,4 +909,53 @@ class TestProbabilityWeightedMomentsEstimator:
                 confidence_level=0.99,
                 tail_parameters=params,
                 step_index=1,
+            )
+
+    def test_dynamic_threshold_sample_starvation_and_sample_std(self) -> None:
+        """Verify Task 2 remediation: n < 2 raises ERR_TR_STARVATION and sample std uses ddof=1."""
+        # 1. Starvation check on empty array
+        with pytest.raises(DegenerateTailRiskException, match="ERR-TR-005"):
+            ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
+                np.array([], dtype=np.float64)
+            )
+
+        # 2. Starvation check on n = 1 array
+        with pytest.raises(DegenerateTailRiskException, match="ERR-TR-005"):
+            ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
+                np.array([42.0], dtype=np.float64)
+            )
+
+        # 3. Verify sample std (ddof=1) distinction from population std (ddof=0)
+        # For [1.0, 3.0]: mean = 2.0, sample std (ddof=1) = sqrt(2) ~ 1.41421356
+        # population std (ddof=0) = 1.0
+        losses_two = np.array([1.0, 3.0], dtype=np.float64)
+        u_sample = ProbabilityWeightedMomentsEstimator.compute_dynamic_threshold(
+            losses_two, threshold_k=1.0
+        )
+        expected_sample_u = 2.0 + 1.0 * math.sqrt(2.0)
+        assert abs(u_sample - expected_sample_u) < 1e-12
+        # Verify it is strictly NOT equal to population std threshold (2.0 + 1.0 = 3.0)
+        assert abs(u_sample - 3.0) > 0.4
+
+    def test_hill_tail_index_pre_filter_mechanics(self) -> None:
+        """Verify Task 2 remediation: Hill pre-filter on top extreme exceedances."""
+        # Case 1: Exceedances with zero threshold reference statistic (y_{(N_u - k)} == 0)
+        # Guarantees no division by zero or NaN error; falls back gracefully to PWM
+        exceedances_with_zeros = np.array([0.0, 0.0, 0.0, 0.01, 0.02], dtype=np.float64)
+        params = ProbabilityWeightedMomentsEstimator.fit(
+            exceedances=exceedances_with_zeros,
+            total_observations=100,
+            threshold_u=0.01,
+        )
+        assert params.method == "EVT_PWM"
+
+        # Case 2: Extreme tail index from Pareto shock triggers INV-TR-002
+        np.random.seed(999)
+        u_rand = np.random.uniform(0.001, 0.999, size=300)
+        heavy_tail = (1.0 - u_rand) ** (-1.0 / 0.65) - 1.0
+        with pytest.raises(InfiniteVarianceException, match="INV-TR-002"):
+            ProbabilityWeightedMomentsEstimator.fit(
+                exceedances=heavy_tail,
+                total_observations=1000,
+                threshold_u=0.01,
             )
