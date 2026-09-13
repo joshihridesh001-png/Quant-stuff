@@ -51,3 +51,29 @@ Every pull request and commit must pass four automated verification gates:
 ### 3.2 Atomic Lifecycle Synchronization
 * **Zero Stale Documentation**: Any modification to code, dependencies, or configuration keys requires an atomic, simultaneous update to `PRD.md`, `Architecture.md`, `Phases.md`, `Design.md`, and `Memory.md`.
 * **Autonomous Decision Registration**: Every architectural choice, design pattern selection, and library addition made without explicit user direction must be immediately logged as an ADR in `Memory.md`.
+
+---
+
+## Rule 4: Mandatory Adversarial Red-Teaming & "Best of the Best" First-Principles Architecture
+
+No solution may be implemented simply because it is the "standard textbook" or common open-source consensus approach. Quantitative trading systems face an active, adversarial market. Every subsystem, algorithm, and mathematical formulation must be designed, audited, and verified under an uncompromising "best of the best" standard.
+
+### 4.1 Mandatory "Kill-the-Idea" Pre-Execution Stress-Testing
+Before writing or approving any design specification or implementation plan, agents must conduct a dedicated adversarial stress-test assuming hostile market conditions:
+* **The Adversarial Market Assumption**: Assume extreme fat tails ($\gamma_4 > 3$), jump-diffusion price shocks, sudden illiquidity, order book depletion, non-zero execution delay, and exchange lot-size discretization.
+* **First-Principles Scrutiny**: The plan must explain *why* the initial/textbook solution exists, expose its hidden structural failure modes, and formulate the mathematically superior alternative before any code is written.
+
+### 4.2 The "Superior Alternative" Subagent Review Mandate
+Subagents performing code or design reviews must NEVER act as passive syntax checkers or rubber-stamp reviewers. In every review report, the reviewer must explicitly answer:
+1. **Mathematical & Conceptual Rigor**: Does this implementation rely on fragile heuristics or unexamined assumptions?
+2. **Adversarial Failure Modes**: Under what extreme market regime, liquidity shock, or data feed corruption will this code fail?
+3. **Superior Alternatives**: Propose the "best of the best" theoretical and algorithmic alternative, even if the current implementation already passes all automated tests.
+
+### 4.3 Blacklist of Prohibited Naive Quantitative Shortcuts
+The following fragile heuristics and mathematical shortcuts are strictly prohibited in the production codebase:
+1. **No Raw Square-Root-of-Time ($\sqrt{H}$) Horizon Scaling in Fat-Tailed Regimes**: Brownian motion $\sqrt{H}$ variance scaling fails under Poisson jump-diffusions (where jump intensity scales linearly with $H$) and long-memory trending (where variance scales as $H^{2H_e}$). Multi-horizon risk must account for jump processes and fat-tailed stability.
+2. **No Raw Cornish-Fisher Polynomials Under High Kurtosis**: Cornish-Fisher expansions invert and become non-monotonic when excess kurtosis $\gamma_4 > 3$, paradoxically predicting lower risk at higher confidence levels. Heavy-tailed modeling must use Semi-Parametric Extreme Value Theory (EVT) Peaks-Over-Threshold (POT) with Generalized Pareto Distribution (GPD).
+3. **No Unconstrained or Heuristic Half-Kelly Bet Sizing**: Raw Kelly betting causes catastrophic drawdown cliffs under parameter estimation error ($\hat{p}, \hat{b}$). Fixed Half-Kelly ($\lambda = 0.50$) is an arbitrary scalar. Sizing must use convex risk-constrained optimization with dynamic parameter shrinkage against epistemic uncertainty ($\sigma^2_{\text{epistemic}}$) and non-linear market impact penalties ($\psi_{3/2}$).
+4. **No Iterative Numerical Solvers (MLE / Root-Finding) in the Synchronous Hot Path**: Using `scipy.optimize` or iterative Maximum Likelihood Estimation inside the per-bar execution loop violates the sub-$0.20\text{ms}$ SLA and introduces non-convergence crashes. Hot-path tail estimation must use algebraic, closed-form estimators (e.g., Probability Weighted Moments / L-moments).
+5. **No Value-at-Risk (VaR) as the Sole Capital Boundary**: VaR violates Artzner's subadditivity axiom ($\text{VaR}(A+B) > \text{VaR}(A) + \text{VaR}(B)$) and ignores loss severity beyond the threshold. Capital and drawdown constraints must enforce coherent, subadditive Expected Shortfall (CVaR).
+6. **No Closed-Loop Realized Return Feedback During Trading Halts**: Risk and volatility estimators must track unconditional market and constituent model returns—never realized halted portfolio returns—to prevent the "Zero-Variance Collapse" feedback loop.
