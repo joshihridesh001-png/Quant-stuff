@@ -1871,3 +1871,295 @@ class TestUnifiedConvexExecutionSizer:
         # Non-positive lot_sizes
         with pytest.raises(InvalidSizingInputException, match=ERR_SZ_INVALID_CONFIG):
             sizer.solve(mu, sig2, cov, vols, lot_sizes=np.array([10.0, 0.0, 10.0, 10.0, 10.0]))
+
+
+class TestMasterPipelineIntegration:
+    """Master pipeline integration tests coupling RD-DMA, Circuit Breakers, EVT Tail Risk, and Execution Sizer."""
+
+    def test_public_symbol_exports(self) -> None:
+        """Verify that all public tail risk and sizing symbols are properly exported in quant.analytics."""
+        import quant.analytics as qa
+
+        expected_symbols = [
+            "EVTTailParameters",
+            "TailRiskMetrics",
+            "TailRiskConfig",
+            "TailRiskError",
+            "DegenerateTailRiskException",
+            "InfiniteVarianceException",
+            "InvalidTailRiskInputException",
+            "ProbabilityWeightedMomentsEstimator",
+            "EVTTailRiskEngine",
+            "VALID_TAIL_METHODS",
+            "ERR_TR_ORDERING",
+            "ERR_TR_INFINITE_VARIANCE",
+            "ERR_TR_DEGENERATE",
+            "ERR_TR_INVALID_CONFIG",
+            "ERR_TR_STARVATION",
+            "ERR_TR_LATENCY",
+            "SizingConfig",
+            "SizingDecision",
+            "SizingError",
+            "DegenerateSizingException",
+            "InfeasibleSizingException",
+            "InvalidSizingInputException",
+            "UncertaintyShrunkKellyUtility",
+            "PseudoHuberImpactPenalty",
+            "CircuitBreakerRegularizer",
+            "UnifiedConvexObjective",
+            "UnifiedConvexExecutionSizer",
+            "project_two_l1_constraints",
+            "discretize_lot_allocations",
+            "evaluate_total_objective",
+            "gradient_total_objective",
+            "hessian_total_objective",
+            "ERR_SZ_INVALID_CONFIG",
+            "ERR_SZ_NON_FINITE",
+            "ERR_SZ_SINGULAR_COVARIANCE",
+            "ERR_SZ_INFEASIBLE",
+            "ERR_SZ_CONCAVITY_VIOLATED",
+            "ERR_SZ_DIMENSION_MISMATCH",
+        ]
+
+        for sym in expected_symbols:
+            assert hasattr(qa, sym), f"Symbol {sym} missing from quant.analytics"
+            assert sym in qa.__all__, f"Symbol {sym} missing from quant.analytics.__all__"
+
+    def test_closed_loop_50_bar_simulation(self) -> None:
+        """Verify full 50-bar rolling pipeline across normal, volatile, flash-crash, and recovery regimes."""
+        from quant.analytics.circuit_breakers import CircuitBreakerOverlayEngine
+        from quant.analytics.ensemble import EnsemblePrediction
+        from quant.analytics.tail_risk import EVTTailRiskEngine, TailRiskConfig
+
+        n_assets = 5
+        n_bars = 50
+        capital = 1_000_000.0
+        lot_sizes = np.array([100.0, 50.0, 200.0, 25.0, 10.0], dtype=np.float64)
+
+        tail_config = TailRiskConfig()
+        tail_engines = [EVTTailRiskEngine(config=tail_config) for _ in range(n_assets)]
+        portfolio_tail_engine = EVTTailRiskEngine(config=tail_config)
+
+        cb_engine = CircuitBreakerOverlayEngine()
+        cb_state = cb_engine.initialize_state()
+
+        sizer_config = SizingConfig(mdd_budget=0.15, max_leverage=2.0)
+        sizer = UnifiedConvexExecutionSizer(config=sizer_config)
+
+        rng = np.random.default_rng(42)
+
+        # Pre-seed history with 40 observations so EVT engine has initial data
+        for _ in range(40):
+            pre_losses = rng.normal(0.0, 0.01, size=n_assets)
+            for i in range(n_assets):
+                tail_engines[i].update(float(pre_losses[i]))
+            portfolio_tail_engine.update(float(np.mean(pre_losses)))
+
+        # Run 50 sequential bars
+        for bar in range(n_bars):
+            # 1. Simulate market regime dynamics
+            if bar < 15:
+                # Regime 1: Calm bull market
+                regime_vol = 0.010
+                base_returns = rng.normal(0.002, 0.005, size=n_assets)
+                epistemic_var = 0.0001
+                panic_prob = 0.05
+            elif bar < 25:
+                # Regime 2: Volatility transition & model disagreement
+                regime_vol = 0.025
+                base_returns = rng.normal(0.0005, 0.015, size=n_assets)
+                epistemic_var = 0.0008
+                panic_prob = 0.35
+            elif bar < 32:
+                # Regime 3: Flash crash shock & panic
+                regime_vol = 0.080
+                base_returns = rng.normal(-0.040, 0.040, size=n_assets)
+                epistemic_var = 0.0030
+                panic_prob = 0.90
+            else:
+                # Regime 4: Post-shock calming & stabilization
+                regime_vol = 0.015
+                base_returns = rng.normal(0.001, 0.008, size=n_assets)
+                epistemic_var = 0.0002
+                panic_prob = 0.10
+
+            asset_losses = -base_returns
+
+            # 2. Update Tail Risk Engines and extract asset CVaRs
+            asset_cvars = np.zeros(n_assets, dtype=np.float64)
+            for i in range(n_assets):
+                tail_engines[i].update(float(asset_losses[i]))
+                tail_m = tail_engines[i].get_rolling_risk_metrics(step_index=bar)
+                asset_cvars[i] = max(0.01, tail_m.cvar_alpha)
+            portfolio_tail_engine.update(float(np.mean(asset_losses)))
+            portfolio_tail_m = portfolio_tail_engine.get_rolling_risk_metrics(step_index=bar)
+            assert portfolio_tail_m.cvar_alpha >= portfolio_tail_m.var_alpha - 1e-10
+
+            # 3. Simulate Ensemble Prediction and Circuit Breaker
+            K = 10
+            model_weights = np.ones(K) / K
+            model_preds = rng.normal(float(np.mean(base_returns)), math.sqrt(epistemic_var), size=K)
+            point_pred = float(np.mean(model_preds))
+            regime_probs = np.array([1.0 - panic_prob - 0.05, 0.05, panic_prob], dtype=np.float64)
+            if regime_probs[0] < 0.0:
+                regime_probs = np.array([0.05, 0.05, 0.90], dtype=np.float64)
+
+            ensemble_pred = EnsemblePrediction(
+                point_prediction=point_pred,
+                aleatoric_variance=regime_vol**2,
+                epistemic_variance=epistemic_var,
+                total_variance=regime_vol**2 + epistemic_var,
+                model_weights=model_weights,
+                regime_probabilities=regime_probs,
+                effective_models=float(K),
+                volatility_forgetting_factor=0.95,
+                ambiguity_shrinkage_weight=0.1,
+            )
+
+            cb_decision, cb_state = cb_engine.evaluate_prediction(
+                prediction=ensemble_pred,
+                predictions=model_preds,
+                ambiguity_beta=1.5,
+                state=cb_state,
+            )
+            haircut = cb_decision.execution_haircut
+
+            # 4. Construct Sizing Inputs
+            mu = base_returns.copy()
+            sig2_ep = np.full(n_assets, epistemic_var, dtype=np.float64)
+            cov = np.diag(np.full(n_assets, regime_vol**2, dtype=np.float64))
+            vols = np.full(n_assets, regime_vol, dtype=np.float64)
+
+            # 5. Solve Unified Convex Sizing Problem
+            decision = sizer.solve(
+                mu=mu,
+                sigma2_epistemic=sig2_ep,
+                cov_aleatoric=cov,
+                asset_vols=vols,
+                circuit_breaker_haircut=haircut,
+                asset_cvars=asset_cvars,
+                total_capital=capital,
+                lot_sizes=lot_sizes,
+                random_seed=42 + bar,
+            )
+
+            # 6. Verify Critical Production Invariants (INV-TR-005)
+            gross_exposure = float(np.sum(np.abs(decision.target_allocations)))
+            assert gross_exposure <= sizer_config.max_leverage * capital + 1e-4
+
+            cvar_drawdown = float(np.dot(asset_cvars, np.abs(decision.target_allocations)))
+            assert cvar_drawdown <= sizer_config.mdd_budget * capital + 1e-4
+
+            # Verify lot discretization conformance
+            for i in range(n_assets):
+                ratio = decision.discretized_allocations[i] / lot_sizes[i]
+                assert abs(ratio - round(ratio)) < 1e-6
+
+            # Verify Circuit Breaker HALT enforcement
+            if haircut <= 0.0:
+                assert np.allclose(decision.target_allocations, 0.0)
+                assert np.allclose(decision.discretized_allocations, 0.0)
+                assert decision.effective_leverage == 0.0
+
+            # Verify finite outputs
+            assert math.isfinite(decision.effective_leverage)
+            assert math.isfinite(decision.expected_shortfall)
+            assert math.isfinite(decision.estimated_impact_cost)
+
+    def test_master_pipeline_latency_sla_inv_tr_006(self) -> None:
+        """Verify that the complete end-to-end pipeline cycle executes under 0.20ms for N=10 assets (INV-TR-006)."""
+        from quant.analytics.circuit_breakers import CircuitBreakerOverlayEngine
+        from quant.analytics.ensemble import EnsemblePrediction
+        from quant.analytics.tail_risk import EVTTailRiskEngine, TailRiskConfig
+
+        n_assets = 10
+        capital = 1_000_000.0
+
+        tail_config = TailRiskConfig()
+        tail_engine = EVTTailRiskEngine(config=tail_config)
+        for _ in range(50):
+            tail_engine.update(0.005)
+
+        cb_engine = CircuitBreakerOverlayEngine()
+        cb_state = cb_engine.initialize_state()
+
+        sizer = UnifiedConvexExecutionSizer()
+
+        K = 10
+        weights = np.ones(K) / K
+        raw_preds = np.full(K, 0.001)
+        ensemble_pred = EnsemblePrediction(
+            point_prediction=0.001,
+            aleatoric_variance=0.0004,
+            epistemic_variance=0.0001,
+            total_variance=0.0005,
+            model_weights=weights,
+            regime_probabilities=np.array([0.8, 0.15, 0.05]),
+            effective_models=10.0,
+            volatility_forgetting_factor=0.95,
+            ambiguity_shrinkage_weight=0.1,
+        )
+
+        mu = np.full(n_assets, 0.001)
+        sig2_ep = np.full(n_assets, 0.0001)
+        cov = np.eye(n_assets) * 0.0004
+        vols = np.full(n_assets, 0.02)
+        cvars = np.full(n_assets, 0.05)
+
+        # Warmup
+        for b in range(15):
+            tail_engine.update(0.002)
+            _ = tail_engine.get_rolling_risk_metrics(step_index=b)
+            cb_dec, cb_state = cb_engine.evaluate_prediction(
+                ensemble_pred, raw_preds, ambiguity_beta=1.5, state=cb_state
+            )
+            sizer.solve(
+                mu,
+                sig2_ep,
+                cov,
+                vols,
+                circuit_breaker_haircut=cb_dec.execution_haircut,
+                asset_cvars=cvars,
+                total_capital=capital,
+                validate=False,
+            )
+
+        gc.collect()
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+
+        times: list[float] = []
+        try:
+            for b in range(50):
+                t0 = time.perf_counter()
+                tail_engine.update(0.002)
+                _ = tail_engine.get_rolling_risk_metrics(step_index=b)
+                cb_dec, cb_state = cb_engine.evaluate_prediction(
+                    ensemble_pred, raw_preds, ambiguity_beta=1.5, state=cb_state
+                )
+                sizer.solve(
+                    mu,
+                    sig2_ep,
+                    cov,
+                    vols,
+                    circuit_breaker_haircut=cb_dec.execution_haircut,
+                    asset_cvars=cvars,
+                    total_capital=capital,
+                    validate=False,
+                )
+                t1 = time.perf_counter()
+                times.append(t1 - t0)
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+
+        median_ms = float(np.median(times)) * 1000.0
+        is_tracing = (
+            (hasattr(sys, "gettrace") and sys.gettrace() is not None)
+            or "coverage" in sys.modules
+            or "pytest_cov" in sys.modules
+        )
+        sla_limit = 2.5 if is_tracing else 0.20
+        assert median_ms <= sla_limit, (
+            f"Master pipeline latency {median_ms:.4f}ms exceeds SLA {sla_limit}ms"
+        )
