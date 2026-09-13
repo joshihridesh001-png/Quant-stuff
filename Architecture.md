@@ -112,6 +112,8 @@ To achieve institutional-grade throughput while preserving relational integrity,
 | `src/quant/analytics/evolutionary_lifecycle.py` | `GenerationalLifecycleEngine`, `AdaptiveVolatilityMutator`, `StagnationDetector`, `MutationConfig`, `GenerationalState` | Adaptive Cauchy volatility mutation with mirror reflection, Rechenberg APD progress adaptation, dual-space stagnation monitoring, and $(\mu + \lambda)$ closed-loop generational lifecycle. |
 | `src/quant/analytics/ensemble.py` | `RegimeConditionedDMAEngine`, `VolatilityAdaptiveForgetting`, `AsymmetricDownsideLossScorer`, `TikhonovCorrelationEstimator`, `OrthogonalityRegularizedSolver` | Regime-Conditioned Dynamic Model Averaging (RD-DMA) with volatility-adaptive forgetting, predictive forward-Markov regime transitions, asymmetric downside loss, Tikhonov correlation regularization, Entropic Mirror Descent on the simplex, thermodynamic ambiguity shrinkage, and total variance risk decomposition. |
 | `src/quant/analytics/circuit_breakers.py` | `CircuitBreakerOverlayEngine`, `EpistemicEntropyCalculator`, `ContinuousHaircutCalculator`, `CircuitBreakerConfig`, `CircuitBreakerDecision`, `CircuitBreakerState` | Epistemic disagreement entropy, directional consensus on 3-simplex, continuous logistic haircutting, 4-tier discrete risk state machine, and anti-chattering hysteresis overlays. |
+| `src/quant/analytics/tail_risk.py` | `EVTTailRiskEngine`, `ProbabilityWeightedMomentsEstimator`, `EVTTailParameters`, `TailRiskMetrics`, `TailRiskConfig` | Semi-Parametric Peaks-Over-Threshold Extreme Value Theory (EVT-POT) with closed-form Probability Weighted Moments (PWM), Fréchet tail stability ($\xi \in [0.001, 0.999]$), infinite variance tripwire ($\xi \ge 1.0$), coherent Expected Shortfall (CVaR), and 3-tier cold-start degradation ladder (Empirical $\to$ Student-t MoM $\to$ EVT-GPD). |
+| `src/quant/analytics/execution_sizing.py` | `UnifiedConvexExecutionSizer`, `UncertaintyShrunkKellyUtility`, `PseudoHuberImpactPenalty`, `CircuitBreakerRegularizer`, `UnifiedConvexObjective`, `SizingConfig`, `SizingDecision` | Unified convex execution sizing maximizing uncertainty-shrunk Kelly utility minus 3/2-power Pseudo-Huber nonlinear execution friction and circuit breaker regularizer ($\nabla^2 \mathcal{L} \prec 0$), fast $O(N \log N)$ exact dual projection onto gross leverage and hard CVaR drawdown budget, and microstructural randomized lot discretization ($\mathbb{E}[\tilde{\boldsymbol{\nu}}] = \boldsymbol{\nu}^*$). |
 | `src/quant/services/event_service.py` | `EventService` | Dual-decay temporal kernel evaluation and multimodal feature projection. |
 | `src/quant/services/genotype_service.py` | `GenotypeService` | Multi-objective fitness calculation, NSGA-II sorting, and crowding distance. |
 | `src/quant/api/v1/endpoints/market_data.py` | `router` (`/api/v1/market-data`) | High-throughput batch ingestion and historical range queries. |
@@ -409,3 +411,89 @@ stateDiagram-v2
    $$\text{execution\_haircut} = \begin{cases} 0.0 & \text{if } S_{t+1} \in \{\text{HALT}, \text{DERISK}\} \\ \min(0.50, \kappa_t) & \text{if } S_{t+1} = \text{CAUTION} \\ \kappa_t & \text{if } S_{t+1} = \text{NORMAL} \end{cases}$$
 7. **Upstream Integration & Benchmark Latency SLA**:
    `evaluate_prediction` directly consumes `EnsemblePrediction` from Phase 5 Step 1, auto-detects panic regime states, enforces non-finite input guards (`INV-CB-005`), and completes full evaluation in $\approx 0.04\text{ms} \le 0.20\text{ms}$ median for $K=100$ models (`INV-CB-006`).
+
+### 4.18 Extreme Tail Risk & Unified Convex Execution Sizing Calibration Pipeline
+
+```
++---------------------------------------------------------------------------------------------------+
+|               Phase 5 Step 3: Extreme Tail Risk & Unified Convex Execution Sizing                 |
++---------------------------------------------------------------------------------------------------+
+|                                                                                                   |
+|  Strictly Lagged Loss Innovations X_tau = -r_tau in [t-W, t-1] (INV-TR-007)                       |
+|                                     |                                                             |
+|                                     v                                                             |
+|                    +----------------------------------+                                           |
+|                    |     EVTTailRiskEngine (POT)      |                                           |
+|                    |  - Dynamic Threshold u_t         |                                           |
+|                    |  - Closed-form PWM Estimation    |                                           |
+|                    |  - Fréchet Stability [0.001,0.999]|                                          |
+|                    |  - Infinite Variance Tripwire    |                                           |
+|                    |  - Coherent CVaR >= VaR          |                                           |
+|                    |  - 3-Tier Cold-Start Ladder      |                                           |
+|                    +----------------------------------+                                           |
+|                                     |                                                             |
+|                Asset Expected Shortfalls c_i = CVaR_alpha(X_i)                                     |
+|                                     |                                                             |
+|  Point Returns mu_i, Aleatoric Covariance Sigma, Circuit Breaker Haircut kappa_t                  |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |        UnifiedConvexExecutionSizer         |                                      |
+|               |  - Directional Epistemic Shrinkage mu~     |                                      |
+|               |  - Uncertainty-Shrunk Kelly Utility        |                                      |
+|               |  - 3/2-Power Pseudo-Huber Impact + Lambda  |                                      |
+|               |  - Circuit Breaker Regularizer ||nu||^2/2kW|                                      |
+|               |  - Strict Global Concavity (INV-TR-004)    |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               | Exact Dual Projection Pi_K(y) (INV-TR-005) |                                      |
+|               |  - Gross Leverage: ||nu||_1 <= L_max * W   |                                      |
+|               |  - Hard CVaR Budget: c^T |nu| <= MDD * W   |                                      |
+|               |  - 2D Semismooth Newton + Dykstra Fallback |                                      |
+|               |  - Zero-Leakage Radial Clamping            |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                      Continuous Target Allocation nu*                                             |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |   Microstructural Lot Discretization       |                                      |
+|               |  - Bernoulli Lottery: B_i ~ Bern(frac)     |                                      |
+|               |  - Unbiased Expectation: E[nu~] = nu*      |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                                     v                                                             |
+|                         Immutable SizingDecision                                                  |
+|                   (target_allocations, discretized,                                               |
+|                    leverage, CVaR, impact_cost, constraints)                                      |
++---------------------------------------------------------------------------------------------------+
+```
+
+1. **Semi-Parametric Peaks-Over-Threshold (POT) Tail Risk Modeling**:
+   - Evaluates dynamic high threshold $u_t = \mu_{t-1} + k_{\text{threshold}} \sigma_{t-1}$ strictly causal on $[t-W, t-1]$ (`INV-TR-007`).
+   - Closed-form Probability Weighted Moments (PWM) parameter estimation eliminates black-box iterative root-finding in the hot path (Rule 4.3):
+     $$\hat{\xi}_{\text{PWM}} = 1 - \frac{M_0}{2(M_0 - 2M_1)}, \quad \hat{\beta}_{\text{PWM}} = \frac{2 M_0 M_1}{M_0 - 2M_1}$$
+   - Fréchet tail stability clamping $\xi \in [0.001, 0.999]$ and infinite variance tripwire $\xi \ge 1.0 \implies \text{InfiniteVarianceException}$ demanding emergency execution HALT (`INV-TR-002`), backed by an algebraic Hill index pre-filter on the top 10% extreme exceedances.
+   - Coherent Expected Shortfall (CVaR) closed form strictly bounding $\text{CVaR}_\alpha \ge \text{VaR}_\alpha$ (`INV-TR-001`) and satisfying Artzner subadditivity (`INV-TR-003`):
+     $$\text{CVaR}_\alpha = \frac{\text{VaR}_\alpha}{1 - \xi} + \frac{\beta - \xi u}{1 - \xi}$$
+   - Seamless 3-tier cold-start degradation ladder: Empirical ($N < 30$) $\to$ Student-t MoM with analytical log-gamma integral ($30 \le N < 250$) $\to$ EVT-GPD PWM ($N \ge 250$).
+2. **Unified Strictly Concave Sizing Formulation**:
+   - Maximizes strictly concave execution sizing objective:
+     $$\max_{\boldsymbol{\nu}} \mathcal{L}(\boldsymbol{\nu}) = U_{\text{Kelly}}(\boldsymbol{\nu}) - \mathcal{C}_{\text{Impact}}(\boldsymbol{\nu}) - \mathcal{R}_{\text{Epistemic}}(\boldsymbol{\nu})$$
+     guaranteeing negative-definite Hessian $\nabla^2 \mathcal{L} \prec 0$ everywhere (`INV-TR-004`).
+   - Directional epistemic shrinkage $\tilde{\mu}_i = \text{sign}(\mu_i) \max(0, |\mu_i| - \lambda_{\text{shrink}} \sigma^2_{\text{epistemic}, i})$, eliminating sign-flipping short squeeze traps.
+   - Universal 3/2-power Pseudo-Huber nonlinear execution friction and positive semi-definite permanent cross-impact tensor $\boldsymbol{\Lambda}_{\text{cross}}$ validated via eigenvalue non-negativity ($\ge -10^{-8}$).
+   - Circuit breaker regularizer $\frac{1}{2 \kappa_t W_t} \|\boldsymbol{\nu}\|_2^2$, smoothly crushing allocations toward $\mathbf{0}$ as continuous haircut $\kappa_t \to 0$.
+3. **Exact $O(N \log N)$ Dual Projection onto Two $L_1$ Balls (`INV-TR-005`)**:
+   - Enforces non-negotiable gross leverage ceiling $\|\boldsymbol{\nu}\|_1 \le L_{\max} W_t$ and weighted Expected Shortfall drawdown budget $\mathbf{c}^T |\boldsymbol{\nu}| \le \text{MDD}_{\text{budget}} W_t$.
+   - Solved via 2D Semismooth Newton active-set iteration initialized from $(0, 0)$ with provable Dykstra alternating projections fallback and terminal zero-leakage radial contraction.
+4. **Microstructural Randomized Lot Discretization**:
+   - Bridges continuous convex targets and discrete contract sizes via Bernoulli lottery:
+     $$\tilde{\nu}_i = \text{sign}(\nu_i^*) \cdot (\lfloor |\nu_i^*| / \Delta \nu_i \rfloor + B_i) \cdot \Delta \nu_i, \quad B_i \sim \text{Bernoulli}(\text{frac}_i)$$
+   - Mathematically guarantees unbiased expectation $\mathbb{E}[\tilde{\boldsymbol{\nu}}] = \boldsymbol{\nu}^*$, eliminating cumulative margin rounding bias.
+5. **Latency SLA & Output**:
+   - Solves full multi-asset sizing problem in $< 0.15\text{ms}$ median for $N=10$ assets (`INV-TR-006`).
+   - Emits frozen `SizingDecision` payload with active constraint binding flags directly into execution routing and order management.
+

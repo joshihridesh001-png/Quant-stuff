@@ -22,7 +22,8 @@ gantt
     section Phase 5: Productionization
     Step 1: Dynamic Model Averaging (RD-DMA) :done, s5_1, 2026-10-06, 3d
     Step 2: Circuit Breakers & Overlays     :done, s5_2, 2026-10-09, 2d
-    Risk Overlays & Live Simulator          :active, p5, 2026-10-11, 4d
+    Step 3: EVT Tail Risk & Execution Sizing :done, s5_3, 2026-10-11, 2d
+    Step 4: Live Replay Simulator           :active, s5_4, 2026-10-13, 2d
 ```
 
 ---
@@ -224,8 +225,25 @@ Decomposed into sequential micro-steps implementing the Institutional Dynamic Mo
   * Exported all 10 domain symbols in `src/quant/analytics/__init__.py`.
   * 121 comprehensive unit tests in `tests/unit/test_circuit_breakers.py` (514 total project tests passing) with **99% line coverage** on `circuit_breakers.py`, 100% strict typing compliance, and zero lint/format deviations.
 
+#### Step 3: Semi-Parametric EVT Tail Risk & Unified Convex Execution Sizing Calibration [COMPLETE]
+* **Deliverables:**
+  * Master engines `EVTTailRiskEngine` in `src/quant/analytics/tail_risk.py` and `UnifiedConvexExecutionSizer` in `src/quant/analytics/execution_sizing.py`.
+  * Closed-form algebraic Probability Weighted Moments (PWM) parameter estimation for Peaks-Over-Threshold GPD, completely eliminating iterative numerical root-finding in the execution hot path (Rule 4.3).
+  * Fréchet tail stability clamping $\xi \in [0.001, 0.999]$ & theoretical infinite variance tripwire $\xi \ge 1.0 \implies \text{InfiniteVarianceException}$ demanding emergency execution HALT (`INV-TR-002`), backed by an algebraic Hill index pre-filter on the top 10% extreme exceedances.
+  * Coherent Expected Shortfall (CVaR) closed form strictly bounding $\text{CVaR}_\alpha \ge \text{VaR}_\alpha$ (`INV-TR-001`) and satisfying Artzner subadditivity (`INV-TR-003`).
+  * 3-tier cold-start degradation ladder (Empirical $\to$ Student-t MoM with exact log-gamma integral $\to$ EVT-GPD PWM) with strictly lagged zero-lookahead causality on $[t-W, t-1]$ (`INV-TR-007`).
+  * Strictly concave execution sizing objective maximizing uncertainty-shrunk Kelly utility minus 3/2-power Pseudo-Huber nonlinear execution friction and circuit breaker regularizer ($\nabla^2 \mathcal{L} \prec 0$ everywhere, `INV-TR-004`).
+  * Directional epistemic shrinkage $\tilde{\mu}_i = \text{sign}(\mu_i) \max(0, |\mu_i| - \lambda_{\text{shrink}} \sigma^2_{\text{epistemic}, i})$, eliminating sign-flipping short squeeze traps.
+  * 3/2-power Pseudo-Huber nonlinear friction & positive semi-definite permanent cross-impact tensor $\boldsymbol{\Lambda}_{\text{cross}}$ validated via eigenvalue non-negativity ($\ge -10^{-8}$).
+  * Circuit breaker covariance regularizer $\frac{1}{2 \kappa_t W_t} \|\boldsymbol{\nu}\|_2^2$, smoothly crushing allocations toward $\mathbf{0}$ as continuous haircut $\kappa_t \to 0$.
+  * Fast $O(N \log N)$ exact dual projection onto the intersection of the gross leverage ball $\|\boldsymbol{\nu}\|_1 \le L_{\max} W_t$ and weighted Expected Shortfall drawdown budget $\mathbf{c}^T |\boldsymbol{\nu}| \le \text{MDD}_{\text{budget}} W_t$ (`INV-TR-005`), solved via 2D Semismooth Newton active-set iteration initialized from $(0, 0)$ with provable Dykstra alternating projections fallback and terminal zero-leakage radial contraction.
+  * Microstructural randomized Bernoulli lottery rounding $\tilde{\nu}_i = \text{sign}(\nu_i^*) (\lfloor |\nu_i^*| / \Delta \nu_i \rfloor + B_i) \Delta \nu_i$, guaranteeing unbiased expected allocation $\mathbb{E}[\tilde{\boldsymbol{\nu}}] = \boldsymbol{\nu}^*$ without systemic cash drag or margin rounding bias.
+  * Sub-0.15ms execution latency SLA for $N=10$ assets (`INV-TR-006`).
+  * Exported all 38 tail risk and sizing symbols in `src/quant/analytics/__init__.py`.
+  * 110 unit tests in `tests/unit/test_execution_sizing.py` and 124 unit tests in `tests/unit/test_tail_risk.py` (748 total project tests passing) with **92% line coverage** on `execution_sizing.py` and **96% line coverage** on `tail_risk.py`, 100% strict mypy compliance, and zero lint/format deviations.
+
 * **Remaining Scope (Subsequent Steps):**
-  * Step 3: Extreme Tail VaR / Expected Shortfall & Execution Sizing Calibration.
   * Step 4: End-to-End Live Replay Simulator & Institutional Benchmarking.
+
 
 
