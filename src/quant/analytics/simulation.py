@@ -694,6 +694,14 @@ class BenchmarkAuditReport:
                     code=ERR_SIM_NON_FINITE_INPUT,
                 )
 
+        # 13. Defensive copies of mapping containers to prevent caller mutation (ISSUE-SIM-002)
+        # Functional Purpose: Prevent post-instantiation caller mutation of report dictionary fields.
+        # Explicit Dependency Tracking: object.__setattr__ on frozen slots dataclass.
+        # Structural Relationship: Protects BenchmarkAuditReport data integrity for consumers.
+        # Defensive Invariant: Deep separation between external caller mutable dicts and internal state.
+        object.__setattr__(self, "circuit_breaker_counts", dict(self.circuit_breaker_counts))
+        object.__setattr__(self, "benchmark_comparisons", dict(self.benchmark_comparisons))
+
 
 # ============================================================================
 # Observer Protocol (Rule 1 & Rule 4: Decoupled Event Architecture)

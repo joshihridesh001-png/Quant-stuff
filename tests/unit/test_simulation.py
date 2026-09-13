@@ -787,6 +787,38 @@ class TestBenchmarkAuditReport:
         with pytest.raises(DegenerateSimulationException):
             BenchmarkAuditReport(**valid_report_kwargs)  # type: ignore[arg-type]
 
+    def test_defensive_dict_copying(self, valid_report_kwargs: dict[str, object]) -> None:
+        """Verify mutating caller dictionaries does not mutate internal report state (ISSUE-SIM-002)."""
+        cb_counts = {"NORMAL": 95, "CAUTION": 5}
+        benchmarks = {
+            "Cash": BenchmarkComparison(
+                name="Cash",
+                total_return=0.02,
+                annualized_return=0.02,
+                annualized_volatility=0.001,
+                sharpe_ratio=0.0,
+                max_drawdown=0.0,
+                alpha=0.0,
+                beta=0.0,
+                tracking_error=0.15,
+                information_ratio=0.8,
+            )
+        }
+        valid_report_kwargs["circuit_breaker_counts"] = cb_counts
+        valid_report_kwargs["benchmark_comparisons"] = benchmarks
+
+        report = BenchmarkAuditReport(**valid_report_kwargs)  # type: ignore[arg-type]
+
+        # Mutate external dicts
+        cb_counts["NORMAL"] = 0
+        cb_counts["HALT"] = 100
+        benchmarks["New"] = benchmarks["Cash"]
+
+        # Assert internal dicts remain intact
+        assert report.circuit_breaker_counts["NORMAL"] == 95
+        assert "HALT" not in report.circuit_breaker_counts
+        assert "New" not in report.benchmark_comparisons
+
 
 class TestSimulationListenerProtocol:
     """Test suite verifying SimulationListener protocol definition and structural subtyping."""
