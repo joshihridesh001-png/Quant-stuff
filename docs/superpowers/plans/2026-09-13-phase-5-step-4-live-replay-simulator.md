@@ -75,6 +75,7 @@ from quant.analytics.simulation import (
     BenchmarkAuditReport,
 )
 
+
 class TestSimulationEntitiesAndExceptions:
     def test_diagnostic_codes_and_exception_hierarchy(self) -> None:
         err = LookaheadViolationException("Lookahead", code=ERR_SIM_LOOKAHEAD_VIOLATION)
@@ -130,6 +131,7 @@ def test_execution_cost_model_zero_trade_is_zero() -> None:
     model = ExecutionCostModel(fee_bps=2.0, spread_bps=1.0, impact_coefficient=0.10)
     cost = model.compute_cost(np.zeros(5), np.full(5, 0.02))
     assert cost == 0.0
+
 
 def test_execution_cost_model_non_negative_invariant_inv_sim_003() -> None:
     model = ExecutionCostModel(fee_bps=2.0, spread_bps=1.0, impact_coefficient=0.10)
@@ -191,8 +193,14 @@ def test_portfolio_ledger_capital_conservation_inv_sim_002() -> None:
     ret = np.array([0.01, -0.005])
     pos = np.array([20_000.0, 10_000.0])
     record = ledger.update(
-        step_index=0, timestamp=1000, return_vector=ret, new_positions=pos, friction_cost=5.0,
-        circuit_breaker_tier="NORMAL", circuit_breaker_haircut=1.0, target_allocations=pos
+        step_index=0,
+        timestamp=1000,
+        return_vector=ret,
+        new_positions=pos,
+        friction_cost=5.0,
+        circuit_breaker_tier="NORMAL",
+        circuit_breaker_haircut=1.0,
+        target_allocations=pos,
     )
     assert abs(record.portfolio_equity - (record.cash_balance + float(np.sum(pos)))) < 1e-5
 ```

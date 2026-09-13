@@ -149,6 +149,7 @@ The return series $r_t^{\text{net}} = \frac{W_t - W_{t-1}}{W_{t-1}}$ is evaluate
 @dataclass(frozen=True, slots=True)
 class SimulationConfig:
     """Immutable simulation configuration parameters."""
+
     initial_capital: float = 1_000_000.0
     risk_free_rate: float = 0.02
     fee_bps: float = 2.0
@@ -160,9 +161,11 @@ class SimulationConfig:
     annualization_factor: int = 252
     num_trials: int = 100
 
+
 @dataclass(frozen=True, slots=True)
 class BarExecutionRecord:
     """Immutable record of single-bar execution and portfolio state."""
+
     step_index: int
     timestamp: int
     gross_pnl: float
@@ -177,9 +180,11 @@ class BarExecutionRecord:
     target_allocations: tuple[float, ...]
     discretized_allocations: tuple[float, ...]
 
+
 @dataclass(frozen=True, slots=True)
 class BenchmarkComparison:
     """Performance metrics for a specific benchmark."""
+
     name: str
     total_return: float
     annualized_return: float
@@ -191,9 +196,11 @@ class BenchmarkComparison:
     tracking_error: float
     information_ratio: float
 
+
 @dataclass(frozen=True, slots=True)
 class BenchmarkAuditReport:
     """Comprehensive institutional tear sheet and statistical significance audit."""
+
     initial_capital: float
     final_equity: float
     total_return: float
@@ -221,6 +228,7 @@ class BenchmarkAuditReport:
 ```python
 class SimulationListener(Protocol):
     """Protocol for observer event listener hooks."""
+
     def on_bar_start(self, step: int, timestamp: int) -> None: ...
     def on_decision(self, step: int, decision: SizingDecision) -> None: ...
     def on_fill(self, step: int, record: BarExecutionRecord) -> None: ...
