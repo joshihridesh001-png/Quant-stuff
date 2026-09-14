@@ -44,7 +44,17 @@ from typing import Any, Final, Protocol, runtime_checkable
 
 import numpy as np
 
+from quant.analytics.circuit_breakers import (
+    CircuitBreakerOverlayEngine,
+)
 from quant.analytics.deflated_sharpe import DeflatedSharpeEngine, DSRConfig
+from quant.analytics.ensemble import (
+    RegimeConditionedDMAEngine,
+)
+from quant.analytics.execution_sizing import (
+    SizingDecision,
+    UnifiedConvexExecutionSizer,
+)
 
 # ============================================================================
 # Diagnostic Fault Vector Constants (Rule 2: Zero-Execution Diagnostics)
@@ -1902,3 +1912,707 @@ class BenchmarkAuditor:
             circuit_breaker_counts=circuit_breaker_counts,
             benchmark_comparisons=comparisons,
         )
+
+
+# ============================================================================
+# Master Live Replay Engine (Rule 1 & Rule 4: Master Orchestrator Architecture)
+# ============================================================================
+
+
+class ReplayEngine:
+    """Master chronological event-loop live replay simulator and institutional benchmarking rig.
+
+    Purpose:
+        Coordinates the complete end-to-end quantitative trading execution lifecycle across:
+        1. Dynamic Model Averaging (RD-DMA) forecast ingestion and uncertainty decomposition.
+        2. Epistemic disagreement consensus entropy and multi-tier circuit breaker overlays.
+        3. Semi-parametric Extreme Value Theory (EVT-POT) coherent Expected Shortfall risk budgets.
+        4. Unified convex execution sizing with non-linear Kyle-Obizhaeva market impact penalties.
+        5. Exchange lot-size discretization preserving risk bounds in expectation.
+        6. Microstructure friction modeling (exchange fees, half-spread slippage, and 3/2-power impact).
+        7. Strict zero-lookahead causal portfolio mark-to-market ledger accounting.
+        8. Observer lifecycle hooks (on_bar_start, on_decision, on_fill, on_bar_end).
+        9. Institutional performance auditing, multi-benchmark comparative attribution, and Deflated
+           Sharpe Ratio (DSR) statistical certification.
+
+    Defensive Invariants:
+        - INV-SIM-001 (Zero-Lookahead Causality): Strict temporal separation; decision at bar t
+          conditions exclusively on information filtration F_{t-1} and bar open; return r_t realizes
+          on previously held positions nu_{t-1}.
+        - INV-SIM-002 (Conservation of Capital): Portfolio wealth W_t == cash_t + sum nu_{i, t}
+          and W_t - W_{t-1} == PnL_t^{net} preserved across all bars within 1e-5.
+        - INV-SIM-003 (Non-Negative Execution Friction): C_t >= 0.0 everywhere.
+        - INV-SIM-004 (Circuit Breaker Coupling): Emergency HALT or non-positive haircut collapses
+          target and executed allocations strictly to 0.0.
+        - INV-SIM-005 (Statistical Rigor & Non-Finite Protection): Rejection of NaN, Inf, and non-finite
+          arrays at entry boundary; T >= 30 sample sufficiency.
+        - INV-SIM-006 (Hot-Path Latency SLA): 100 bars x 10 assets completes within <= 25ms.
+        - Rule 4.3: Zero iterative numerical solvers (scipy.optimize) in the synchronous simulation loop.
+    """
+
+    def __init__(
+        self,
+        config: SimulationConfig | None = None,
+        cost_model: ExecutionCostModel | None = None,
+        auditor: BenchmarkAuditor | None = None,
+        sizer: UnifiedConvexExecutionSizer | None = None,
+        cb_engine: CircuitBreakerOverlayEngine | None = None,
+        dma_engine: RegimeConditionedDMAEngine | None = None,
+    ) -> None:
+        """Initialize the live replay simulation engine with modular subsystems.
+
+        Args:
+            config: Optional SimulationConfig governing capital, friction, and risk limits.
+            cost_model: Optional ExecutionCostModel for fees, slippage, and Kyle impact.
+            auditor: Optional BenchmarkAuditor for post-simulation performance tear sheets.
+            sizer: Optional UnifiedConvexExecutionSizer for convex portfolio optimization.
+            cb_engine: Optional CircuitBreakerOverlayEngine for thermodynamic epistemic defense.
+            dma_engine: Optional RegimeConditionedDMAEngine for online model weight updates.
+
+        Raises:
+            DegenerateSimulationException: If any provided injected component does not match
+                expected instance types (ERR-SIM-002).
+        """
+        # Functional Purpose: Assemble the decoupled simulation state machine and institutional execution pipeline.
+        # Explicit Dependency Tracking: SimulationConfig, ExecutionCostModel, BenchmarkAuditor, UnifiedConvexExecutionSizer, CircuitBreakerOverlayEngine, RegimeConditionedDMAEngine.
+        # Structural Relationship: Master coordinator encapsulating portfolio accounting, risk overlay, optimization, and auditing.
+        # Defensive Invariant: All sub-components must be valid typed instances; fallback to institutional defaults if None.
+
+        # 1. Validate and assign SimulationConfig
+        if config is not None:
+            if not isinstance(config, SimulationConfig):
+                raise DegenerateSimulationException(
+                    f"ReplayEngine config must be a SimulationConfig instance, got {type(config).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            self.config: SimulationConfig = config
+        else:
+            self.config = SimulationConfig()
+
+        # 2. Validate and assign ExecutionCostModel
+        if cost_model is not None:
+            if not isinstance(cost_model, ExecutionCostModel):
+                raise DegenerateSimulationException(
+                    f"ReplayEngine cost_model must be an ExecutionCostModel instance, got {type(cost_model).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            self.cost_model: ExecutionCostModel = cost_model
+        else:
+            self.cost_model = ExecutionCostModel(
+                fee_bps=self.config.fee_bps,
+                spread_bps=self.config.spread_bps,
+                impact_coefficient=self.config.impact_coefficient,
+            )
+
+        # 3. Validate and assign BenchmarkAuditor
+        if auditor is not None:
+            if not isinstance(auditor, BenchmarkAuditor):
+                raise DegenerateSimulationException(
+                    f"ReplayEngine auditor must be a BenchmarkAuditor instance, got {type(auditor).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            self.auditor: BenchmarkAuditor = auditor
+        else:
+            self.auditor = BenchmarkAuditor(config=self.config)
+
+        # 4. Validate and assign UnifiedConvexExecutionSizer
+        if sizer is not None:
+            if not isinstance(sizer, UnifiedConvexExecutionSizer):
+                raise DegenerateSimulationException(
+                    f"ReplayEngine sizer must be a UnifiedConvexExecutionSizer instance, got {type(sizer).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            self.sizer: UnifiedConvexExecutionSizer = sizer
+        else:
+            self.sizer = UnifiedConvexExecutionSizer()
+
+        # 5. Validate and assign CircuitBreakerOverlayEngine
+        if cb_engine is not None:
+            if not isinstance(cb_engine, CircuitBreakerOverlayEngine):
+                raise DegenerateSimulationException(
+                    f"ReplayEngine cb_engine must be a CircuitBreakerOverlayEngine instance, got {type(cb_engine).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            self.cb_engine: CircuitBreakerOverlayEngine = cb_engine
+        else:
+            self.cb_engine = CircuitBreakerOverlayEngine()
+
+        # 6. Validate and assign RegimeConditionedDMAEngine
+        if dma_engine is not None:
+            if not isinstance(dma_engine, RegimeConditionedDMAEngine):
+                raise DegenerateSimulationException(
+                    f"ReplayEngine dma_engine must be a RegimeConditionedDMAEngine instance, got {type(dma_engine).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            self.dma_engine: RegimeConditionedDMAEngine | None = dma_engine
+        else:
+            self.dma_engine = None
+
+        # 7. Initialize observer listener registry
+        self._listeners: list[SimulationListener] = []
+
+    def add_listener(self, listener: SimulationListener) -> None:
+        """Register an observer event listener hook into the simulation lifecycle.
+
+        Args:
+            listener: Object conforming to the SimulationListener protocol.
+
+        Raises:
+            DegenerateSimulationException: If listener does not conform to SimulationListener (ERR-SIM-002).
+        """
+        # Functional Purpose: Register decoupled observer hooks for logging, streaming telemetry, or UI visualization.
+        # Explicit Dependency Tracking: SimulationListener protocol, self._listeners list container.
+        # Structural Relationship: Dispatches bar lifecycle events to registered external subscribers.
+        # Defensive Invariant: listener must conform to SimulationListener protocol with all 4 required hook methods.
+        if not isinstance(listener, SimulationListener):
+            raise DegenerateSimulationException(
+                f"listener must conform to SimulationListener protocol, got {type(listener).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        self._listeners.append(listener)
+
+    @property
+    def listeners(self) -> list[SimulationListener]:
+        """Return a defensive shallow copy of registered observer listeners."""
+        # Functional Purpose: Expose registered simulation observer hooks without allowing external container mutation.
+        # Explicit Dependency Tracking: self._listeners internal container.
+        # Structural Relationship: Inspected by monitoring rigs and diagnostic verification suites.
+        # Defensive Invariant: Shallow copy of listener list.
+        return list(self._listeners)
+
+    def run(
+        self,
+        asset_returns: np.ndarray,
+        asset_volatilities: np.ndarray,
+        candidate_predictions: np.ndarray,
+        regime_probabilities: np.ndarray,
+        ambiguity_betas: np.ndarray,
+        timestamps: np.ndarray | None = None,
+        advs: np.ndarray | None = None,
+        benchmark_returns: dict[str, np.ndarray] | None = None,
+        cusum_shocks: np.ndarray | None = None,
+    ) -> BenchmarkAuditReport:
+        """Execute chronological, strictly causal live replay simulation loop across all bars.
+
+        Per-Bar Execution Sequence (t = 0 ... T-1):
+            1. on_bar_start: Dispatches bar open event to observer listeners with timestamp.
+            2. Causal information barrier: Available wealth W_t determined from ledger.
+            3. Forecast extraction: Extracts expected edge mu_t and epistemic variance sigma2_epistemic_t.
+            4. Circuit breaker evaluation: Evaluates model disagreement entropy, deriving continuous
+               haircut kappa_t in [0.0, 1.0] and discrete tier. If HALT, forces kappa_t = 0.0 (INV-SIM-004).
+            5. EVT tail risk & Sizer: Solves convex sizing optimization, obtaining target allocations nu*
+               and lot-discretized allocations nu~.
+            6. on_decision: Dispatches sizing decision to observer listeners.
+            7. Friction: Computes exchange fee, half-spread slippage, and 3/2-power Kyle impact cost C_t >= 0.
+            8. Ledger: Updates mark-to-market PnL, cash, drawdown, and enforces capital conservation (INV-SIM-002).
+            9. on_fill & on_bar_end: Dispatches execution fills and bar closure events.
+            10. Post-simulation audit: Evaluates institutional benchmarks, DSR, and emits BenchmarkAuditReport.
+
+        Args:
+            asset_returns: Realized asset returns array of shape (T, N).
+            asset_volatilities: Instantaneous asset volatilities array of shape (T, N).
+            candidate_predictions: Candidate model predictions array of shape (T, N, K) or (T, N).
+            regime_probabilities: Regime probability array of shape (T, 3), (T, M), or (3,).
+            ambiguity_betas: Thermodynamic ambiguity beta array of shape (T,), (T, 1), or scalar.
+            timestamps: Optional epoch nanosecond timestamps array of shape (T,).
+            advs: Optional Average Daily Volume baselines array of shape (N,) or (T, N).
+            benchmark_returns: Optional mapping of custom benchmark names to return series of shape (T,).
+            cusum_shocks: Optional boolean or numeric array of exogenous CUSUM jump shock flags of shape (T,).
+
+        Returns:
+            Immutable BenchmarkAuditReport containing complete institutional performance metrics.
+
+        Raises:
+            DegenerateSimulationException: On starvation (T < 30, ERR-SIM-005), dimension mismatch (ERR-SIM-006),
+                capital ruin (ERR-SIM-003), or non-finite inputs / NaN poisoning (ERR-SIM-002).
+            InfeasibleSimulationException: On negative friction cost invariant violation (ERR-SIM-004).
+            LookaheadViolationException: On temporal contamination or sequencing violation (ERR-SIM-001).
+        """
+        # Functional Purpose: Master chronological event loop orchestrating causal simulation, risk overlay, optimization, and auditing.
+        # Explicit Dependency Tracking: PortfolioLedger, CircuitBreakerOverlayEngine, UnifiedConvexExecutionSizer, ExecutionCostModel, BenchmarkAuditor.
+        # Structural Relationship: Primary end-to-end execution entrypoint for backtesting and institutional benchmarking.
+        # Defensive Invariant: INV-SIM-001 causal zero-lookahead; INV-SIM-002 capital conservation; INV-SIM-003 non-negative friction; INV-SIM-004 circuit breaker halt; INV-SIM-005 non-finite rejection; INV-SIM-006 hot-path latency SLA.
+
+        # 1. Validate asset_returns array type, numeric dtype, and dimensions
+        if not isinstance(asset_returns, np.ndarray):
+            raise DegenerateSimulationException(
+                f"asset_returns must be a numpy ndarray, got {type(asset_returns).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not (
+            np.issubdtype(asset_returns.dtype, np.number)
+            and not np.issubdtype(asset_returns.dtype, np.bool_)
+        ):
+            raise DegenerateSimulationException(
+                f"asset_returns must have numeric dtype, got {asset_returns.dtype}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if asset_returns.ndim != 2:
+            raise DegenerateSimulationException(
+                f"asset_returns must be 2-dimensional (T, N), got ndim={asset_returns.ndim}",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+
+        t_len, n_assets = asset_returns.shape
+
+        # Sample starvation check (INV-SIM-005)
+        if t_len < 30:
+            raise DegenerateSimulationException(
+                f"Simulation record starvation: {t_len} bars < 30 required (INV-SIM-005)",
+                code=ERR_SIM_STARVATION,
+            )
+
+        # Finiteness check on asset_returns
+        if not np.isfinite(asset_returns).all():
+            raise DegenerateSimulationException(
+                "asset_returns contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        # 2. Validate asset_volatilities array type, shape, and finiteness
+        if not isinstance(asset_volatilities, np.ndarray):
+            raise DegenerateSimulationException(
+                f"asset_volatilities must be a numpy ndarray, got {type(asset_volatilities).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not (
+            np.issubdtype(asset_volatilities.dtype, np.number)
+            and not np.issubdtype(asset_volatilities.dtype, np.bool_)
+        ):
+            raise DegenerateSimulationException(
+                f"asset_volatilities must have numeric dtype, got {asset_volatilities.dtype}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if asset_volatilities.ndim != 2:
+            raise DegenerateSimulationException(
+                f"asset_volatilities must be 2-dimensional (T, N), got ndim={asset_volatilities.ndim}",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+        if asset_volatilities.shape != (t_len, n_assets):
+            raise DegenerateSimulationException(
+                f"asset_volatilities shape {asset_volatilities.shape} does not match asset_returns shape ({t_len}, {n_assets})",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+        if not np.isfinite(asset_volatilities).all():
+            raise DegenerateSimulationException(
+                "asset_volatilities contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if (asset_volatilities < 0.0).any():
+            raise DegenerateSimulationException(
+                "asset_volatilities must be non-negative (sigma_i >= 0.0)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+
+        # 3. Validate candidate_predictions array type, shape, and finiteness
+        if not isinstance(candidate_predictions, np.ndarray):
+            raise DegenerateSimulationException(
+                f"candidate_predictions must be a numpy ndarray, got {type(candidate_predictions).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not (
+            np.issubdtype(candidate_predictions.dtype, np.number)
+            and not np.issubdtype(candidate_predictions.dtype, np.bool_)
+        ):
+            raise DegenerateSimulationException(
+                f"candidate_predictions must have numeric dtype, got {candidate_predictions.dtype}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not np.isfinite(candidate_predictions).all():
+            raise DegenerateSimulationException(
+                "candidate_predictions contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if candidate_predictions.ndim not in (2, 3):
+            raise DegenerateSimulationException(
+                f"candidate_predictions must be 2D (T, N) or 3D (T, N, K), got ndim={candidate_predictions.ndim}",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+        if candidate_predictions.shape[0] != t_len:
+            raise DegenerateSimulationException(
+                f"candidate_predictions length ({candidate_predictions.shape[0]}) does not match T ({t_len})",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+        if candidate_predictions.shape[1] != n_assets:
+            raise DegenerateSimulationException(
+                f"candidate_predictions assets ({candidate_predictions.shape[1]}) does not match N ({n_assets})",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+        is_3d_predictions = candidate_predictions.ndim == 3
+        if is_3d_predictions and candidate_predictions.shape[2] < 1:
+            raise DegenerateSimulationException(
+                "candidate_predictions model dimension K must be >= 1",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+
+        # 4. Validate regime_probabilities array type, shape, and finiteness
+        if not isinstance(regime_probabilities, np.ndarray):
+            raise DegenerateSimulationException(
+                f"regime_probabilities must be a numpy ndarray, got {type(regime_probabilities).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not (
+            np.issubdtype(regime_probabilities.dtype, np.number)
+            and not np.issubdtype(regime_probabilities.dtype, np.bool_)
+        ):
+            raise DegenerateSimulationException(
+                f"regime_probabilities must have numeric dtype, got {regime_probabilities.dtype}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not np.isfinite(regime_probabilities).all():
+            raise DegenerateSimulationException(
+                "regime_probabilities contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if (regime_probabilities < 0.0).any():
+            raise DegenerateSimulationException(
+                "regime_probabilities elements must be non-negative",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if regime_probabilities.ndim == 2:
+            if regime_probabilities.shape[0] != t_len:
+                raise DegenerateSimulationException(
+                    f"regime_probabilities length ({regime_probabilities.shape[0]}) does not match T ({t_len})",
+                    code=ERR_SIM_DIMENSION_MISMATCH,
+                )
+        elif regime_probabilities.ndim == 1:
+            if regime_probabilities.shape[0] not in (3, t_len):
+                raise DegenerateSimulationException(
+                    f"1D regime_probabilities length ({regime_probabilities.shape[0]}) must be 3 or T ({t_len})",
+                    code=ERR_SIM_DIMENSION_MISMATCH,
+                )
+        else:
+            raise DegenerateSimulationException(
+                f"regime_probabilities must be 1D or 2D, got ndim={regime_probabilities.ndim}",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+
+        # 5. Validate ambiguity_betas array type, shape, and finiteness
+        if not isinstance(ambiguity_betas, np.ndarray):
+            raise DegenerateSimulationException(
+                f"ambiguity_betas must be a numpy ndarray, got {type(ambiguity_betas).__name__}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not (
+            np.issubdtype(ambiguity_betas.dtype, np.number)
+            and not np.issubdtype(ambiguity_betas.dtype, np.bool_)
+        ):
+            raise DegenerateSimulationException(
+                f"ambiguity_betas must have numeric dtype, got {ambiguity_betas.dtype}",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if not np.isfinite(ambiguity_betas).all():
+            raise DegenerateSimulationException(
+                "ambiguity_betas contains non-finite values (NaN or Inf)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if (ambiguity_betas <= 0.0).any():
+            raise DegenerateSimulationException(
+                "ambiguity_betas elements must be strictly positive (> 0.0)",
+                code=ERR_SIM_NON_FINITE_INPUT,
+            )
+        if ambiguity_betas.ndim == 1:
+            if ambiguity_betas.shape[0] not in (1, t_len):
+                raise DegenerateSimulationException(
+                    f"1D ambiguity_betas length ({ambiguity_betas.shape[0]}) must be 1 or T ({t_len})",
+                    code=ERR_SIM_DIMENSION_MISMATCH,
+                )
+        elif ambiguity_betas.ndim == 2:
+            if ambiguity_betas.shape[0] != t_len:
+                raise DegenerateSimulationException(
+                    f"2D ambiguity_betas length ({ambiguity_betas.shape[0]}) does not match T ({t_len})",
+                    code=ERR_SIM_DIMENSION_MISMATCH,
+                )
+        elif ambiguity_betas.ndim > 2:
+            raise DegenerateSimulationException(
+                f"ambiguity_betas ndim must be <= 2, got ndim={ambiguity_betas.ndim}",
+                code=ERR_SIM_DIMENSION_MISMATCH,
+            )
+
+        # 6. Validate timestamps array if provided
+        if timestamps is not None:
+            if not isinstance(timestamps, np.ndarray):
+                raise DegenerateSimulationException(
+                    f"timestamps must be a numpy ndarray if provided, got {type(timestamps).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if not (
+                np.issubdtype(timestamps.dtype, np.number)
+                and not np.issubdtype(timestamps.dtype, np.bool_)
+            ):
+                raise DegenerateSimulationException(
+                    f"timestamps must have numeric dtype, got {timestamps.dtype}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if timestamps.ndim != 1:
+                raise DegenerateSimulationException(
+                    f"timestamps must be 1-dimensional, got ndim={timestamps.ndim}",
+                    code=ERR_SIM_DIMENSION_MISMATCH,
+                )
+            if timestamps.shape[0] != t_len:
+                raise DegenerateSimulationException(
+                    f"timestamps length ({timestamps.shape[0]}) does not match T ({t_len})",
+                    code=ERR_SIM_DIMENSION_MISMATCH,
+                )
+            if not np.isfinite(timestamps).all():
+                raise DegenerateSimulationException(
+                    "timestamps contains non-finite values (NaN or Inf)",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if (timestamps < 0).any():
+                raise DegenerateSimulationException(
+                    "timestamps must be non-negative",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+
+        # 7. Validate advs array if provided
+        if advs is not None:
+            if not isinstance(advs, np.ndarray):
+                raise DegenerateSimulationException(
+                    f"advs must be a numpy ndarray if provided, got {type(advs).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if not (
+                np.issubdtype(advs.dtype, np.number) and not np.issubdtype(advs.dtype, np.bool_)
+            ):
+                raise DegenerateSimulationException(
+                    f"advs must have numeric dtype, got {advs.dtype}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if not np.isfinite(advs).all():
+                raise DegenerateSimulationException(
+                    "advs contains non-finite values (NaN or Inf)",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if (advs <= 0.0).any():
+                raise DegenerateSimulationException(
+                    "advs elements must be strictly positive (> 0.0)",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if advs.ndim == 1:
+                if advs.shape[0] != n_assets:
+                    raise DegenerateSimulationException(
+                        f"1D advs length ({advs.shape[0]}) does not match N ({n_assets})",
+                        code=ERR_SIM_DIMENSION_MISMATCH,
+                    )
+            elif advs.ndim == 2:
+                if advs.shape != (t_len, n_assets):
+                    raise DegenerateSimulationException(
+                        f"2D advs shape {advs.shape} does not match (T, N) ({t_len}, {n_assets})",
+                        code=ERR_SIM_DIMENSION_MISMATCH,
+                    )
+            else:
+                raise DegenerateSimulationException(
+                    f"advs must be 1D or 2D, got ndim={advs.ndim}",
+                    code=ERR_SIM_DIMENSION_MISMATCH,
+                )
+
+        # 8. Initialize Simulation State Machine
+        ledger = PortfolioLedger(initial_capital=self.config.initial_capital)
+        cb_state = self.cb_engine.initialize_state()
+        prev_positions = np.zeros(n_assets, dtype=np.float64)
+
+        if timestamps is not None:
+            ts_series = timestamps
+        else:
+            # Deterministic default timestamp schedule (daily progression in ns)
+            ts_series = np.arange(t_len, dtype=np.int64) * 86_400_000_000_000
+
+        # 9. Vectorized Precomputations across time horizon (INV-SIM-006 Hot-Path SLA)
+        if is_3d_predictions:
+            p_mu_all = np.mean(candidate_predictions, axis=2)  # (T, N)
+            k_models = candidate_predictions.shape[2]
+            if k_models > 1:
+                p_sig2_all = np.var(candidate_predictions, axis=2, ddof=1)  # (T, N)
+            else:
+                p_sig2_all = np.zeros((t_len, n_assets), dtype=np.float64)
+            bar_preds_all = (
+                np.mean(candidate_predictions, axis=1)
+                if n_assets > 0
+                else np.zeros((t_len, k_models), dtype=np.float64)
+            )
+            epistemic_var_cb_all = (
+                np.mean(p_sig2_all, axis=1) if n_assets > 0 else np.zeros(t_len, dtype=np.float64)
+            )
+        else:
+            p_mu_all = candidate_predictions  # (T, N)
+            k_models = 1
+            p_sig2_all = np.zeros((t_len, n_assets), dtype=np.float64)
+            bar_preds_all = (
+                np.mean(candidate_predictions, axis=1, keepdims=True)
+                if n_assets > 0
+                else np.zeros((t_len, 1), dtype=np.float64)
+            )
+            epistemic_var_cb_all = np.zeros(t_len, dtype=np.float64)
+
+        # Precompute tail risk multipliers c_t and squared volatilities
+        c_all = np.where(asset_volatilities > 0.0, 2.33 * asset_volatilities, 1.0)
+        vols_sq = asset_volatilities**2
+        aleatoric_var_cb_all = (
+            np.maximum(1e-8, np.mean(vols_sq, axis=1))
+            if n_assets > 0
+            else np.full(t_len, 0.01, dtype=np.float64)
+        )
+        model_weights = np.full(k_models, 1.0 / float(k_models), dtype=np.float64)
+
+        # Precompute regime panic flags
+        if regime_probabilities.ndim == 2:
+            panic_flags = (
+                np.argmax(regime_probabilities, axis=1) == 2
+                if regime_probabilities.shape[1] == 3
+                else np.zeros(t_len, dtype=bool)
+            )
+        elif regime_probabilities.ndim == 1 and regime_probabilities.shape[0] == 3:
+            p_flag = bool(np.argmax(regime_probabilities) == 2)
+            panic_flags = np.full(t_len, p_flag, dtype=bool)
+        elif regime_probabilities.ndim == 1 and regime_probabilities.shape[0] == t_len:
+            panic_flags = regime_probabilities >= 0.5
+        else:
+            panic_flags = np.zeros(t_len, dtype=bool)
+
+        # Precompute ambiguity betas array
+        if ambiguity_betas.ndim == 1 and ambiguity_betas.shape[0] == t_len:
+            betas_all = ambiguity_betas
+        elif ambiguity_betas.ndim == 2 and ambiguity_betas.shape[0] == t_len:
+            betas_all = ambiguity_betas[:, 0]
+        else:
+            betas_all = np.full(t_len, float(ambiguity_betas.flat[0]), dtype=np.float64)
+
+        # Precompute CUSUM exogenous jump shocks array
+        if cusum_shocks is not None:
+            if not isinstance(cusum_shocks, np.ndarray):
+                raise DegenerateSimulationException(
+                    f"cusum_shocks must be a numpy ndarray, got {type(cusum_shocks).__name__}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if not (
+                np.issubdtype(cusum_shocks.dtype, np.number)
+                or np.issubdtype(cusum_shocks.dtype, np.bool_)
+            ):
+                raise DegenerateSimulationException(
+                    f"cusum_shocks must have numeric or boolean dtype, got {cusum_shocks.dtype}",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if not np.isfinite(cusum_shocks).all():
+                raise DegenerateSimulationException(
+                    "cusum_shocks contains non-finite values (NaN or Inf)",
+                    code=ERR_SIM_NON_FINITE_INPUT,
+                )
+            if cusum_shocks.ndim != 1 or cusum_shocks.shape[0] != t_len:
+                raise DegenerateSimulationException(
+                    f"cusum_shocks must be 1D of length T ({t_len}), got shape {cusum_shocks.shape}",
+                    code=ERR_SIM_DIMENSION_MISMATCH,
+                )
+            cusum_flags = cusum_shocks.astype(bool)
+        else:
+            cusum_flags = np.zeros(t_len, dtype=bool)
+
+        cov_aleatoric = np.zeros((n_assets, n_assets), dtype=np.float64)
+        cross_zeros = np.zeros((n_assets, n_assets), dtype=np.float64)
+        diag_idx = np.arange(n_assets)
+        zeros_alloc = np.zeros(0, dtype=np.float64)
+
+        # 10. Master Causal Chronological Execution Loop (t = 0 ... T-1)
+        for t in range(t_len):
+            ts = int(ts_series[t])
+
+            # 10.1 Hook: on_bar_start
+            for listener in self._listeners:
+                listener.on_bar_start(step=t, timestamp=ts)
+
+            # 10.2 Causal information barrier: Available wealth W
+            w_avail = ledger.current_equity
+            if w_avail <= 0.0:
+                raise DegenerateSimulationException(
+                    f"Capital ruin detected prior to bar {t}: equity={w_avail:.4f} <= 0.0 (INV-SIM-002)",
+                    code=ERR_SIM_CAPITAL_RUIN,
+                )
+
+            # 10.3 Circuit Breaker Overlay Evaluation
+            cb_decision, cb_state = self.cb_engine.evaluate(
+                predictions=bar_preds_all[t],
+                weights=model_weights,
+                aleatoric_variance=float(aleatoric_var_cb_all[t]),
+                epistemic_variance=float(epistemic_var_cb_all[t]),
+                ambiguity_beta=float(betas_all[t]),
+                state=cb_state,
+                cusum_shock=bool(cusum_flags[t]),
+                regime_is_panic=bool(panic_flags[t]),
+            )
+
+            tier_str = cb_decision.action_tier.name
+            kappa_t = float(cb_decision.execution_haircut)
+            # Invariant INV-SIM-004: Emergency HALT or non-positive haircut enforces kappa_t = 0.0
+            if tier_str == "HALT" or cb_decision.is_halted or kappa_t <= 0.0:
+                kappa_t = 0.0
+
+            # 10.4 EVT Tail Risk & Unified Convex Sizing Allocation
+            if n_assets > 0:
+                cov_aleatoric[diag_idx, diag_idx] = np.maximum(vols_sq[t], 1e-8)
+
+                decision = self.sizer.solve(
+                    mu=p_mu_all[t],
+                    sigma2_epistemic=p_sig2_all[t],
+                    cov_aleatoric=cov_aleatoric,
+                    asset_vols=asset_volatilities[t],
+                    cross_impact=cross_zeros,
+                    circuit_breaker_haircut=kappa_t,
+                    asset_cvars=c_all[t],
+                    total_capital=w_avail,
+                    random_seed=42 + t,
+                    validate=False,
+                )
+                target_nu = decision.target_allocations
+                tilde_nu = decision.discretized_allocations
+            else:
+                decision = SizingDecision(
+                    target_allocations=zeros_alloc.copy(),
+                    discretized_allocations=zeros_alloc.copy(),
+                    effective_leverage=0.0,
+                    expected_shortfall=0.0,
+                    estimated_impact_cost=0.0,
+                    circuit_breaker_haircut=kappa_t,
+                    is_drawdown_constrained=False,
+                    is_leverage_constrained=False,
+                )
+                target_nu = zeros_alloc
+                tilde_nu = zeros_alloc
+
+            # 10.5 Hook: on_decision
+            for listener in self._listeners:
+                listener.on_decision(step=t, decision=decision)
+
+            # 10.6 Friction Cost Calculation (INV-SIM-003)
+            delta_nu = tilde_nu - prev_positions
+            adv_t = advs[t] if (advs is not None and advs.ndim == 2) else advs
+            c_friction = self.cost_model.compute_cost(
+                delta_positions=delta_nu,
+                asset_volatilities=asset_volatilities[t],
+                advs=adv_t,
+            )
+
+            # 10.7 Portfolio Ledger Accounting Update (INV-SIM-001 & INV-SIM-002)
+            record = ledger.update(
+                step_index=t,
+                timestamp=ts,
+                return_vector=asset_returns[t],
+                new_positions=tilde_nu,
+                friction_cost=c_friction,
+                circuit_breaker_tier=tier_str,
+                circuit_breaker_haircut=kappa_t,
+                target_allocations=target_nu,
+            )
+            prev_positions = tilde_nu.copy()
+
+            # 10.8 Hooks: on_fill and on_bar_end
+            for listener in self._listeners:
+                listener.on_fill(step=t, record=record)
+                listener.on_bar_end(step=t, record=record)
+
+        # 10. Institutional Benchmark Performance Audit Certification
+        report = self.auditor.audit(
+            records=ledger.history,
+            asset_returns=asset_returns,
+            benchmark_returns=benchmark_returns,
+        )
+        return report

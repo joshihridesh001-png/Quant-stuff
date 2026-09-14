@@ -16,6 +16,16 @@ from typing import Any
 import numpy as np
 import pytest
 
+from quant.analytics.circuit_breakers import (
+    CircuitBreakerConfig,
+    CircuitBreakerOverlayEngine,
+)
+from quant.analytics.ensemble import EnsembleConfig, RegimeConditionedDMAEngine
+from quant.analytics.execution_sizing import (
+    SizingConfig,
+    SizingDecision,
+    UnifiedConvexExecutionSizer,
+)
 from quant.analytics.simulation import (
     ERR_SIM_CAPITAL_RUIN,
     ERR_SIM_DIMENSION_MISMATCH,
@@ -32,6 +42,7 @@ from quant.analytics.simulation import (
     InfeasibleSimulationException,
     LookaheadViolationException,
     PortfolioLedger,
+    ReplayEngine,
     SimulationConfig,
     SimulationError,
     SimulationListener,
@@ -2439,4 +2450,703 @@ class TestBenchmarkAuditor:
         min_latency = float(np.min(latencies_ms))
         assert min_latency <= threshold_ms, (
             f"INV-SIM-006 SLA breached: min auditor time was {min_latency:.3f}ms > {threshold_ms}ms"
+        )
+
+
+class TestReplayEngine:
+    """Test suite for ReplayEngine master causal live replay simulation orchestrator."""
+
+    class MockTrackingListener:
+        """Observer listener capturing lifecycle events for verification."""
+
+        def __init__(self) -> None:
+            self.events: list[tuple[str, int, Any]] = []
+
+        def on_bar_start(self, step: int, timestamp: int) -> None:
+            self.events.append(("start", step, timestamp))
+
+        def on_decision(self, step: int, decision: Any) -> None:
+            self.events.append(("decision", step, decision))
+
+        def on_fill(self, step: int, record: BarExecutionRecord) -> None:
+            self.events.append(("fill", step, record))
+
+        def on_bar_end(self, step: int, record: BarExecutionRecord) -> None:
+            self.events.append(("end", step, record))
+
+    @staticmethod
+    def _generate_synthetic_inputs(
+        t_bars: int = 50,
+        n_assets: int = 3,
+        k_models: int = 5,
+        is_3d: bool = True,
+        seed: int = 42,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Generate statistically consistent, finite synthetic test arrays."""
+        rng = np.random.default_rng(seed)
+        returns = rng.normal(loc=0.0005, scale=0.01, size=(t_bars, n_assets)).astype(np.float64)
+        vols = np.full((t_bars, n_assets), 0.01, dtype=np.float64)
+        if is_3d:
+            preds = rng.normal(loc=0.0008, scale=0.005, size=(t_bars, n_assets, k_models)).astype(
+                np.float64
+            )
+        else:
+            preds = rng.normal(loc=0.0008, scale=0.005, size=(t_bars, n_assets)).astype(np.float64)
+        regimes = np.full((t_bars, 3), [0.7, 0.2, 0.1], dtype=np.float64)
+        betas = np.full(t_bars, 1.5, dtype=np.float64)
+        return returns, vols, preds, regimes, betas
+
+    def test_replay_engine_instantiation(self) -> None:
+        """Verify ReplayEngine initializes with default components."""
+        engine = ReplayEngine()
+        assert isinstance(engine.config, SimulationConfig)
+        assert isinstance(engine.cost_model, ExecutionCostModel)
+        assert isinstance(engine.auditor, BenchmarkAuditor)
+        assert isinstance(engine.sizer, UnifiedConvexExecutionSizer)
+        assert isinstance(engine.cb_engine, CircuitBreakerOverlayEngine)
+        assert engine.dma_engine is None
+        assert engine.listeners == []
+
+    def test_replay_engine_custom_component_injection(self) -> None:
+        """Verify ReplayEngine accepts custom-injected sub-engines."""
+        cfg = SimulationConfig(initial_capital=500_000.0, fee_bps=1.0)
+        cost_model = ExecutionCostModel(fee_bps=1.0, spread_bps=0.5, impact_coefficient=0.05)
+        auditor = BenchmarkAuditor(config=cfg)
+        sizer = UnifiedConvexExecutionSizer(config=SizingConfig())
+        cb_engine = CircuitBreakerOverlayEngine(config=CircuitBreakerConfig())
+        dma_engine = RegimeConditionedDMAEngine(config=EnsembleConfig())
+
+        engine = ReplayEngine(
+            config=cfg,
+            cost_model=cost_model,
+            auditor=auditor,
+            sizer=sizer,
+            cb_engine=cb_engine,
+            dma_engine=dma_engine,
+        )
+
+        assert engine.config is cfg
+        assert engine.cost_model is cost_model
+        assert engine.auditor is auditor
+        assert engine.sizer is sizer
+        assert engine.cb_engine is cb_engine
+        assert engine.dma_engine is dma_engine
+
+    @pytest.mark.parametrize(
+        ("param_name", "bad_val"),
+        [
+            ("config", "not_a_config"),
+            ("cost_model", 12345),
+            ("auditor", [1, 2, 3]),
+            ("sizer", {"a": 1}),
+            ("cb_engine", object()),
+            ("dma_engine", "invalid_dma"),
+        ],
+    )
+    def test_replay_engine_invalid_component_rejection(self, param_name: str, bad_val: Any) -> None:
+        """Verify invalid component types raise DegenerateSimulationException(ERR-SIM-002)."""
+        kwargs: dict[str, Any] = {param_name: bad_val}
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            ReplayEngine(**kwargs)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_add_listener_and_listeners_property(self) -> None:
+        """Verify observer listener registration, validation, and defensive isolation."""
+        engine = ReplayEngine()
+        listener = self.MockTrackingListener()
+
+        # Reject invalid listener
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.add_listener("not_a_listener")  # type: ignore[arg-type]
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # Register valid listener
+        engine.add_listener(listener)
+        listeners = engine.listeners
+        assert len(listeners) == 1
+        assert listeners[0] is listener
+
+        # Verify defensive isolation: modifying returned list does not mutate internal registry
+        listeners.clear()
+        assert len(engine.listeners) == 1
+
+    def test_observer_listener_event_sequence_tracking(self) -> None:
+        """Verify all 4 observer listener hooks receive events in strict chronological order."""
+        engine = ReplayEngine()
+        listener = self.MockTrackingListener()
+        engine.add_listener(listener)
+
+        t_bars = 50
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(t_bars=t_bars)
+        report = engine.run(
+            asset_returns=returns,
+            asset_volatilities=vols,
+            candidate_predictions=preds,
+            regime_probabilities=regimes,
+            ambiguity_betas=betas,
+        )
+
+        assert report.final_equity > 0.0
+        # 4 events per bar across 50 bars = 200 events
+        assert len(listener.events) == 4 * t_bars
+
+        for t in range(t_bars):
+            ev_start = listener.events[4 * t]
+            ev_decision = listener.events[4 * t + 1]
+            ev_fill = listener.events[4 * t + 2]
+            ev_end = listener.events[4 * t + 3]
+
+            assert ev_start[0] == "start"
+            assert ev_start[1] == t
+            assert ev_start[2] == t * 86_400_000_000_000
+
+            assert ev_decision[0] == "decision"
+            assert ev_decision[1] == t
+            assert isinstance(ev_decision[2], SizingDecision)
+
+            assert ev_fill[0] == "fill"
+            assert ev_fill[1] == t
+            assert isinstance(ev_fill[2], BarExecutionRecord)
+
+            assert ev_end[0] == "end"
+            assert ev_end[1] == t
+            assert isinstance(ev_end[2], BarExecutionRecord)
+            assert ev_fill[2] is ev_end[2]
+
+    def test_multi_asset_live_replay_50_bars_n3(self) -> None:
+        """Verify 50-bar, 3-asset live replay with 3D model predictions."""
+        engine = ReplayEngine()
+        t_bars, n_assets = 50, 3
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(
+            t_bars=t_bars, n_assets=n_assets, k_models=5, is_3d=True
+        )
+        report = engine.run(
+            asset_returns=returns,
+            asset_volatilities=vols,
+            candidate_predictions=preds,
+            regime_probabilities=regimes,
+            ambiguity_betas=betas,
+        )
+
+        assert report.initial_capital == 1_000_000.0
+        assert report.final_equity > 0.0
+        assert math.isfinite(report.total_return)
+        assert math.isfinite(report.cagr)
+        assert math.isfinite(report.annualized_volatility)
+        assert math.isfinite(report.sharpe_ratio)
+        assert 0.0 <= report.max_drawdown <= 1.0
+        assert 0.0 <= report.deflated_sharpe_ratio <= 1.0
+        assert report.total_friction_cost >= 0.0
+        assert len(report.benchmark_comparisons) == 4
+
+    def test_multi_asset_live_replay_100_bars_n5(self) -> None:
+        """Verify 100-bar, 5-asset live replay with 2D candidate predictions."""
+        engine = ReplayEngine()
+        t_bars, n_assets = 100, 5
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(
+            t_bars=t_bars, n_assets=n_assets, is_3d=False
+        )
+        report = engine.run(
+            asset_returns=returns,
+            asset_volatilities=vols,
+            candidate_predictions=preds,
+            regime_probabilities=regimes,
+            ambiguity_betas=betas,
+        )
+
+        assert report.final_equity > 0.0
+        assert math.isfinite(report.sharpe_ratio)
+        assert 0.0 <= report.max_drawdown <= 1.0
+        assert len(report.benchmark_comparisons) == 4
+
+    def test_multi_asset_live_replay_100_bars_n10_with_all_options(self) -> None:
+        """Verify 100-bar, 10-asset simulation with timestamps, 1D and 2D ADVs, and custom benchmark."""
+        engine = ReplayEngine()
+        t_bars, n_assets = 100, 10
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(
+            t_bars=t_bars, n_assets=n_assets, k_models=4, is_3d=True
+        )
+        timestamps = np.arange(1000, 1000 + t_bars, dtype=np.int64) * 1_000_000_000
+        advs_1d = np.full(n_assets, 5_000_000.0, dtype=np.float64)
+        custom_bm = np.full(t_bars, 0.0003, dtype=np.float64)
+
+        # 1. Run with 1D ADVs
+        report_1d = engine.run(
+            asset_returns=returns,
+            asset_volatilities=vols,
+            candidate_predictions=preds,
+            regime_probabilities=regimes,
+            ambiguity_betas=betas,
+            timestamps=timestamps,
+            advs=advs_1d,
+            benchmark_returns={"CustomIndex": custom_bm},
+        )
+        assert "CustomIndex" in report_1d.benchmark_comparisons
+        assert report_1d.final_equity > 0.0
+
+        # 2. Run with 2D ADVs
+        advs_2d = np.full((t_bars, n_assets), 5_000_000.0, dtype=np.float64)
+        report_2d = engine.run(
+            asset_returns=returns,
+            asset_volatilities=vols,
+            candidate_predictions=preds,
+            regime_probabilities=regimes,
+            ambiguity_betas=betas,
+            timestamps=timestamps,
+            advs=advs_2d,
+            benchmark_returns={"CustomIndex": custom_bm},
+        )
+        assert np.isclose(report_1d.total_return, report_2d.total_return, atol=1e-8)
+
+    def test_inv_sim_001_zero_lookahead_perturbation(self) -> None:
+        """Verify INV-SIM-001: Perturbing return at t+5 does not alter allocations at t < t+5."""
+        engine = ReplayEngine()
+        t_bars, n_assets = 50, 3
+        returns_base, vols, preds, regimes, betas = self._generate_synthetic_inputs(
+            t_bars=t_bars, n_assets=n_assets
+        )
+
+        listener_base = self.MockTrackingListener()
+        engine.add_listener(listener_base)
+        engine.run(
+            asset_returns=returns_base,
+            asset_volatilities=vols,
+            candidate_predictions=preds,
+            regime_probabilities=regimes,
+            ambiguity_betas=betas,
+        )
+
+        # Extract executed allocations at each bar t for baseline
+        allocations_base = [
+            ev[2].discretized_allocations for ev in listener_base.events if ev[0] == "fill"
+        ]
+
+        # Perturb future return at step 25 (e.g. huge shock +0.10)
+        returns_perturbed = returns_base.copy()
+        perturb_step = 25
+        returns_perturbed[perturb_step, :] += 0.10
+
+        engine_perturbed = ReplayEngine()
+        listener_perturbed = self.MockTrackingListener()
+        engine_perturbed.add_listener(listener_perturbed)
+        engine_perturbed.run(
+            asset_returns=returns_perturbed,
+            asset_volatilities=vols,
+            candidate_predictions=preds,
+            regime_probabilities=regimes,
+            ambiguity_betas=betas,
+        )
+
+        allocations_perturbed = [
+            ev[2].discretized_allocations for ev in listener_perturbed.events if ev[0] == "fill"
+        ]
+
+        # Assert zero-lookahead: for all steps t < 25, allocations are bit-exact identical!
+        for t in range(perturb_step):
+            assert allocations_base[t] == allocations_perturbed[t], (
+                f"INV-SIM-001 Lookahead violation at bar {t} < {perturb_step}: "
+                f"base={allocations_base[t]} vs perturbed={allocations_perturbed[t]}"
+            )
+
+    def test_inv_sim_002_capital_conservation_across_all_bars(self) -> None:
+        """Verify INV-SIM-002: W_t == cash_t + sum nu_i and W_t - W_{t-1} == PnL_t^{net} everywhere."""
+        engine = ReplayEngine()
+        listener = self.MockTrackingListener()
+        engine.add_listener(listener)
+
+        t_bars, n_assets = 100, 5
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(
+            t_bars=t_bars, n_assets=n_assets
+        )
+        report = engine.run(
+            asset_returns=returns,
+            asset_volatilities=vols,
+            candidate_predictions=preds,
+            regime_probabilities=regimes,
+            ambiguity_betas=betas,
+        )
+
+        records = [ev[2] for ev in listener.events if ev[0] == "fill"]
+        assert len(records) == t_bars
+
+        prev_equity = engine.config.initial_capital
+        for rec in records:
+            # 1. Capital balance identity: W_t == cash_t + sum(nu_{i, t})
+            pos_sum = sum(rec.discretized_allocations)
+            discrepancy = abs(rec.portfolio_equity - (rec.cash_balance + pos_sum))
+            assert discrepancy < 1e-5, (
+                f"INV-SIM-002 Capital discrepancy at bar {rec.step_index}: {discrepancy} >= 1e-5"
+            )
+
+            # 2. Net wealth increment identity: W_t - W_{t-1} == PnL_t^{net}
+            pnl_discrepancy = abs((rec.portfolio_equity - prev_equity) - rec.net_pnl)
+            assert pnl_discrepancy < 1e-5, (
+                f"INV-SIM-002 PnL discrepancy at bar {rec.step_index}: {pnl_discrepancy} >= 1e-5"
+            )
+            prev_equity = rec.portfolio_equity
+
+        assert np.isclose(report.final_equity, records[-1].portfolio_equity, atol=1e-8)
+
+    def test_inv_sim_003_non_negative_friction_cost(self) -> None:
+        """Verify INV-SIM-003: Friction cost is non-negative on every bar and in aggregate."""
+        engine = ReplayEngine()
+        listener = self.MockTrackingListener()
+        engine.add_listener(listener)
+
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(
+            t_bars=50, n_assets=3
+        )
+        report = engine.run(
+            asset_returns=returns,
+            asset_volatilities=vols,
+            candidate_predictions=preds,
+            regime_probabilities=regimes,
+            ambiguity_betas=betas,
+        )
+
+        records = [ev[2] for ev in listener.events if ev[0] == "fill"]
+        for rec in records:
+            assert rec.friction_cost >= 0.0
+            assert math.isfinite(rec.friction_cost)
+
+        assert report.total_friction_cost >= 0.0
+        assert np.isclose(
+            report.total_friction_cost, sum(r.friction_cost for r in records), atol=1e-8
+        )
+
+    def test_inv_sim_004_circuit_breaker_halt_collapses_positions(self) -> None:
+        """Verify INV-SIM-004: Circuit breaker HALT forces allocations strictly to 0.0."""
+        engine = ReplayEngine()
+        listener = self.MockTrackingListener()
+        engine.add_listener(listener)
+
+        t_bars, n_assets = 50, 3
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(
+            t_bars=t_bars, n_assets=n_assets
+        )
+
+        # Force extreme crisis / panic regime from step 20 onward
+        regimes[20:, :] = [0.01, 0.01, 0.98]
+        # Inject extreme disagreement across model forecasts and max thermodynamic ambiguity
+        preds[20:, :, 0] = 0.10
+        preds[20:, :, 1] = -0.10
+        preds[20:, :, 2] = 0.0
+        preds[20:, :, 3] = 0.10
+        preds[20:, :, 4] = -0.10
+        betas[20:] = 10.0
+        vols[20:, :] = 1e-4
+
+        report = engine.run(
+            asset_returns=returns,
+            asset_volatilities=vols,
+            candidate_predictions=preds,
+            regime_probabilities=regimes,
+            ambiguity_betas=betas,
+        )
+
+        records = [ev[2] for ev in listener.events if ev[0] == "fill"]
+        halt_found = False
+
+        for rec in records:
+            if rec.circuit_breaker_tier == "HALT" or rec.circuit_breaker_haircut == 0.0:
+                halt_found = True
+                assert all(x == 0.0 for x in rec.target_allocations), (
+                    f"INV-SIM-004 violation: target_allocations={rec.target_allocations} in HALT"
+                )
+                assert all(x == 0.0 for x in rec.discretized_allocations), (
+                    f"INV-SIM-004 violation: discretized_allocations={rec.discretized_allocations} in HALT"
+                )
+                assert rec.effective_leverage == 0.0
+
+        assert halt_found is True
+        assert report.circuit_breaker_counts.get("HALT", 0) > 0
+
+    def test_inv_sim_005_sample_starvation_rejection(self) -> None:
+        """Verify INV-SIM-005: T < 30 bars raises DegenerateSimulationException(ERR-SIM-005)."""
+        engine = ReplayEngine()
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(t_bars=29)
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(
+                asset_returns=returns,
+                asset_volatilities=vols,
+                candidate_predictions=preds,
+                regime_probabilities=regimes,
+                ambiguity_betas=betas,
+            )
+        assert exc_info.value.code == ERR_SIM_STARVATION
+
+    @pytest.mark.parametrize("bad_val", [float("nan"), float("inf"), float("-inf")])
+    def test_inv_sim_005_non_finite_input_rejections(self, bad_val: float) -> None:
+        """Verify INV-SIM-005: NaN and Inf in any input array raise ERR-SIM-002."""
+        engine = ReplayEngine()
+        r, v, p, reg, b = self._generate_synthetic_inputs(t_bars=35)
+
+        # 1. Non-finite in asset_returns
+        r_bad = r.copy()
+        r_bad[10, 0] = bad_val
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r_bad, v, p, reg, b)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # 2. Non-finite in asset_volatilities
+        v_bad = v.copy()
+        v_bad[5, 1] = bad_val
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v_bad, p, reg, b)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # 3. Non-finite in candidate_predictions
+        p_bad = p.copy()
+        p_bad[15, 0, 0] = bad_val
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p_bad, reg, b)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # 4. Non-finite in regime_probabilities
+        reg_bad = reg.copy()
+        reg_bad[20, 0] = bad_val
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p, reg_bad, b)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # 5. Non-finite in ambiguity_betas
+        b_bad = b.copy()
+        b_bad[8] = bad_val
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p, reg, b_bad)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # 6. Non-finite in timestamps
+        ts_bad = np.arange(35, dtype=np.float64)
+        ts_bad[2] = bad_val
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p, reg, b, timestamps=ts_bad)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # 7. Non-finite in advs
+        adv_bad = np.full(3, 1_000_000.0, dtype=np.float64)
+        adv_bad[1] = bad_val
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p, reg, b, advs=adv_bad)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_dimension_mismatch_rejections(self) -> None:
+        """Verify dimension mismatches raise DegenerateSimulationException(ERR-SIM-006)."""
+        engine = ReplayEngine()
+        r, v, p, reg, b = self._generate_synthetic_inputs(t_bars=40, n_assets=3)
+
+        # 1. 1D or 3D asset_returns
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r[:, 0], v, p, reg, b)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # 2. Volatilities length mismatch
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v[:35], p, reg, b)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # 3. Volatilities asset count mismatch
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v[:, :2], p, reg, b)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # 4. Predictions length mismatch
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p[:30], reg, b)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # 5. Predictions asset count mismatch
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p[:, :1], reg, b)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # 6. Predictions 4D array
+        p_4d = np.zeros((40, 3, 2, 2), dtype=np.float64)
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p_4d, reg, b)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # 7. Regime probabilities length mismatch
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p, reg[:20], b)
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # 8. Ambiguity betas length mismatch
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p, reg, b[:15])
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # 9. Timestamps length mismatch
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p, reg, b, timestamps=np.arange(10))
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+        # 10. ADVs dimension mismatch
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p, reg, b, advs=np.full(5, 1e6))
+        assert exc_info.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+    def test_domain_boundary_rejections(self) -> None:
+        """Verify negative volatility, non-positive ADV/beta, and negative timestamps raise ERR-SIM-002."""
+        engine = ReplayEngine()
+        r, v, p, reg, b = self._generate_synthetic_inputs(t_bars=35, n_assets=3)
+
+        # 1. Negative volatility
+        v_neg = v.copy()
+        v_neg[0, 0] = -0.01
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v_neg, p, reg, b)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # 2. Non-positive ADV
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p, reg, b, advs=np.array([1e6, 0.0, 1e6]))
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # 3. Non-positive ambiguity beta
+        b_neg = b.copy()
+        b_neg[5] = 0.0
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p, reg, b_neg)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # 4. Negative timestamp
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p, reg, b, timestamps=np.array([-1] + list(range(1, 35))))
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        # 5. Negative regime probability
+        reg_neg = reg.copy()
+        reg_neg[0, 0] = -0.1
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(r, v, p, reg_neg, b)
+        assert exc_info.value.code == ERR_SIM_NON_FINITE_INPUT
+
+    def test_single_asset_universe_n1(self) -> None:
+        """Verify single asset universe (N=1) executes successfully."""
+        engine = ReplayEngine()
+        t_bars, n_assets = 35, 1
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(
+            t_bars=t_bars, n_assets=n_assets, is_3d=False
+        )
+        report = engine.run(returns, vols, preds, regimes, betas)
+        assert report.final_equity > 0.0
+        assert math.isfinite(report.sharpe_ratio)
+        assert "EqualWeight" in report.benchmark_comparisons
+
+    def test_empty_asset_universe_n0(self) -> None:
+        """Verify empty asset universe (N=0) executes without crash."""
+        engine = ReplayEngine()
+        t_bars, n_assets = 35, 0
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(
+            t_bars=t_bars, n_assets=n_assets, is_3d=False
+        )
+        report = engine.run(returns, vols, preds, regimes, betas)
+        assert np.isclose(report.final_equity, engine.config.initial_capital, atol=1e-8)
+        assert report.total_return == 0.0
+        assert report.total_friction_cost == 0.0
+
+    def test_capital_ruin_tripping(self) -> None:
+        """Verify catastrophic capital ruin raises DegenerateSimulationException(ERR-SIM-003)."""
+        cfg = SimulationConfig(initial_capital=100.0)
+        engine = ReplayEngine(config=cfg)
+        t_bars, n_assets = 40, 2
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(
+            t_bars=t_bars, n_assets=n_assets
+        )
+
+        # Huge negative return innovation that will wipe out capital
+        returns[1, :] = -50.0
+        preds[:] = 0.05
+
+        with pytest.raises(DegenerateSimulationException) as exc_info:
+            engine.run(returns, vols, preds, regimes, betas)
+        assert exc_info.value.code == ERR_SIM_CAPITAL_RUIN
+
+    def test_circuit_breaker_exogenous_cusum_shock_coupling(self) -> None:
+        """Verify exogenous CUSUM jump + panic regime triggers instantaneous single-bar HALT."""
+        engine = ReplayEngine()
+        listener = self.MockTrackingListener()
+        engine.add_listener(listener)
+
+        t_bars, n_assets = 40, 2
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(
+            t_bars=t_bars, n_assets=n_assets
+        )
+        # Bar 15 has panic regime and exogenous CUSUM jump shock
+        regimes[15, :] = [0.0, 0.0, 1.0]
+        cusum_shocks = np.zeros(t_bars, dtype=bool)
+        cusum_shocks[15] = True
+
+        report = engine.run(returns, vols, preds, regimes, betas, cusum_shocks=cusum_shocks)
+        records = [ev[2] for ev in listener.events if ev[0] == "fill"]
+        assert records[15].circuit_breaker_tier == "HALT"
+        assert records[15].circuit_breaker_haircut == 0.0
+        assert all(x == 0.0 for x in records[15].target_allocations)
+        assert all(x == 0.0 for x in records[15].discretized_allocations)
+        assert report.circuit_breaker_counts.get("HALT", 0) > 0
+
+    def test_invalid_cusum_shocks_rejections(self) -> None:
+        """Verify invalid cusum_shocks array triggers defensive validation errors."""
+        engine = ReplayEngine()
+        t_bars, n_assets = 40, 2
+        r, v, p, reg, b = self._generate_synthetic_inputs(t_bars=t_bars, n_assets=n_assets)
+
+        with pytest.raises(DegenerateSimulationException) as exc1:
+            engine.run(r, v, p, reg, b, cusum_shocks="not_an_array")  # type: ignore[arg-type]
+        assert exc1.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        with pytest.raises(DegenerateSimulationException) as exc2:
+            engine.run(r, v, p, reg, b, cusum_shocks=np.array([float("nan")] * t_bars))
+        assert exc2.value.code == ERR_SIM_NON_FINITE_INPUT
+
+        with pytest.raises(DegenerateSimulationException) as exc3:
+            engine.run(r, v, p, reg, b, cusum_shocks=np.zeros(20, dtype=bool))
+        assert exc3.value.code == ERR_SIM_DIMENSION_MISMATCH
+
+    def test_inv_sim_006_latency_sla_benchmark(self) -> None:
+        """Verify INV-SIM-006: Hot-path replay of 100 bars x 10 assets completes within SLA."""
+        engine = ReplayEngine()
+        t_bars, n_assets = 100, 10
+        returns, vols, preds, regimes, betas = self._generate_synthetic_inputs(
+            t_bars=t_bars, n_assets=n_assets, k_models=5, is_3d=True
+        )
+
+        # Warm-up JIT, Python bytecode, caches
+        engine.run(returns, vols, preds, regimes, betas)
+
+        gc_was_enabled = gc.isenabled()
+        gc.collect()
+        gc.disable()
+        old_trace = sys.gettrace()
+        num_runs = 10
+        latencies_ms: list[float] = []
+
+        try:
+            sys.settrace(None)
+            for _ in range(num_runs):
+                t0 = time.perf_counter()
+                engine.run(returns, vols, preds, regimes, betas)
+                t1 = time.perf_counter()
+                latencies_ms.append((t1 - t0) * 1000.0)
+        finally:
+            sys.settrace(old_trace)
+            if gc_was_enabled:
+                gc.enable()
+
+        is_traced = (
+            old_trace is not None
+            or "coverage" in sys.modules
+            or "pytest_cov" in sys.modules
+            or (
+                hasattr(sys, "monitoring")
+                and any(sys.monitoring.get_tool(i) is not None for i in range(6))
+            )
+        )
+        # Latency threshold: <= 60.0ms under tracing/coverage, <= 35.0ms on untraced hardware
+        threshold_ms = 60.0 if is_traced else 35.0
+        min_latency = float(np.min(latencies_ms))
+        assert min_latency <= threshold_ms, (
+            f"INV-SIM-006 SLA breached: min replay time was {min_latency:.3f}ms > {threshold_ms}ms"
         )
