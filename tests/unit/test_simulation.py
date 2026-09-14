@@ -3150,3 +3150,39 @@ class TestReplayEngine:
         assert min_latency <= threshold_ms, (
             f"INV-SIM-006 SLA breached: min replay time was {min_latency:.3f}ms > {threshold_ms}ms"
         )
+
+
+class TestSimulationMasterExports:
+    """Test suite verifying public exports of simulation symbols in quant.analytics."""
+
+    def test_analytics_simulation_symbols_exported(self) -> None:
+        """Verify all simulation domain entities, engines, protocols, and fault codes are exported."""
+        import quant.analytics as qa
+
+        expected_symbols = [
+            "BarExecutionRecord",
+            "BenchmarkAuditReport",
+            "BenchmarkAuditor",
+            "BenchmarkComparison",
+            "DegenerateSimulationException",
+            "ERR_SIM_CAPITAL_RUIN",
+            "ERR_SIM_DIMENSION_MISMATCH",
+            "ERR_SIM_LOOKAHEAD_VIOLATION",
+            "ERR_SIM_NEGATIVE_FRICTION",
+            "ERR_SIM_NON_FINITE_INPUT",
+            "ERR_SIM_STARVATION",
+            "ExecutionCostModel",
+            "InfeasibleSimulationException",
+            "LookaheadViolationException",
+            "PortfolioLedger",
+            "ReplayEngine",
+            "SimulationConfig",
+            "SimulationError",
+            "SimulationListener",
+        ]
+
+        for sym in expected_symbols:
+            assert hasattr(qa, sym), f"quant.analytics must export {sym}"
+            assert sym in qa.__all__, f"{sym} must be listed in quant.analytics.__all__"
+            obj = getattr(qa, sym)
+            assert obj is not None
