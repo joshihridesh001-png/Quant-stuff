@@ -588,4 +588,82 @@ stateDiagram-v2
    - Emits observer events via `SimulationListener` protocol (`on_bar_start`, `on_decision`, `on_fill`, `on_bar_end`).
    - Solves 100 bars $\times$ 10 assets in $\approx 15.5\text{ms} \le 25\text{ms}$ median execution SLA.
 
+---
+
+### 4.20 Live Execution Gateway & Deterministic Order State Machine Subsystem
+
+```
++---------------------------------------------------------------------------------------------------+
+|                        Live Execution Gateway & Order State Machine Subsystem                     |
++---------------------------------------------------------------------------------------------------+
+|                                                                                                   |
+|  Strategy Order Dispatch / Risk Sizer                                                             |
+|  {Order: cl_ord_id, symbol, side, type, qty, price}                                               |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Idempotency Router (INV-GW-002)           |                                      |
+|               |   - UUIDv5 Token Generation                |                                      |
+|               |   - In-Flight Active Registry              |                                      |
+|               |   - FIFO Deduplication Ring Buffer (TTL)   |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                           Registered Order                                                        |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Execution Gateway / Paper Broker Venue    |                                      |
+|               |   - Purchasing Power Check (ERR-GW-004)    |                                      |
+|               |   - Bid-Ask Spread Slippage Simulation     |                                      |
+|               |   - Venue Fee Schedule Accounting          |                                      |
+|               |   - Limit Order Book Resting / Matching    |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                         Execution Event / Fill                                                    |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Order State Machine FSM (INV-GW-001)      |                                      |
+|               |   - Monotonic DAG Transitions              |                                      |
+|               |   - Terminal State Lockout                 |                                      |
+|               |   - Out-of-Order Packet Reconciliation     |                                      |
+|               |     (INV-GW-004: PENDING_NEW -> NEW)       |                                      |
+|               |   - Mass Conservation: Q_fill + Q_leaves   |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                       Emitted ExecutionReport                                                     |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Order Audit Logger (INV-GW-006)           |                                      |
+|               |   - Non-Blocking asyncio.Queue (< 10us)    |                                      |
+|               |   - Background SQLite WAL Persistence      |                                      |
+|               |   - Parameterized SQL Query Engine         |                                      |
+|               +--------------------------------------------+                                      |
++---------------------------------------------------------------------------------------------------+
+```
+
+1. **Domain Entities & Value Objects (`models.py`, `INV-GW-005`)**:
+   - `Order`: Stateful domain entity with `slots=True`, tracking order lifecycle attributes (`cl_ord_id`, `symbol`, `side`, `order_type`, `quantity`, `price`, `state`, `filled_quantity`, `leaves_quantity`, `average_price`, `fees_paid`).
+   - `ExecutionReport`: Immutable frozen dataclass with `slots=True`, recording granular trade execution events, fills, fees, and timestamps.
+   - Non-finite scalar protection: complete rejection of NaN, $\pm\infty$, booleans, or negative quantities (`ERR-GW-003`).
+2. **Order State Machine FSM (`fsm.py`, `INV-GW-001`, `INV-GW-004`)**:
+   - Deterministic directed acyclic transition graph: $\text{PENDING\_NEW} \to \text{NEW} \to \text{PARTIALLY\_FILLED} \to \text{FILLED}$.
+   - Terminal state lockdown: attempts to transition from $\mathcal{S}_{\text{terminal}} = \{\text{FILLED}, \text{CANCELLED}, \text{REJECTED}, \text{EXPIRED}\}$ raise `InvalidStateTransitionException` (`ERR-GW-001`).
+   - Causal out-of-order packet reconciliation: execution reports arriving while in `PENDING_NEW` automatically synthesize an intermediate transition to `NEW` before applying the fill event (`INV-GW-004`).
+   - Execution mass conservation (`INV-GW-003`): cumulative filled and remaining leaves quantities satisfy $|Q_{\text{filled}} + Q_{\text{leaves}} - Q_{\text{target}}| < 10^{-7}$.
+3. **Deterministic Idempotency Router (`idempotency.py`, `INV-GW-002`)**:
+   - RFC 4122 UUIDv5 cryptographic token derivation from strategy namespace, symbol, side, and nanosecond timestamp.
+   - Active in-flight order registry preventing concurrent duplicate submissions (`ERR-GW-002`).
+   - Bounded historical FIFO ring buffer with $O(1)$ set membership deduplication and configurable TTL retention.
+4. **Execution Gateway Protocol & Paper Broker (`gateway.py`, `INV-GW-006`)**:
+   - `ExecutionGateway` protocol specifying unified async interface: `submit_order`, `cancel_order`, `get_order`, `get_open_orders`, `get_positions`, `get_account_balance`.
+   - `PaperExecutionGateway`: simulated exchange with configurable bid-ask spread slippage (`slippage_bps`), exchange fee schedules (`fee_bps`), synthetic round-trip latency (`latency_ms`), limit order book resting/matching, and pre-trade margin validation (`ERR-GW-004`).
+   - Latency SLA: sub-0.10ms ($100\mu\text{s}$) order routing and execution on the hot path.
+5. **Non-Blocking WAL Order Audit Logger (`audit.py`, `INV-GW-006`)**:
+   - Decouples order matching from disk I/O via in-memory bounded `asyncio.Queue` ($50,000$ capacity), executing `log_report` in $< 10\mu\text{s}$.
+   - Background worker draining queue in configurable batches and persisting to embedded SQLite in Write-Ahead Logging (WAL) mode (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`).
+   - Parameterized historical audit queries filtering by `cl_ord_id` and/or `symbol`, sorted monotonically by timestamp.
+
+
 
