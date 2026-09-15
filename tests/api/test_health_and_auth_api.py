@@ -15,6 +15,13 @@ async def test_health_check_endpoint(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_root_redirect_to_docs(client: AsyncClient) -> None:
+    response = await client.get("/", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "/docs"
+
+
+@pytest.mark.asyncio
 async def test_auth_token_issuance(client: AsyncClient) -> None:
     # 1. Invalid credentials -> 401
     bad_login = await client.post(

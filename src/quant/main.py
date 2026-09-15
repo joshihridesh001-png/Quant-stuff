@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 
 from quant.api.middleware import CorrelationAndTimingMiddleware, register_exception_handlers
@@ -68,6 +69,12 @@ def create_application() -> FastAPI:
             "database": db_status,
             "environment": settings.ENVIRONMENT,
         }
+
+    # 5. Root Redirect to Interactive Documentation
+    @app.get("/", include_in_schema=False)
+    async def root_redirect() -> RedirectResponse:
+        """Redirect root requests to interactive Swagger UI documentation."""
+        return RedirectResponse(url="/docs")
 
     return app
 
