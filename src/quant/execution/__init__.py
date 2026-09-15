@@ -9,6 +9,7 @@ Dependencies:
     - quant.execution.fsm: Deterministic order state machine with causal out-of-order reconciliation.
     - quant.execution.idempotency: Deterministic cryptographic idempotency router and ring buffer.
     - quant.execution.gateway: ExecutionGateway protocol and PaperExecutionGateway.
+    - quant.execution.audit: Non-blocking asynchronous SQLite WAL order audit logger.
 
 Structural Relationship:
     - Root public export boundary for quant.execution package.
@@ -22,6 +23,7 @@ Invariants Enforced:
     - INV-GW-006 (Hot-Path Latency SLA)
 """
 
+from quant.execution.audit import OrderAuditLogger
 from quant.execution.fsm import OrderStateMachine
 from quant.execution.gateway import (
     ExecutionGateway,
@@ -71,6 +73,7 @@ __all__ = [
     "InvalidStateTransitionException",
     "NAMESPACE_QUANT_ORDER",
     "Order",
+    "OrderAuditLogger",
     "OrderSide",
     "OrderStateMachine",
     "OrderState",

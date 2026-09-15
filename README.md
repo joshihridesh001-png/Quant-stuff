@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![SQLAlchemy 2.0](https://img.shields.io/badge/SQLAlchemy-2.0+-D71F00?logo=sqlalchemy&logoColor=white)](https://www.sqlalchemy.org/)
 [![Coverage 94%](https://img.shields.io/badge/Coverage-94%25-brightgreen)](https://pytest.org/)
-[![Tests 1046 Passed](https://img.shields.io/badge/Tests-1046%20Passed-brightgreen)](https://pytest.org/)
+[![Tests 1456 Passed](https://img.shields.io/badge/Tests-1456%20Passed-brightgreen)](https://pytest.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Mypy Strict](https://img.shields.io/badge/Mypy-Strict-blue)](https://mypy-lang.org/)
 
@@ -19,9 +19,9 @@ The system's operational and architectural standards are codified across 6 canon
 1. **[`PRD.md`](./PRD.md)**: Product Requirements Document — product vision, market inefficiencies, user personas, and feature matrices.
 2. **[`Architecture.md`](./Architecture.md)**: System Architecture & Component Topology — layered domain design, hybrid storage (DuckDB + PostgreSQL), module maps, and data flow pipelines.
 3. **[`Rules.md`](./Rules.md)**: The Three Fundamental Engineering Rules — micro-level code transparency, zero-execution diagnostics, and strict CI quality gates.
-4. **[`Phases.md`](./Phases.md)**: Implementation Roadmap & Delivery Phases — granular phase-by-phase delivery schedule (Sprint 1 through Sprint 5 complete).
-5. **[`Design.md`](./Design.md)**: Quantitative & Technical Design Specification — mathematical formulations for decay kernels, fractional diff, triple-barrier labeling, CPCV, DSR, hypergamic mating, RD-DMA, circuit breakers, EVT tail risk, and live replay simulation.
-6. **[`Memory.md`](./Memory.md)**: Project Memory — Autonomous Decision Register (ADR-001 through ADR-021), Deterministic Diagnostic Failure Matrix (ERR-SIM-001..006), and complete engineering audit trail.
+4. **[`Phases.md`](./Phases.md)**: Implementation Roadmap & Delivery Phases — granular phase-by-phase delivery schedule (Sprint 1 through Phase 6 Step 1 complete).
+5. **[`Design.md`](./Design.md)**: Quantitative & Technical Design Specification — mathematical formulations for decay kernels, fractional diff, triple-barrier labeling, CPCV, DSR, hypergamic mating, RD-DMA, circuit breakers, EVT tail risk, and live execution gateways.
+6. **[`Memory.md`](./Memory.md)**: Project Memory — Autonomous Decision Register (ADR-001 through ADR-022), Deterministic Diagnostic Failure Matrix (ERR-GW-001..006), and complete engineering audit trail.
 
 ---
 
@@ -54,6 +54,12 @@ quant/
 │   │   ├── tail_risk.py             # Semi-parametric EVT-POT GPD with closed-form PWM & CVaR
 │   │   ├── execution_sizing.py      # Strictly concave convex sizer & 2D Newton dual projection
 │   │   └── simulation.py            # End-to-end live replay simulator & institutional benchmarking
+│   ├── execution/            # Live execution gateway, order state machine & async audit logger
+│   │   ├── models.py         # Pure domain entities (Order, ExecutionReport, enums, errors)
+│   │   ├── fsm.py            # OrderStateMachine with causal out-of-order fill reconciliation
+│   │   ├── idempotency.py    # IdempotencyRouter with deterministic UUIDv5 & FIFO ring buffer
+│   │   ├── gateway.py        # ExecutionGateway protocol & PaperExecutionGateway broker
+│   │   └── audit.py          # Non-blocking async SQLite WAL order audit logger
 │   ├── infrastructure/       # Concrete adapters, database ORM, and repository implementations
 │   │   ├── database/         # Async engine, sessionmaker, declarative models, DuckDBManager
 │   │   └── repositories/     # SqlAlchemyAssetRepository, SqlAlchemyEventRepository, DuckDBMarketDataRepository
@@ -67,7 +73,7 @@ quant/
 │   │   └── dependencies.py   # RBAC guards and session dependency injection
 │   └── main.py               # Application factory & lifespan manager
 ├── migrations/               # Alembic database schema migrations
-├── tests/                    # Unit, integration, and API test suites (1046 tests, 100% green)
+├── tests/                    # Unit, integration, and API test suites (1456 tests, 100% green)
 ├── pyproject.toml            # PEP 621 packaging, dependency locks, and linter settings
 └── CHANGELOG_DEV.md          # Technical audit log
 ```
@@ -174,14 +180,14 @@ ruff check .
 # 2. Code Formatting Verification
 ruff format --check .
 
-# 3. Static Type Checking (Strict Mode across 51 source files)
+# 3. Static Type Checking (Strict Mode across 57 source files)
 mypy src --strict
 
 # 4. Automated Test Suite with Coverage Enforcement (> 85%)
 pytest tests/unit
 ```
 
-All **1046 unit tests** pass with 100% green execution in $< 8$ seconds.
+All **1456 unit tests** pass with 100% green execution in $< 8$ seconds.
 
 ---
 
@@ -199,5 +205,7 @@ All **1046 unit tests** pass with 100% green execution in $< 8$ seconds.
 | **Sprint 3** | **Scenario Matrix & Game Theory Engine** | Causal Bayesian jump-regimes, OAS covariance shrinkage, 3/2-power Pseudo-Huber cross-impact, Stackelberg trajectory, entropic minimax regret solver. | **Complete** |
 | **Sprint 4** | **Evolutionary Strategy Search & Population Management** | 20-gene chromosome codec, boundary-anchored adaptive RVEA, hypergamic assortative mating, adaptive Cauchy mutation, $(\mu + \lambda)$ lifecycle engine. | **Complete** |
 | **Sprint 5** | **Ensemble Aggregator, Tail Risk & Live Replay Simulator** | Regime-conditioned DMA (RD-DMA), epistemic disagreement entropy circuit breakers, semi-parametric EVT-POT GPD with closed-form PWM, unified strictly concave convex sizer, end-to-end live replay simulator & institutional benchmarking. | **Complete** |
-| **Phase 6** | **Live Execution Gateway & Broker Integration** | FIX / REST Execution Gateway, Order State Machine, Smart Order Router (SOR), Dark Pool Routing, OMS Heartbeats, and Automated Kill Switches. | *Upcoming* |
+| **Phase 6: Step 1** | **Live Execution Gateway, State Machine & Audit Logger** | Pure domain models (`Order`, `ExecutionReport`), deterministic FSM (`OrderStateMachine`) with out-of-order reconciliation, UUIDv5 `IdempotencyRouter`, `PaperExecutionGateway` broker, and non-blocking SQLite WAL `OrderAuditLogger`. | **Complete** |
+| **Phase 6: Step 2** | **Microstructural Smart Order Router (SOR) & Dark Pool Routing** | Multi-venue routing, lit/dark pool liquidity fragmentation splitting, Iceberg and pegged order execution algorithms. | *Upcoming* |
+| **Phase 6: Step 3** | **Real-Time Risk Monitor, OMS Heartbeats & Emergency Kill Switch** | Pre-trade/post-trade risk limits, exchange heartbeat monitors, and automated circuit breaker kill-switch tripwires. | *Upcoming* |
 

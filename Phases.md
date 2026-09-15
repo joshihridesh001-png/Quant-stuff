@@ -23,7 +23,11 @@ gantt
     Step 1: Dynamic Model Averaging (RD-DMA) :done, s5_1, 2026-10-06, 3d
     Step 2: Circuit Breakers & Overlays     :done, s5_2, 2026-10-09, 2d
     Step 3: EVT Tail Risk & Execution Sizing :done, s5_3, 2026-10-11, 2d
-    Step 4: Live Replay Simulator           :active, s5_4, 2026-10-13, 2d
+    Step 4: Live Replay Simulator           :done, s5_4, 2026-10-13, 2d
+    section Phase 6: Live Execution
+    Step 1: Live Execution Gateway & State Machine :done, s6_1, 2026-10-15, 2d
+    Step 2: Smart Order Router (SOR)        :active, s6_2, 2026-10-17, 3d
+    Step 3: Real-Time Risk & Kill Switch    :s6_3, 2026-10-20, 2d
 ```
 
 ---
@@ -256,12 +260,27 @@ Decomposed into sequential micro-steps implementing the Institutional Dynamic Mo
 
 ---
 
-### Phase 6: Live Execution Gateway & Broker Integration [UPCOMING]
+### Phase 6: Live Execution Gateway & Broker Integration [IN PROGRESS - 33%]
 
-* **Scope (Subsequent Milestones):**
-  * Step 1: Fix/REST Execution Gateway, Order State Machine, and Idempotency Token Routing.
-  * Step 2: Microstructural Smart Order Router (SOR), Dark Pool Routing, and Pegged Execution.
-  * Step 3: Real-Time Risk Monitor, OMS Heartbeats, and Kill Switches.
+To prevent execution failures, race conditions, and capital leakage, Phase 6 is decomposed into 3 sequential micro-steps:
+
+#### Step 1: Live Execution Gateway, Order State Machine & Asynchronous Audit Logger [COMPLETE]
+* **Deliverables:**
+  * Master execution domain models in `src/quant/execution/models.py` (`Order`, `ExecutionReport`, `OrderState`, `OrderSide`, `OrderType`, `TimeInForce`) utilizing Python `slots=True`, immutable dataclasses for execution events, non-finite scalar guards, and boundary invariants (`INV-GW-005`).
+  * Deterministic finite-state machine `OrderStateMachine` in `src/quant/execution/fsm.py` enforcing directed acyclic state transitions (`INV-GW-001`), terminal state lockdown (`FILLED`, `CANCELLED`, `REJECTED`, `EXPIRED`), execution mass conservation $Q_{\text{filled}} + Q_{\text{leaves}} \equiv Q_{\text{target}}$ (`INV-GW-003`), and causal out-of-order packet reconciliation synthesizing intermediate `NEW` states on premature fill arrival (`INV-GW-004`).
+  * Cryptographic `IdempotencyRouter` in `src/quant/execution/idempotency.py` generating collision-resistant deterministic `cl_ord_id` tokens via RFC 4122 UUIDv5 hashing (`INV-GW-002`), active in-flight duplicate rejection, and $O(1)$ historical deduplication FIFO ring buffer with TTL expiration.
+  * Universal `ExecutionGateway` protocol and high-fidelity `PaperExecutionGateway` in `src/quant/execution/gateway.py` with realistic bid-ask spread slippage (`slippage_bps`), exchange fee schedules (`fee_bps`), synthetic latency simulation (`latency_ms`), limit order book resting/matching, and pre-trade purchasing power margin checks (`ERR-GW-004`).
+  * Asynchronous non-blocking `OrderAuditLogger` in `src/quant/execution/audit.py` with in-memory bounded `asyncio.Queue` (50,000 capacity) hot-path dispatch ($< 10\mu\text{s}$ per call, `INV-GW-006`), background SQLite WAL persistence (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`), and parameterized historical audit querying.
+  * Exported all 23 execution domain entities, enums, exceptions, diagnostic error codes (`ERR-GW-001` through `ERR-GW-006`), protocols, and engines in `src/quant/execution/__init__.py`.
+  * 410 unit tests across `test_order_models.py` (72 tests), `test_order_fsm.py` (93 tests), `test_idempotency.py` (77 tests), `test_paper_gateway.py` (100 tests), and `test_order_audit.py` (68 tests), achieving 1,456 total passing tests across the engine with **>90% line coverage** on all execution modules, 100% strict mypy compliance (`mypy src --strict` 0 errors across 57 source files), and zero ruff lint/formatting deviations.
+  * Formally concluded **Phase 6 Step 1 as 100% COMPLETE**.
+
+#### Step 2: Microstructural Smart Order Router (SOR), Dark Pool Routing & Pegged Execution [UPCOMING]
+* **Scope:** Dynamic multi-venue routing, lit/dark pool liquidity fragmentation splitting, Iceberg and pegged order execution algorithms.
+
+#### Step 3: Real-Time Risk Monitor, OMS Heartbeats & Emergency Kill Switch [UPCOMING]
+* **Scope:** Real-time pre-trade and post-trade risk limits, exchange heartbeat monitors, and automated circuit breaker kill-switch tripwires.
+
 
 
 
