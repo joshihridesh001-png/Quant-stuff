@@ -166,3 +166,126 @@ The population is stratified into the **Alpha Cohort** (top $\rho = 20\%$ by mul
 ### 6.3 Multi-Objective Fitness Functional
 $$\mathcal{F}(\mathcal{I}_i) = \text{DeflatedSharpe}(\mathcal{I}_i) \cdot \exp\left( -\psi \cdot \text{MaxDD}(\mathcal{I}_i) \right) + \omega_1 V_i(\text{Regret}) + \omega_2 \mathcal{H}_{\text{novelty}}(\mathcal{I}_i)$$
 * $\mathcal{H}_{\text{novelty}}$: Phenotypic crowding distance relative to $K$-nearest neighbors in chromosome space.
+
+---
+
+## 7. Regime-Conditioned Dynamic Model Averaging (RD-DMA)
+
+### 7.1 Volatility-Adaptive Forgetting Factor
+Dynamically modulates memory depth $\alpha_t \in [\alpha_{\min}, \alpha_{\max}]$ in response to normalized volatility innovations $\Delta \sigma_t = (\sigma_t - \sigma_{t-1}) / \sigma_{t-1}$:
+$$\alpha_t = \alpha_{\max} - (\alpha_{\max} - \alpha_{\min}) \cdot \frac{1}{1 + \exp\left(-\gamma_{\text{adapt}} \cdot \Delta \sigma_t\right)}$$
+* In calm regimes ($\Delta \sigma \le 0$), $\alpha_t \to \alpha_{\max} = 0.99$ (100-bar effective memory).
+* In sudden volatility shocks ($\Delta \sigma \gg 0$), $\alpha_t \to \alpha_{\min} = 0.85$ (1–2 bar memory for rapid adaptation).
+
+### 7.2 Forward-Markov Regime Transition Prior
+Forecasts next-step regime distribution from current posteriors $\mathbf{p}_t \in \Delta^3$:
+$$\mathbf{p}_{t+1|t} = \mathbf{P}_{\text{trans}}^T \mathbf{p}_t$$
+where $\mathbf{P}_{\text{trans}}$ is the $3 \times 3$ row-stochastic Markov transition matrix over regimes {Absorption, Momentum, Panic}. The composite predictive prior $\bar{\boldsymbol{\pi}}_{t+1|t}$ is synthesized across regime scenario conditional forecasts.
+
+### 7.3 Asymmetric Downside Loss Scoring
+Penalizes downside forecast errors and sign-inversion errors more heavily than upside misses:
+$$\ell_{t, k} = (y_t - \tilde{y}_{t, k})^2 + \gamma_{\text{down}} \max(0, -y_t \tilde{y}_{t, k})$$
+with asymmetry multiplier $\gamma_{\text{down}} = 2.50$, directly factoring downside semi-variance $\sigma^2_{k, \text{down}}$ into model likelihood updates.
+
+### 7.4 Tikhonov-Regularized Correlation & Simplex Optimization
+Evaluates pairwise prediction correlation matrix $\mathbf{C}_t$ with standard deviation floor $\sigma_{\min} = 10^{-8}$ and Tikhonov ridge shrinkage:
+$$\mathbf{C}_t^{\text{shrunk}} = (1 - \delta_{\text{ridge}}) \widehat{\mathbf{C}}_t + \delta_{\text{ridge}} \mathbf{I}_K, \quad \delta_{\text{ridge}} = 0.05$$
+guaranteeing strict positive definiteness ($\lambda_{\min} \ge 0.05$). Solves optimal model allocation $\mathbf{w}_t^* \in \Delta^K$ via Entropic Mirror Descent under SVD subspace orthogonality penalization ($\lambda_{\text{ortho}} = 0.25$) in $< 0.15\text{ms}$ with immutable Laplace floor smoothing $\epsilon_{\text{floor}} = 0.001 / K$.
+
+### 7.5 Total Variance Decomposition
+Decomposes predictive uncertainty via the Law of Total Variance (`INV-ENS-002`):
+$$\sigma^2_{\text{total}} = \sigma^2_{\text{aleatoric}} + \sigma^2_{\text{epistemic}} = \sum_{k=1}^K w_k \sigma_k^2 + \sum_{k=1}^K w_k (\tilde{y}_k - \bar{y})^2$$
+where $\sigma^2_{\text{aleatoric}}$ measures irreducible data noise and $\sigma^2_{\text{epistemic}}$ measures model disagreement.
+
+---
+
+## 8. Epistemic Disagreement Entropy & Circuit Breaker Overlays
+
+### 8.1 3-Simplex Directional Consensus & Normalized Shannon Entropy
+Partitions model forecasts into bullish, bearish, and neutral consensus around deadband $\delta_{\text{sign}} = 10^{-4}$:
+$$p_+ = \sum_{\tilde{y}_k > \delta} w_k, \quad p_- = \sum_{\tilde{y}_k < -\delta} w_k, \quad p_0 = \sum_{|\tilde{y}_k| \le \delta} w_k$$
+Residing on the 3-simplex $\mathbf{p} = [p_+, p_-, p_0]^T \in \Delta^3$ (`INV-CB-004`), normalized Shannon directional entropy is:
+$$\widetilde{H}_{\text{dir}} = \frac{-\sum_{s \in \{+, 0, -\}} p_s \ln(p_s + \epsilon)}{\ln 3} \in [0.0, 1.0]$$
+
+### 8.2 Epistemic Uncertainty Ratio & Composite Shock Score
+$$\rho_{\text{epistemic}} = \frac{\sigma^2_{\text{epistemic}}}{\sigma^2_{\text{aleatoric}} + \sigma^2_{\text{epistemic}}} \in [0.0, 1.0)$$
+$$H_{\text{epistemic}} = \widetilde{H}_{\text{dir}} \cdot \sqrt{\rho_{\text{epistemic}}} \in [0.0, 1.0]$$
+Thermodynamic composite shock score integrates macroeconomic ambiguity temperature $\tilde{\beta}_t$:
+$$\Xi_t = \omega_H H_{\text{epistemic}} + \omega_\rho \rho_{\text{epistemic}} + \omega_\beta \tilde{\beta}_t \in [0.0, 1.0]$$
+
+### 8.3 Normalized Continuous Logistic Sigmoid Haircut ($\kappa_t$)
+Calibrated to exact boundary anchors $\kappa_t(0) \equiv 1.0000$ and $\kappa_t(1) \equiv 0.0000$ (`INV-CB-001`):
+$$\kappa_t = \text{clip}\left(\frac{\sigma_{\text{raw}}(\Xi_t) - \sigma_{\text{raw}}(1)}{\sigma_{\text{raw}}(0) - \sigma_{\text{raw}}(1)}, 0.0, 1.0\right)$$
+
+### 8.4 Multi-Tier Hysteresis State Machine
+Four-tier risk hierarchy (`CircuitBreakerTier`): `NORMAL` (0), `CAUTION` (1), `DERISK` (2), `HALT` (3) (`INV-CB-002`).
+* **Instantaneous Escalation**: Transitions immediately to higher tiers on entropy or volatility surges. Single-bar emergency `HALT` on joint CUSUM jump and panic regime.
+* **Anti-Chattering Dwell Cooling**: Enforces $\tau_{\text{dwell}} \ge 5$ bars in `HALT` and `DERISK` (`INV-CB-003`).
+* **Dual-Barrier Recovery**: Requires $\Xi_t < \theta_{\text{recovery}} = 0.30$ and strictly single-tier stepdown transitions.
+
+---
+
+## 9. Semi-Parametric Peaks-Over-Threshold EVT Tail Risk & Unified Convex Sizing
+
+### 9.1 POT Generalized Pareto Distribution (GPD) with Closed-Form PWM
+* Evaluates dynamic causal high threshold $u_t = \mu_{t-1} + k_{\text{threshold}} \sigma_{t-1}$ on $[t-W, t-1]$ (`INV-TR-007`).
+* Probability Weighted Moments (PWM) estimates GPD parameters algebraically in closed form without iterative solvers (Rule 4.3):
+  $$M_0 = \frac{1}{N_u} \sum_{i=1}^{N_u} y_i, \quad M_1 = \sum_{i=1}^{N_u} \frac{N_u - i - 0.35}{N_u(N_u - 0.70)} y_{(i)}$$
+  $$\hat{\xi}_{\text{PWM}} = 1 - \frac{M_0}{2(M_0 - 2M_1)}, \quad \hat{\beta}_{\text{PWM}} = \frac{2 M_0 M_1}{M_0 - 2M_1}$$
+* **Fréchet Tail Stability Clamping & Tripwire (`INV-TR-002`)**: $\xi \in [0.001, 0.999]$. Theoretical infinite variance $\xi \ge 1.0 \implies \text{InfiniteVarianceException}$ demanding emergency execution `HALT`, backed by Hill pre-filter on top 10% exceedances.
+* **Coherent Expected Shortfall (CVaR)**: Strictly satisfies $\text{CVaR}_\alpha \ge \text{VaR}_\alpha$ (`INV-TR-001`) and Artzner subadditivity (`INV-TR-003`):
+  $$\text{CVaR}_\alpha = \frac{\text{VaR}_\alpha}{1 - \xi} + \frac{\beta - \xi u}{1 - \xi}$$
+* **3-Tier Cold-Start Degradation Ladder**: Empirical ($N < 30$) $\to$ Student-t MoM with analytical log-gamma integral ($30 \le N < 250$) $\to$ EVT-GPD PWM ($N \ge 250$).
+
+### 9.2 Unified Strictly Concave Execution Sizing
+Maximizes strictly concave objective $\mathcal{L}(\boldsymbol{\nu})$ guaranteeing negative-definite Hessian $\nabla^2 \mathcal{L} \prec 0$ (`INV-TR-004`):
+$$\max_{\boldsymbol{\nu}} \mathcal{L}(\boldsymbol{\nu}) = U_{\text{Kelly}}(\boldsymbol{\nu}) - \mathcal{C}_{\text{Impact}}(\boldsymbol{\nu}) - \mathcal{R}_{\text{Epistemic}}(\boldsymbol{\nu})$$
+1. **Directional Epistemic Shrinkage**:
+   $$\tilde{\mu}_i = \text{sign}(\mu_i) \max\left(0, |\mu_i| - \lambda_{\text{shrink}} \sigma^2_{\text{epistemic}, i}\right)$$
+   Shrinks expected edge toward zero under high model disagreement, eliminating sign-flipping short squeeze traps.
+2. **Universal 3/2-Power Pseudo-Huber Impact**:
+   $$\mathcal{C}_{\text{Impact}}(\boldsymbol{\nu}) = \frac{\eta}{W_t^{1/2}} \sum_{i=1}^N \sigma_i \left( (\nu_i^2 + \delta^2 W_t^2)^{3/4} - (\delta W_t)^{3/2} \right) + \frac{1}{2 W_t} \boldsymbol{\nu}^T \boldsymbol{\Lambda}_{\text{cross}} \boldsymbol{\nu}$$
+   with PSD permanent cross-impact tensor $\boldsymbol{\Lambda}_{\text{cross}} \succeq 0$.
+3. **Circuit Breaker Regularization**:
+   $$\mathcal{R}_{\text{Epistemic}}(\boldsymbol{\nu}) = \frac{1}{2 \kappa_t W_t} \|\boldsymbol{\nu}\|_2^2$$
+   smoothly crushes allocation to $\mathbf{0}$ as continuous haircut $\kappa_t \to 0$.
+
+### 9.3 Exact $O(N \log N)$ Dual Projection onto Two $L_1$ Balls (`INV-TR-005`)
+Projects unconstrained candidate $\mathbf{y}$ onto the intersection of the gross leverage ball and Expected Shortfall drawdown budget:
+$$\mathcal{K} = \left\{ \boldsymbol{\nu} \in \mathbb{R}^N : \|\boldsymbol{\nu}\|_1 \le L_{\max} W_t, \; \mathbf{c}^T |\boldsymbol{\nu}| \le \text{MDD}_{\text{budget}} W_t \right\}$$
+Solved via 2D Semismooth Newton active-set iteration with provable Dykstra alternating projections fallback and terminal zero-leakage radial contraction.
+
+### 9.4 Microstructural Randomized Lot Discretization
+Bridges continuous targets $\boldsymbol{\nu}^*$ to discrete contract lots $\Delta \nu_i$ via Bernoulli lottery:
+$$\tilde{\nu}_i = \text{sign}(\nu_i^*) \cdot \left(\left\lfloor \frac{|\nu_i^*|}{\Delta \nu_i} \right\rfloor + B_i\right) \cdot \Delta \nu_i, \quad B_i \sim \text{Bernoulli}(\text{frac}_i)$$
+guaranteeing unbiased expectation $\mathbb{E}[\tilde{\boldsymbol{\nu}}] = \boldsymbol{\nu}^*$ without systemic cash drag or margin rounding bias.
+
+---
+
+## 10. End-to-End Live Replay Simulator & Institutional Benchmarking
+
+### 10.1 Causal Replay Loop & Information Barriers (`INV-SIM-001`)
+* Chronological event loop $t=0 \dots T-1$ over historical bars.
+* Strictly enforces information barrier filtration $\mathcal{F}_{t-1}$: decisions at bar $t$ condition strictly on slice $[:t]$ (lagged returns, volatilities, regimes), with zero contamination from contemporaneous or future prices.
+* Circuit breaker emergency `HALT` collapses target and executed allocations strictly to $\mathbf{0}$ (`INV-SIM-004`).
+
+### 10.2 Non-Linear Execution Friction (`INV-SIM-003`)
+* Evaluates non-negative total transaction cost $\mathcal{C}_t = \mathcal{C}_{\text{fee}} + \mathcal{C}_{\text{spread}} + \mathcal{C}_{\text{impact}} \ge 0.0$.
+* 3/2-power Kyle-Obizhaeva market impact with hardware-native $x \sqrt{x}$ acceleration:
+  $$\mathcal{C}_{\text{impact}} = \sum_{i=1}^N \frac{\lambda_0}{\sqrt{\text{ADV}_i}} \sigma_{i, t} |\Delta \nu_{i, t}|^{3/2}$$
+* Exchange fee schedule $\mathcal{C}_{\text{fee}} = \text{fee}_{\text{bps}} \cdot 10^{-4} \cdot \|\Delta \boldsymbol{\nu}\|_1$ and half-spread slippage.
+
+### 10.3 Causal Mark-to-Market Accounting (`INV-SIM-002`)
+* Realizes portfolio gross return on bar $t$ strictly from lagged exposure $\boldsymbol{\nu}_{t-1}^T \mathbf{r}_t$.
+* Bit-exact capital conservation: $|W_t - (\text{cash}_t + \sum \nu_{i, t})| < 10^{-5}$ and $W_t - W_{t-1} = \text{PnL}_t^{\text{net}}$.
+* Terminal ruin tripwire: $W_t \le 0.0 \implies \text{InfeasibleSimulationException(ERR-SIM-003)}$ with immediate position liquidation.
+* Tracks running high-water mark $M_t = \max_{s \le t} W_s$ and drawdown $D_t = (M_t - W_t) / M_t \in [0.0, 1.0]$.
+
+### 10.4 Institutional Benchmark Auditor & Statistical Certification
+* Evaluates institutional metrics: CAGR, Annualized Volatility, Sharpe Ratio, Sortino Ratio, Calmar Ratio, Max Drawdown, Realized VaR 95/99, Realized CVaR 95/99, Tail Ratio.
+* Certifies statistical validity via `DeflatedSharpeEngine`: verifies DSR $\ge 0.95$ and $T \ge \text{MinBTL}$.
+* Multi-benchmark attribution against Equal Weight ($1/N$), Risk Parity (Inverse Volatility), and Cash ($R_f=0$) baselines.
+* Prefix-sum centered variance acceleration achieving $< 2.5\text{ms}$ audit execution.
+* Emits observer hooks via `SimulationListener` protocol (`on_bar_start`, `on_decision`, `on_fill`, `on_bar_end`).
+* Latency SLA: 100 bars $\times$ 10 assets completes in $\approx 15.5\text{ms} \le 25\text{ms}$ (`INV-SIM-006`).
+

@@ -23,6 +23,7 @@ The system is an institutional-grade, multi-algorithmic quantitative prediction 
 5. Evolves strategy chromosomes through a genetic algorithm governed by **Algorithmic Hypergamy Dynamics** gated by residual error orthogonality.
 6. Validates all statistical alpha using **Combinatorial Purged Cross-Validation (CPCV)** and the **Deflated Sharpe Ratio (DSR)**.
 7. Aggregates elite model predictions into risk-budgeted execution mandates with automated disagreement entropy circuit breakers.
+8. Replays historical live execution causal event loops coupling RD-DMA, Epistemic Circuit Breakers, EVT Tail Risk, and Unified Convex Sizing under Kyle-Obizhaeva market impact, mark-to-market portfolio accounting, and Deflated Sharpe institutional benchmarking.
 
 ### 1.3 Definitions, Acronyms, and Abbreviations
 * **ADF**: Augmented Dickey-Fuller unit-root test for time series stationarity.
