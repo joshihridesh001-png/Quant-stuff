@@ -7,6 +7,7 @@ Purpose:
 Dependencies:
     - quant.execution.models: Domain entities, enums, exceptions, and error code constants.
     - quant.execution.fsm: Deterministic order state machine with causal out-of-order reconciliation.
+    - quant.execution.idempotency: Deterministic cryptographic idempotency router and ring buffer.
 
 Structural Relationship:
     - Root public export boundary for quant.execution package.
@@ -20,6 +21,10 @@ Invariants Enforced:
 """
 
 from quant.execution.fsm import OrderStateMachine
+from quant.execution.idempotency import (
+    NAMESPACE_QUANT_ORDER,
+    IdempotencyRouter,
+)
 from quant.execution.models import (
     ERR_GW_DISCONNECTED,
     ERR_GW_DUPLICATE_ORDER_ID,
@@ -53,9 +58,11 @@ __all__ = [
     "ExecutionReport",
     "GatewayDisconnectedException",
     "GatewayError",
+    "IdempotencyRouter",
     "InsufficientMarginException",
     "InvalidOrderInputException",
     "InvalidStateTransitionException",
+    "NAMESPACE_QUANT_ORDER",
     "Order",
     "OrderSide",
     "OrderStateMachine",
