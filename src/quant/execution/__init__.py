@@ -6,6 +6,7 @@ Purpose:
 
 Dependencies:
     - quant.execution.models: Domain entities, enums, exceptions, and error code constants.
+    - quant.execution.fsm: Deterministic order state machine with causal out-of-order reconciliation.
 
 Structural Relationship:
     - Root public export boundary for quant.execution package.
@@ -14,9 +15,11 @@ Invariants Enforced:
     - INV-GW-001 (Causal State Machine Monotonicity)
     - INV-GW-002 (Cryptographic Idempotency Token Uniqueness)
     - INV-GW-003 (Execution Mass Conservation)
+    - INV-GW-004 (Causal Out-of-Order Packet Reconciliation)
     - INV-GW-005 (Strict Non-Finite Input Protection)
 """
 
+from quant.execution.fsm import OrderStateMachine
 from quant.execution.models import (
     ERR_GW_DISCONNECTED,
     ERR_GW_DUPLICATE_ORDER_ID,
@@ -55,6 +58,7 @@ __all__ = [
     "InvalidStateTransitionException",
     "Order",
     "OrderSide",
+    "OrderStateMachine",
     "OrderState",
     "OrderType",
     "RateLimitExceededException",

@@ -338,11 +338,13 @@ class Order:
 
     @property
     def leaves_quantity(self) -> float:
-        """Remaining unfilled order quantity under mass conservation max(0.0, quantity - filled_quantity)."""
-        # Functional Purpose: Compute remaining unexecuted quantity under mass conservation INV-GW-003.
-        # Explicit Dependency Tracking: self.quantity, self.filled_quantity.
-        # Structural Relationship: Queried by OrderStateMachine and ExecutionGateway to determine terminal state.
-        # Defensive Invariant: leaves_quantity is clamped to [0.0, quantity] via max(0.0, ...).
+        """Remaining unfilled order quantity resting on book (0.0 if terminal, else max(0.0, quantity - filled_quantity))."""
+        # Functional Purpose: Compute open unexecuted quantity resting on book under INV-GW-003.
+        # Explicit Dependency Tracking: self.is_terminal, self.quantity, self.filled_quantity.
+        # Structural Relationship: Queried by OrderStateMachine and ExecutionGateway to determine open risk.
+        # Defensive Invariant: Terminal orders strictly report 0.0 open leaves; active orders clamp to [0.0, quantity].
+        if self.is_terminal:
+            return 0.0
         return max(0.0, float(self.quantity - self.filled_quantity))
 
     @property
