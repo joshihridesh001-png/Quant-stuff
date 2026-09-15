@@ -191,7 +191,7 @@ Decomposed into 4 sequential micro-steps implementing the Entropic Distributiona
 
 ---
 
-### Phase 5: Ensemble Aggregator & Risk Overlays [ACTIVE]
+### Phase 5: Ensemble Aggregator & Risk Overlays [COMPLETE]
 
 Decomposed into sequential micro-steps implementing the Institutional Dynamic Model Averaging Engine and Risk Overlay Systems:
 
@@ -242,8 +242,27 @@ Decomposed into sequential micro-steps implementing the Institutional Dynamic Mo
   * Exported all 38 tail risk and sizing symbols in `src/quant/analytics/__init__.py`.
   * 110 unit tests in `tests/unit/test_execution_sizing.py` and 124 unit tests in `tests/unit/test_tail_risk.py` (748 total project tests passing) with **92% line coverage** on `execution_sizing.py` and **96% line coverage** on `tail_risk.py`, 100% strict mypy compliance, and zero lint/format deviations.
 
-* **Remaining Scope (Subsequent Steps):**
-  * Step 4: End-to-End Live Replay Simulator & Institutional Benchmarking.
+#### Step 4: End-to-End Live Replay Simulator & Institutional Benchmarking [COMPLETE]
+* **Deliverables:**
+  * Master orchestrator `ReplayEngine` in `src/quant/analytics/simulation.py` executing a causal chronological event loop ($t=0 \dots T-1$) coupling RD-DMA forward-Markov prior projection, Epistemic Circuit Breakers, EVT Tail Risk, Unified Convex Sizer, non-linear market friction, and mark-to-market portfolio accounting.
+  * Zero-lookahead information barrier (`INV-SIM-001`): allocation decisions at bar $t$ strictly condition on lagged information filtration $\mathcal{F}_{t-1}$ ($t-1$ returns, volatilities, and regimes) with zero contamination from contemporaneous or future prices.
+  * `ExecutionCostModel` modeling 3/2-power Kyle-Obizhaeva market impact $\mathcal{C}_{\text{impact}} = \sum \frac{\lambda_0}{\sqrt{\text{ADV}_i}} \sigma_{i, t} |\Delta \nu_{i, t}|^{3/2}$ accelerated via hardware-native $x \sqrt{x}$, exchange transaction fees $\mathcal{C}_{\text{fee}} = \text{fee}_{\text{bps}} \cdot 10^{-4} \cdot \|\Delta \boldsymbol{\nu}\|_1$, bid-ask half-spread slippage, and non-negative friction enforcement $\mathcal{C} \ge 0.0$ (`INV-SIM-003`).
+  * `PortfolioLedger` implementing causal mark-to-market accounting $\boldsymbol{\nu}_{t-1}^T \mathbf{r}_t$, exact capital conservation $|W_t - (\text{cash}_t + \sum \nu_{i, t})| < 10^{-5}$ (`INV-SIM-002`), terminal bankruptcy detection ($W_t \le 0.0 \implies \text{InfeasibleSimulationException}$), and running drawdown tracking clamped to $[0.0, 1.0]$.
+  * `BenchmarkAuditor` computing comprehensive institutional risk and performance metrics: CAGR, Annualized Volatility, Sharpe, Sortino, Calmar, Max Drawdown, Realized VaR 95/99, Realized CVaR 95/99, Tail Ratio, multi-benchmark attribution (Equal Weight, Risk Parity, Inverse Volatility, Cash), and Deflated Sharpe Ratio (DSR $\ge 0.95$) & Minimum Backtest Length (MinBTL) statistical certification via `DeflatedSharpeEngine` in $< 2.5\text{ms}$.
+  * Observer pattern via `SimulationListener` protocol providing live event hooks (`on_bar_start`, `on_decision`, `on_fill`, `on_bar_end`) for telemetry and execution streaming.
+  * High-performance execution SLA benchmark (`INV-SIM-006`): 100 bars $\times$ 10 assets completes in $\approx 15.5\text{ms} \le 25\text{ms}$.
+  * Exported all 19 simulation domain entities, fault codes, exceptions, and engines in `src/quant/analytics/__init__.py`.
+  * 298 comprehensive unit tests in `tests/unit/test_simulation.py` (1046 total workspace tests passing 100%) with **94% line coverage** on `simulation.py`, 100% strict mypy compliance (`mypy src --strict` 0 errors across 51 source files), and zero lint/format deviations (`ruff`).
+
+---
+
+### Phase 6: Live Execution Gateway & Broker Integration [UPCOMING]
+
+* **Scope (Subsequent Milestones):**
+  * Step 1: Fix/REST Execution Gateway, Order State Machine, and Idempotency Token Routing.
+  * Step 2: Microstructural Smart Order Router (SOR), Dark Pool Routing, and Pegged Execution.
+  * Step 3: Real-Time Risk Monitor, OMS Heartbeats, and Kill Switches.
+
 
 
 

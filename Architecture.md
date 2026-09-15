@@ -497,3 +497,95 @@ stateDiagram-v2
    - Solves full multi-asset sizing problem in $< 0.15\text{ms}$ median for $N=10$ assets (`INV-TR-006`).
    - Emits frozen `SizingDecision` payload with active constraint binding flags directly into execution routing and order management.
 
+### 4.19 End-to-End Live Replay Simulation & Institutional Benchmarking Pipeline
+
+```
++---------------------------------------------------------------------------------------------------+
+|                        End-to-End Live Replay Simulation & Benchmarking                           |
++---------------------------------------------------------------------------------------------------+
+|                                                                                                   |
+|  Market Data Stream (t = 0 ... T-1)                                                               |
+|  {Prices, Returns r_t, Volatilities sigma_t, ADV_t, Macro Temperature beta_t}                    |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Information Barrier Filtration F_{t-1}    |                                      |
+|               |  (INV-SIM-001 Zero-Lookahead Causality)    |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Ensemble DMA + Circuit Breaker Overlay    |                                      |
+|               |   - RD-DMA Prior: p_{t|t-1}                |                                      |
+|               |   - Continuous Haircut: kappa_t in [0, 1]  |                                      |
+|               |   - Discrete State: NORMAL / CAUTION /     |                                      |
+|               |                     DERISK / HALT          |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  EVT Tail Risk + Unified Sizing Engine     |                                      |
+|               |   - Expected Shortfall Vector c_t (CVaR)   |                                      |
+|               |   - Convex Kelly Allocation nu_t*          |                                      |
+|               |   - Randomized Lot Rounding nu_t~          |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                 Allocated Positions nu_t~                                                         |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Execution Cost Model (INV-SIM-003)        |                                      |
+|               |   - Kyle 3/2-power Impact: lambda * Delta^{3/2}                                   |
+|               |   - Exchange Fee + Spread Slippage         |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                     Friction Cost C_t                                                             |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Portfolio Ledger (INV-SIM-002)            |                                      |
+|               |   - Causal Mark-to-Market: nu_{t-1}^T r_t  |                                      |
+|               |   - Exact Conservation: W_t = cash + sum nu|                                      |
+|               |   - Ruin Check: W_t <= 0 -> HALT           |                                      |
+|               |   - Running High-Water Mark & Drawdown     |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                 Bar Execution Record + Listener Hooks                                             |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Benchmark Auditor                         |                                      |
+|               |   - CAGR, Vol, Sharpe, Sortino, Calmar     |                                      |
+|               |   - Realized VaR / CVaR 95/99, Tail Ratio  |                                      |
+|               |   - Multi-Benchmark Attribution (EW, RP)   |                                      |
+|               |   - Deflated Sharpe (DSR >= 0.95, MinBTL)  |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                                     v                                                             |
+|                     BenchmarkAuditReport Payload                                                  |
++---------------------------------------------------------------------------------------------------+
+```
+
+1. **Causal Time-Stepped Replay Orchestration (`INV-SIM-001`)**:
+   - Executes a strict chronological loop $t=0 \dots T-1$ over historical bars.
+   - Enforces information barrier filtration $\mathcal{F}_{t-1}$: strategy decisions at bar $t$ condition strictly on slice $[:t]$ (lagged returns, volatilities, regimes), with zero contemporaneous or future contamination.
+   - Automatically collapses target allocations to $\mathbf{0}$ during circuit breaker emergency `HALT` (`INV-SIM-004`).
+2. **Non-Linear Market Friction (`ExecutionCostModel`, `INV-SIM-003`)**:
+   - Computes non-negative total execution cost $\mathcal{C}_t = \mathcal{C}_{\text{fee}} + \mathcal{C}_{\text{spread}} + \mathcal{C}_{\text{impact}} \ge 0.0$.
+   - Evaluates 3/2-power Kyle-Obizhaeva market impact $\mathcal{C}_{\text{impact}} = \sum \frac{\lambda_0}{\sqrt{\text{ADV}_i}} \sigma_{i, t} |\Delta \nu_{i, t}|^{3/2}$ accelerated via hardware-native $x \sqrt{x}$.
+   - Evaluates fee schedule $\mathcal{C}_{\text{fee}} = \text{fee}_{\text{bps}} \cdot 10^{-4} \cdot \|\Delta \boldsymbol{\nu}\|_1$ and half-spread slippage $\mathcal{C}_{\text{spread}} = \frac{\text{spread}_{\text{bps}} \cdot 10^{-4}}{2} \cdot \|\Delta \boldsymbol{\nu}\|_1$.
+3. **Causal Mark-to-Market Accounting (`PortfolioLedger`, `INV-SIM-002`)**:
+   - Portfolio return on bar $t$ is realized strictly from lagged exposure held overnight $\boldsymbol{\nu}_{t-1}^T \mathbf{r}_t$.
+   - Conserves capital strictly: $|W_t - (\text{cash}_t + \sum \nu_{i, t})| < 10^{-5}$.
+   - Detects bankruptcy ruin $W_t \le 0.0 \implies \text{InfeasibleSimulationException(ERR-SIM-003)}$ with immediate position collapse and cash flooring.
+   - Tracks high-water mark $M_t = \max_{s \le t} W_s$ and running drawdown $D_t = (M_t - W_t) / M_t \in [0.0, 1.0]$.
+4. **Institutional Benchmarking & Statistical Certification (`BenchmarkAuditor`)**:
+   - Generates institutional performance profile: CAGR, Annualized Volatility, Sharpe, Sortino, Calmar, Max Drawdown, Realized VaR 95/99, Realized CVaR 95/99, and Tail Ratio.
+   - Certifies statistical validity via `DeflatedSharpeEngine`: verifies DSR $\ge 0.95$ and $T \ge \text{MinBTL}$, correcting for selection bias and non-Gaussian higher moments.
+   - Performs multi-benchmark attribution against Equal Weight ($1/N$), Risk Parity (Inverse Volatility), and Cash ($R_f=0$) baselines.
+   - Employs prefix-sum centered variance acceleration achieving $< 2.5\text{ms}$ audit execution.
+5. **Telemetry & Execution Latency SLA (`INV-SIM-006`)**:
+   - Emits observer events via `SimulationListener` protocol (`on_bar_start`, `on_decision`, `on_fill`, `on_bar_end`).
+   - Solves 100 bars $\times$ 10 assets in $\approx 15.5\text{ms} \le 25\text{ms}$ median execution SLA.
+
+
