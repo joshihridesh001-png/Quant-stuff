@@ -28,6 +28,13 @@ Invariants Enforced:
     - INV-SOR-005 (Strict Non-Finite Input Protection in Routing)
 """
 
+from quant.execution.algorithms import (
+    ExecutionScheduler,
+    NonlinearArrivalPriceScheduler,
+    PoissonTWAPScheduler,
+    ScheduledSlice,
+    VolumeAdaptiveVWAPScheduler,
+)
 from quant.execution.audit import OrderAuditLogger
 from quant.execution.fsm import OrderStateMachine
 from quant.execution.gateway import (
@@ -101,6 +108,7 @@ __all__ = [
     "DuplicateOrderException",
     "ExecutionGateway",
     "ExecutionReport",
+    "ExecutionScheduler",
     "GatewayDisconnectedException",
     "GatewayError",
     "IdempotencyRouter",
@@ -114,6 +122,7 @@ __all__ = [
     "NAMESPACE_QUANT_ORDER",
     "NBBOViolationException",
     "NonFiniteInputException",
+    "NonlinearArrivalPriceScheduler",
     "Order",
     "OrderAuditLogger",
     "OrderSide",
@@ -121,9 +130,12 @@ __all__ = [
     "OrderState",
     "OrderType",
     "PaperExecutionGateway",
+    "PoissonTWAPScheduler",
     "RateLimitExceededException",
     "SORError",
+    "ScheduledSlice",
     "TimeInForce",
     "VenueProfile",
     "VenueType",
+    "VolumeAdaptiveVWAPScheduler",
 ]
