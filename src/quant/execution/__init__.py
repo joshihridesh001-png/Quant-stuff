@@ -66,6 +66,11 @@ from quant.execution.models import (
     RateLimitExceededException,
     TimeInForce,
 )
+from quant.execution.parent_order import (
+    ChildFillRecord,
+    ImplementationShortfallReport,
+    ParentOrder,
+)
 from quant.execution.sor import (
     RoutedVenueOrder,
     SmartOrderRouter,
@@ -108,6 +113,7 @@ __all__ = [
     "ERR_SOR_NBBO_VIOLATION",
     "ERR_SOR_NON_FINITE_INPUT",
     "AlgorithmTimeoutException",
+    "ChildFillRecord",
     "ChildOrderFailedException",
     "ConsolidatedQuote",
     "DuplicateOrderException",
@@ -117,6 +123,7 @@ __all__ = [
     "GatewayDisconnectedException",
     "GatewayError",
     "IdempotencyRouter",
+    "ImplementationShortfallReport",
     "InsufficientLiquidityException",
     "InsufficientMarginException",
     "InvalidOrderInputException",
@@ -135,6 +142,7 @@ __all__ = [
     "OrderState",
     "OrderType",
     "PaperExecutionGateway",
+    "ParentOrder",
     "PoissonTWAPScheduler",
     "RateLimitExceededException",
     "RoutedVenueOrder",
