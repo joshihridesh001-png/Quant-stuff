@@ -88,7 +88,7 @@ src/quant/execution/
 class VenueProfile:
     venue_id: str
     venue_type: VenueType
-    maker_fee_bps: float        # Can be negative for maker rebate
+    maker_fee_bps: float  # Can be negative for maker rebate
     taker_fee_bps: float
     min_order_size: float = 1.0
     lot_size: float = 1.0

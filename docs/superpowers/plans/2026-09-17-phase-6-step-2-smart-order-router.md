@@ -254,7 +254,9 @@ from quant.execution.venues import ConsolidatedQuote, VenueProfile, VenueType
 def test_dark_first_probing_and_midpoint_pricing() -> None:
     venues = {
         "DARK_1": VenueProfile("DARK_1", VenueType.DARK_POOL, maker_fee_bps=0.0, taker_fee_bps=0.5),
-        "LIT_1": VenueProfile("LIT_1", VenueType.LIT_EXCHANGE, maker_fee_bps=-0.2, taker_fee_bps=1.0),
+        "LIT_1": VenueProfile(
+            "LIT_1", VenueType.LIT_EXCHANGE, maker_fee_bps=-0.2, taker_fee_bps=1.0
+        ),
     }
     router = SmartOrderRouter(venues=venues)
     quote = ConsolidatedQuote(
@@ -280,8 +282,12 @@ def test_dark_first_probing_and_midpoint_pricing() -> None:
 
 def test_closed_form_kkt_lit_waterfilling() -> None:
     venues = {
-        "CHEAP_EXCHANGE": VenueProfile("CHEAP_EXCHANGE", VenueType.LIT_EXCHANGE, maker_fee_bps=0.0, taker_fee_bps=0.5),
-        "PRICEY_EXCHANGE": VenueProfile("PRICEY_EXCHANGE", VenueType.LIT_EXCHANGE, maker_fee_bps=0.0, taker_fee_bps=2.0),
+        "CHEAP_EXCHANGE": VenueProfile(
+            "CHEAP_EXCHANGE", VenueType.LIT_EXCHANGE, maker_fee_bps=0.0, taker_fee_bps=0.5
+        ),
+        "PRICEY_EXCHANGE": VenueProfile(
+            "PRICEY_EXCHANGE", VenueType.LIT_EXCHANGE, maker_fee_bps=0.0, taker_fee_bps=2.0
+        ),
     }
     router = SmartOrderRouter(venues=venues)
     quote = ConsolidatedQuote(
@@ -292,8 +298,8 @@ def test_closed_form_kkt_lit_waterfilling() -> None:
         ask_quantity=1000.0,
         timestamp_ns=1_000_000,
         venue_depths={
-            "CHEAP_EXCHANGE": (500.0, 50.0),   # Only 50 available on cheap venue
-            "PRICEY_EXCHANGE": (500.0, 500.0), # Ample depth on pricey venue
+            "CHEAP_EXCHANGE": (500.0, 50.0),  # Only 50 available on cheap venue
+            "PRICEY_EXCHANGE": (500.0, 500.0),  # Ample depth on pricey venue
         },
     )
     allocations = router.compute_routing_allocation(
