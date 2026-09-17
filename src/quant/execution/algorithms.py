@@ -48,9 +48,11 @@ from typing import Final, Protocol, runtime_checkable
 import numpy as np
 
 from quant.execution.venues import (
+    ERR_SOR_INSUFFICIENT_LIQUIDITY,
     ERR_SOR_INVALID_SCHEDULE,
     ERR_SOR_MASS_CONSERVATION_BREACH,
     ERR_SOR_NON_FINITE_INPUT,
+    InsufficientLiquidityException,
     InvalidScheduleException,
     MassConservationException,
     NonFiniteInputException,
@@ -58,6 +60,7 @@ from quant.execution.venues import (
 
 # Re-export diagnostic codes for direct consumer module access
 __all__ = [
+    "ERR_SOR_INSUFFICIENT_LIQUIDITY",
     "ERR_SOR_INVALID_SCHEDULE",
     "ERR_SOR_MASS_CONSERVATION_BREACH",
     "ERR_SOR_NON_FINITE_INPUT",
@@ -259,6 +262,15 @@ class PoissonTWAPScheduler:
             )
         self.num_slices: int = num_slices
 
+        # Validate total_quantity against minimum slice mass conservation reserve
+        min_required_quantity = self.num_slices * MASS_CONSERVATION_TOLERANCE
+        if self.total_quantity < min_required_quantity:
+            raise InvalidScheduleException(
+                f"PoissonTWAPScheduler total_quantity {self.total_quantity:.9f} is too small for "
+                f"{self.num_slices} slices (minimum required is {min_required_quantity:.9f})",
+                code=ERR_SOR_INVALID_SCHEDULE,
+            )
+
         # 3. Validate mean_interval_sec (> 0.0, finite float, reject bool)
         if (
             not isinstance(mean_interval_sec, (int, float))
@@ -301,15 +313,15 @@ class PoissonTWAPScheduler:
             )
         self.time_jitter_ratio: float = float(time_jitter_ratio)
 
-        # 6. Validate min_interval_sec (> 0.0, finite float, reject bool)
+        # 6. Validate min_interval_sec (>= 1e-9, finite float, reject bool)
         if (
             not isinstance(min_interval_sec, (int, float))
             or isinstance(min_interval_sec, bool)
             or not math.isfinite(min_interval_sec)
-            or min_interval_sec <= 0.0
+            or min_interval_sec < 1e-9
         ):
             raise InvalidScheduleException(
-                f"PoissonTWAPScheduler min_interval_sec must be finite float > 0.0, "
+                f"PoissonTWAPScheduler min_interval_sec must be finite float >= 1e-9 (1 ns), "
                 f"got {min_interval_sec!r}",
                 code=ERR_SOR_INVALID_SCHEDULE,
             )
@@ -591,25 +603,34 @@ class VolumeAdaptiveVWAPScheduler:
             for k in range(k_bars - 1):
                 w_k = self.weights[k]
                 q_k = self.total_quantity * w_k
-                t_k = start_time_ns + (k * interval_ns)
-                slices.append(
-                    ScheduledSlice(
-                        slice_index=k,
-                        quantity=q_k,
-                        scheduled_time_ns=t_k,
+                if q_k > 0.0:
+                    t_k = start_time_ns + (k * interval_ns)
+                    slices.append(
+                        ScheduledSlice(
+                            slice_index=len(slices),
+                            quantity=q_k,
+                            scheduled_time_ns=t_k,
+                        )
                     )
-                )
-                rem_quantity -= q_k
+                    rem_quantity -= q_k
 
             # Final slice residual closure guaranteeing exact mass conservation
-            t_final = start_time_ns + ((k_bars - 1) * interval_ns)
-            slices.append(
-                ScheduledSlice(
-                    slice_index=k_bars - 1,
-                    quantity=rem_quantity,
-                    scheduled_time_ns=t_final,
+            if rem_quantity > 0.0:
+                t_final = start_time_ns + ((k_bars - 1) * interval_ns)
+                slices.append(
+                    ScheduledSlice(
+                        slice_index=len(slices),
+                        quantity=rem_quantity,
+                        scheduled_time_ns=t_final,
+                    )
                 )
-            )
+
+            # Invariant assertion: Non-empty schedule
+            if not slices:
+                raise InvalidScheduleException(
+                    "VolumeAdaptiveVWAPScheduler produced empty schedule: all weights evaluate to zero",
+                    code=ERR_SOR_INVALID_SCHEDULE,
+                )
 
             # Defensive assertion: INV-SOR-001 mass conservation
             total_scheduled = sum(s.quantity for s in slices)
@@ -690,7 +711,7 @@ class VolumeAdaptiveVWAPScheduler:
 
             # Remaining cumulative historical weight
             remaining_weight = sum(self.weights[j] for j in range(k, k_bars))
-            if remaining_weight > 0.0 and rem_quantity > 1e-9:
+            if remaining_weight > 0.0 and rem_quantity > 0.0:
                 q_desired = rem_quantity * (self.weights[k] / remaining_weight)
                 q_cap = self.max_participation_rate * v_hat
                 q_k = min(q_desired, q_cap)
@@ -705,6 +726,13 @@ class VolumeAdaptiveVWAPScheduler:
                         )
                     )
                     rem_quantity -= q_k
+
+        if not slices:
+            raise InsufficientLiquidityException(
+                f"VolumeAdaptiveVWAPScheduler unable to schedule child slices: "
+                f"zero market volume forecasted across all {k_bars} intervals",
+                code=ERR_SOR_INSUFFICIENT_LIQUIDITY,
+            )
 
         return slices
 
@@ -943,6 +971,7 @@ class NonlinearArrivalPriceScheduler:
 
         slices: list[ScheduledSlice] = []
         rem_quantity: float = self.total_quantity
+        last_timestamp_ns = -1
 
         for j in range(1, m_intervals + 1):
             if rem_quantity <= 0.0:
@@ -959,7 +988,12 @@ class NonlinearArrivalPriceScheduler:
             if q_j <= 0.0:
                 continue
 
-            t_slice_ns = start_time_ns + int((j - 1) * dt_ns)
+            raw_t_ns = start_time_ns + int((j - 1) * dt_ns)
+            t_slice_ns = (
+                max(last_timestamp_ns + 1, raw_t_ns) if last_timestamp_ns >= 0 else raw_t_ns
+            )
+            last_timestamp_ns = t_slice_ns
+
             slices.append(
                 ScheduledSlice(
                     slice_index=len(slices),

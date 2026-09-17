@@ -36,8 +36,10 @@ from quant.execution.algorithms import (
     VolumeAdaptiveVWAPScheduler,
 )
 from quant.execution.venues import (
+    ERR_SOR_INSUFFICIENT_LIQUIDITY,
     ERR_SOR_INVALID_SCHEDULE,
     ERR_SOR_NON_FINITE_INPUT,
+    InsufficientLiquidityException,
     InvalidScheduleException,
     NonFiniteInputException,
 )
@@ -580,3 +582,80 @@ def test_nonlinear_arrival_price_invalid_start_time() -> None:
         scheduler.generate_schedule(-1)
     with pytest.raises(InvalidScheduleException):
         scheduler.generate_schedule(True)  # type: ignore[arg-type]
+
+
+# ============================================================================
+# Adversarial Red-Team Remediated Test Cases
+# ============================================================================
+
+
+def test_vwap_historical_zero_volume_bars() -> None:
+    """Adversarial Case 1: Zero-volume intermediate bar must not emit 0-quantity slice or crash."""
+    scheduler = VolumeAdaptiveVWAPScheduler(
+        total_quantity=300.0,
+        historical_volume_curve=[0.0, 100.0, 200.0],
+        interval_sec=30.0,
+    )
+    slices = scheduler.generate_schedule(start_time_ns=1_000_000)
+    assert len(slices) == 2  # Only bars 1 and 2 emitted
+    assert all(s.quantity > 0.0 for s in slices)
+    assert sum(s.quantity for s in slices) == pytest.approx(300.0, abs=1e-7)
+    # Timestamps should correspond to bars 1 and 2
+    assert slices[0].scheduled_time_ns == 1_000_000 + 30 * 1_000_000_000
+    assert slices[1].scheduled_time_ns == 1_000_000 + 60 * 1_000_000_000
+
+
+def test_vwap_historical_final_zero_volume_bar() -> None:
+    """Adversarial Case 2: Zero-volume final bar must not emit a 0-quantity residual closure slice."""
+    scheduler = VolumeAdaptiveVWAPScheduler(
+        total_quantity=100.0,
+        historical_volume_curve=[100.0, 0.0],
+        interval_sec=30.0,
+    )
+    slices = scheduler.generate_schedule(start_time_ns=0)
+    assert len(slices) == 1
+    assert slices[0].quantity == pytest.approx(100.0, abs=1e-7)
+    assert slices[0].scheduled_time_ns == 0
+
+
+def test_poisson_twap_sub_reserve_quantity_rejected() -> None:
+    """Adversarial Case 3: Order quantity smaller than num_slices * 1e-7 must be rejected in init."""
+    with pytest.raises(InvalidScheduleException) as exc_info:
+        PoissonTWAPScheduler(
+            total_quantity=1e-8,
+            num_slices=5,
+            mean_interval_sec=1.0,
+        )
+    assert exc_info.value.code == ERR_SOR_INVALID_SCHEDULE
+    assert "too small" in str(exc_info.value)
+
+
+def test_nonlinear_arrival_price_micro_horizon_monotonic_timestamps() -> None:
+    """Adversarial Case 4: Sub-nanosecond interval horizons must produce strictly monotonic timestamps."""
+    scheduler = NonlinearArrivalPriceScheduler(
+        total_quantity=100.0,
+        horizon_seconds=1e-9,  # 1 ns horizon across 5 intervals => dt_ns = 0.2 < 1 ns
+        volatility=0.02,
+        risk_aversion=1e-4,
+        impact_coefficient=0.1,
+        num_intervals=5,
+    )
+    slices = scheduler.generate_schedule(start_time_ns=1000)
+    assert len(slices) == 5
+    timestamps = [s.scheduled_time_ns for s in slices]
+    for i in range(len(timestamps) - 1):
+        assert timestamps[i + 1] > timestamps[i], f"Non-monotonic timestamps: {timestamps}"
+
+
+def test_vwap_zero_forecasted_volume_raises_insufficient_liquidity() -> None:
+    """Adversarial Case 5: Zero forecasted volume across all bars must raise InsufficientLiquidityException."""
+    scheduler = VolumeAdaptiveVWAPScheduler(
+        total_quantity=500.0,
+        historical_volume_curve=[100.0, 100.0],
+    )
+    with pytest.raises(InsufficientLiquidityException) as exc_info:
+        scheduler.generate_schedule(
+            start_time_ns=0,
+            expected_bar_volumes=[0.0, 0.0],
+        )
+    assert exc_info.value.code == ERR_SOR_INSUFFICIENT_LIQUIDITY
