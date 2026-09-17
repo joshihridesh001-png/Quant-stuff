@@ -66,6 +66,11 @@ from quant.execution.models import (
     RateLimitExceededException,
     TimeInForce,
 )
+from quant.execution.sor import (
+    RoutedVenueOrder,
+    SmartOrderRouter,
+    VenueHealth,
+)
 from quant.execution.venues import (
     ERR_SOR_ALGORITHM_TIMEOUT,
     ERR_SOR_CHILD_ORDER_FAILED,
@@ -132,9 +137,12 @@ __all__ = [
     "PaperExecutionGateway",
     "PoissonTWAPScheduler",
     "RateLimitExceededException",
+    "RoutedVenueOrder",
     "SORError",
     "ScheduledSlice",
+    "SmartOrderRouter",
     "TimeInForce",
+    "VenueHealth",
     "VenueProfile",
     "VenueType",
     "VolumeAdaptiveVWAPScheduler",
