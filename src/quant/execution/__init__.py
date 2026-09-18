@@ -127,6 +127,13 @@ from quant.execution.risk import (
     RiskError,
     RiskLimits,
 )
+from quant.execution.risk_orchestrator import (
+    ERR_ORCHESTRATOR_DISCONNECTED,
+    ERR_ORCHESTRATOR_DRAWDOWN,
+    ERR_ORCHESTRATOR_KILL_ACTIVE,
+    ERR_ORCHESTRATOR_NON_FINITE,
+    RiskOrchestrator,
+)
 from quant.execution.sor import (
     RoutedVenueOrder,
     SmartOrderRouter,
@@ -166,6 +173,10 @@ __all__ = [
     "ERR_HB_SEQUENCE_GAP",
     "ERR_INVALID_ADMIN_TOKEN",
     "ERR_KILL_SWITCH_DISARMED",
+    "ERR_ORCHESTRATOR_DISCONNECTED",
+    "ERR_ORCHESTRATOR_DRAWDOWN",
+    "ERR_ORCHESTRATOR_KILL_ACTIVE",
+    "ERR_ORCHESTRATOR_NON_FINITE",
     "ERR_RSK_CONCENTRATION_LIMIT_EXCEEDED",
     "ERR_RSK_DRAWDOWN_LIMIT_EXCEEDED",
     "ERR_RSK_FAT_FINGER_NOTIONAL",
@@ -241,6 +252,7 @@ __all__ = [
     "RateLimitExceededException",
     "RiskError",
     "RiskLimits",
+    "RiskOrchestrator",
     "RoutedVenueOrder",
     "SORError",
     "ScheduledSlice",
