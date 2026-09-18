@@ -22,6 +22,14 @@ async def test_root_redirect_to_docs(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_trading_terminal_dashboard_endpoint(client: AsyncClient) -> None:
+    response = await client.get("/dashboard")
+    assert response.status_code == 200
+    assert "QUANT ALPHA EXECUTION TERMINAL" in response.text
+    assert '<canvas id="priceChartCanvas"' in response.text
+
+
+@pytest.mark.asyncio
 async def test_auth_token_issuance(client: AsyncClient) -> None:
     # 1. Invalid credentials -> 401
     bad_login = await client.post(

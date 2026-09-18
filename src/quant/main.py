@@ -2,10 +2,11 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import text
 
 from quant.api.middleware import CorrelationAndTimingMiddleware, register_exception_handlers
@@ -70,7 +71,22 @@ def create_application() -> FastAPI:
             "environment": settings.ENVIRONMENT,
         }
 
-    # 5. Root Redirect to Interactive Documentation
+    # 5. Interactive Trading Terminal Dashboard
+    @app.get(
+        "/dashboard",
+        response_class=HTMLResponse,
+        tags=["Dashboard"],
+        summary="Institutional Trading Terminal UI",
+    )
+    @app.get("/terminal", response_class=HTMLResponse, include_in_schema=False)
+    async def get_trading_terminal() -> HTMLResponse:
+        """Serve the interactive institutional execution trading terminal dashboard."""
+        terminal_path = Path(__file__).parent / "templates" / "trading_terminal.html"
+        if terminal_path.exists():
+            return HTMLResponse(content=terminal_path.read_text(encoding="utf-8"))
+        return HTMLResponse(content="<h1>Trading Terminal Template Not Found</h1>", status_code=404)
+
+    # 6. Root Redirect to Interactive Documentation
     @app.get("/", include_in_schema=False)
     async def root_redirect() -> RedirectResponse:
         """Redirect root requests to interactive Swagger UI documentation."""

@@ -38,6 +38,8 @@ weights/
 models/
 quant.db
 *.db
+*.duckdb
+data/
 .coverage
 coverage.xml
 .pytest_cache/
