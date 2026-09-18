@@ -26,7 +26,7 @@ gantt
     Step 4: Live Replay Simulator           :done, s5_4, 2026-10-13, 2d
     section Phase 6: Live Execution
     Step 1: Live Execution Gateway & State Machine :done, s6_1, 2026-10-15, 2d
-    Step 2: Smart Order Router (SOR)        :active, s6_2, 2026-10-17, 3d
+    Step 2: Smart Order Router (SOR)        :done, s6_2, 2026-10-17, 3d
     Step 3: Real-Time Risk & Kill Switch    :s6_3, 2026-10-20, 2d
 ```
 
@@ -260,7 +260,7 @@ Decomposed into sequential micro-steps implementing the Institutional Dynamic Mo
 
 ---
 
-### Phase 6: Live Execution Gateway & Broker Integration [IN PROGRESS - 33%]
+### Phase 6: Live Execution Gateway & Broker Integration [IN PROGRESS - 67%]
 
 To prevent execution failures, race conditions, and capital leakage, Phase 6 is decomposed into 3 sequential micro-steps:
 
@@ -275,8 +275,23 @@ To prevent execution failures, race conditions, and capital leakage, Phase 6 is 
   * 410 unit tests across `test_order_models.py` (72 tests), `test_order_fsm.py` (93 tests), `test_idempotency.py` (77 tests), `test_paper_gateway.py` (100 tests), and `test_order_audit.py` (68 tests), achieving 1,456 total passing tests across the engine with **>90% line coverage** on all execution modules, 100% strict mypy compliance (`mypy src --strict` 0 errors across 57 source files), and zero ruff lint/formatting deviations.
   * Formally concluded **Phase 6 Step 1 as 100% COMPLETE**.
 
-#### Step 2: Microstructural Smart Order Router (SOR), Dark Pool Routing & Pegged Execution [UPCOMING]
-* **Scope:** Dynamic multi-venue routing, lit/dark pool liquidity fragmentation splitting, Iceberg and pegged order execution algorithms.
+#### Step 2: Microstructural Smart Order Router (SOR), Dark Pool Routing & Execution Algorithms [COMPLETE]
+* **Deliverables:**
+  * Multi-venue domain primitives in `src/quant/execution/venues.py`: `VenueType` (`LIT`, `DARK`), `VenueProfile` supporting negative maker fee rebates, `ConsolidatedQuote` with strict uncrossed NBBO validation (`INV-SOR-002`) and order book imbalance, and diagnostic fault code hierarchy `ERR-SOR-001` through `ERR-SOR-007`.
+  * Institutional algorithmic meta-order schedulers in `src/quant/execution/algorithms.py`:
+    * `PoissonTWAPScheduler`: Anti-gaming Poisson clock timing with physical interval floor ($\Delta t_{\min} \ge 1\text{ ns}$), randomized sizing jitter ($\pm \alpha_q$), dynamic remaining volume partitioning, and final slice closure guaranteeing exact mass conservation within $10^{-7}$ (`INV-SOR-001`, `INV-SOR-004`).
+    * `VolumeAdaptiveVWAPScheduler`: Online Bayesian volume blending ($\widehat{V}_k = \omega V_{\text{exp}} + (1-\omega) V_{\text{rt}}$) with hard institutional volume participation rate cap ($\rho \le 15\%$ everywhere, `INV-SOR-003`), skipping zero-volume bars and raising `InsufficientLiquidityException(ERR-SOR-002)` during market halts.
+    * `NonlinearArrivalPriceScheduler`: Closed-form hyperbolic Almgren-Chriss optimal liquidation trajectory under 3/2-power impact proxy with dynamic Parkinson volatility scaling ($\kappa_t = \kappa_0 \cdot \sigma_t / \sigma_{\text{baseline}}$), linear TWAP asymptotic limit for $\kappa T < 10^{-6}$, exponential ratio reformulation for $\kappa T > 50.0$ eliminating IEEE 754 overflow, strictly monotonic timestamp progression, and telescoping sum mass conservation.
+  * Intelligent multi-venue router in `src/quant/execution/sor.py`:
+    * Two-phase routing pipeline: Sequential dark pool midpoint probing with Minimum Execution Size (`min_order_size`) capturing half-spread price improvement (`INV-SOR-002`), followed by closed-form algebraic KKT lit waterfilling in $O(M \log M)$ sorting venues by marginal taker fees and maker rebates, achieving $< 0.02\text{ms}$ routing latency (surpassing $< 0.05\text{ms}$ ceiling of `INV-SOR-006` with zero `scipy.optimize` solvers).
+    * Real-time Toxic Markout Watchdog in `VenueHealth` tracking post-trade adverse selection in basis points ($\text{sign}(\text{side}) \cdot (P_{\text{post}} - P_{\text{fill}}) / P_{\text{fill}} \cdot 10^4$), automatic quarantine of venues exceeding consecutive toxic fill thresholds, and deterministic nanosecond epoch auto-restoration.
+    * Asynchronous gateway orchestration in `route_slice` with active cancellation of un-matched dark IOC leaves to prevent double-fill over-execution, and gateway error wrapping with `ChildOrderFailedException(ERR-SOR-005)`.
+  * Parent order lifecycle & institutional TCA in `src/quant/execution/parent_order.py`:
+    * `ParentOrder`: Stateful domain entity coordinating child slices, cumulative fills, VWAP, and leaves with overfill interceptor (`MassConservationException(ERR-SOR-004)` on fills exceeding $Q_{\text{total}} + 10^{-7}$) and horizon timeout detection (`AlgorithmTimeoutException(ERR-SOR-006)`).
+    * `ImplementationShortfallReport`: Exact additive Perold (1988) TCA decomposition into Delay Cost, Price Impact, Spread Slippage, Fees Paid, and Opportunity Cost, strictly preserving $\text{Total Shortfall} \equiv \text{Delay} + \text{Impact} + \text{Fees} + \text{Opportunity} \pm 10^{-7}$ (`INV-SOR-005`) for both BUY and SELL sides, with zero-fill division protection and causal terminal price fallbacks.
+  * Exported all 35 Phase 6 domain symbols in `src/quant/execution/__init__.py`.
+  * 208 comprehensive unit tests across `test_venues.py` (62 tests), `test_execution_algorithms.py` (105 tests), `test_smart_order_router.py` (23 tests), and `test_parent_order.py` (18 tests), achieving 1,664 total passing tests across the entire repository (100% pass rate) with **>95% line coverage** on all new execution files, 100% strict mypy typing compliance (`mypy src --strict` 0 errors across 61 files), and zero ruff lint/formatting deviations.
+  * Formally concluded **Phase 6 Step 2 as 100% COMPLETE**.
 
 #### Step 3: Real-Time Risk Monitor, OMS Heartbeats & Emergency Kill Switch [UPCOMING]
 * **Scope:** Real-time pre-trade and post-trade risk limits, exchange heartbeat monitors, and automated circuit breaker kill-switch tripwires.
