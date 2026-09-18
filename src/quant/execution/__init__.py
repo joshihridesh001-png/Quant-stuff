@@ -13,6 +13,7 @@ Dependencies:
     - quant.execution.audit: Non-blocking asynchronous SQLite WAL order audit logger.
     - quant.execution.venues: VenueProfile, ConsolidatedQuote, VenueType, and SORError hierarchy.
     - quant.execution.risk: PreTradeRiskFirewall, RiskLimits, PortfolioRiskState, and RiskError hierarchy.
+    - quant.execution.heartbeat: HeartbeatWatchdog, HeartbeatConfig, HeartbeatRecord, ConnectionStatus, TransportProtocol, and HeartbeatError hierarchy.
 
 Structural Relationship:
     - Root public export boundary for quant.execution package.
@@ -48,6 +49,20 @@ from quant.execution.fsm import OrderStateMachine
 from quant.execution.gateway import (
     ExecutionGateway,
     PaperExecutionGateway,
+)
+from quant.execution.heartbeat import (
+    ERR_HB_DISCONNECTED,
+    ERR_HB_LATENCY_DEGRADED,
+    ERR_HB_SEQUENCE_GAP,
+    ConnectionStatus,
+    HeartbeatConfig,
+    HeartbeatError,
+    HeartbeatLatencyDegradedError,
+    HeartbeatRecord,
+    HeartbeatSequenceGapError,
+    HeartbeatTimeoutError,
+    HeartbeatWatchdog,
+    TransportProtocol,
 )
 from quant.execution.idempotency import (
     NAMESPACE_QUANT_ORDER,
@@ -135,6 +150,9 @@ __all__ = [
     "ERR_GW_INVALID_STATE_TRANSITION",
     "ERR_GW_NON_FINITE_INPUT",
     "ERR_GW_RATE_LIMIT_EXCEEDED",
+    "ERR_HB_DISCONNECTED",
+    "ERR_HB_LATENCY_DEGRADED",
+    "ERR_HB_SEQUENCE_GAP",
     "ERR_RSK_CONCENTRATION_LIMIT_EXCEEDED",
     "ERR_RSK_DRAWDOWN_LIMIT_EXCEEDED",
     "ERR_RSK_FAT_FINGER_NOTIONAL",
@@ -154,6 +172,7 @@ __all__ = [
     "ChildFillRecord",
     "ChildOrderFailedException",
     "ConcentrationLimitExceededException",
+    "ConnectionStatus",
     "ConsolidatedQuote",
     "DrawdownLimitExceededException",
     "DuplicateOrderException",
@@ -164,6 +183,13 @@ __all__ = [
     "FatFingerQuantityException",
     "GatewayDisconnectedException",
     "GatewayError",
+    "HeartbeatConfig",
+    "HeartbeatError",
+    "HeartbeatLatencyDegradedError",
+    "HeartbeatRecord",
+    "HeartbeatSequenceGapError",
+    "HeartbeatTimeoutError",
+    "HeartbeatWatchdog",
     "IdempotencyRouter",
     "ImplementationShortfallReport",
     "InsufficientLiquidityException",
@@ -200,6 +226,7 @@ __all__ = [
     "ScheduledSlice",
     "SmartOrderRouter",
     "TimeInForce",
+    "TransportProtocol",
     "VenueHealth",
     "VenueProfile",
     "VenueType",

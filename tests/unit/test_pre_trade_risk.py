@@ -692,7 +692,16 @@ def test_hot_path_latency_sla() -> None:
     elapsed_ns = time.perf_counter_ns() - start_ns
 
     avg_latency_us = (elapsed_ns / iterations) / 1_000.0
-    sla_us = 25.0 if sys.gettrace() is not None else 10.0
+    is_traced = (
+        sys.gettrace() is not None
+        or "coverage" in sys.modules
+        or "pytest_cov" in sys.modules
+        or (
+            hasattr(sys, "monitoring")
+            and any(sys.monitoring.get_tool(i) is not None for i in range(6))
+        )
+    )
+    sla_us = 25.0 if is_traced else 10.0
     assert avg_latency_us < sla_us, (
         f"PreTradeRiskFirewall average latency {avg_latency_us:.3f}us breached {sla_us}us SLA"
     )
