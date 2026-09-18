@@ -12,6 +12,7 @@ Dependencies:
     - quant.execution.gateway: ExecutionGateway protocol and PaperExecutionGateway.
     - quant.execution.audit: Non-blocking asynchronous SQLite WAL order audit logger.
     - quant.execution.venues: VenueProfile, ConsolidatedQuote, VenueType, and SORError hierarchy.
+    - quant.execution.risk: PreTradeRiskFirewall, RiskLimits, PortfolioRiskState, and RiskError hierarchy.
 
 Structural Relationship:
     - Root public export boundary for quant.execution package.
@@ -26,6 +27,13 @@ Invariants Enforced:
     - INV-SOR-001 (Parent-Child Mass Conservation)
     - INV-SOR-002 (Non-Worse-Than-NBBO & Dark Midpoint Price Improvement)
     - INV-SOR-005 (Strict Non-Finite Input Protection in Routing)
+    - INV-RSK-001 (Single-Order Fat-Finger Bounds)
+    - INV-RSK-002 (Portfolio Leverage Bounds)
+    - INV-RSK-003 (Single-Asset NAV Concentration)
+    - INV-RSK-004 (Intraday Drawdown Circuit Breaker)
+    - INV-RSK-005 (Margin & Borrow Sufficiency)
+    - INV-RSK-006 (Sub-10us Hot-Path Latency SLA)
+    - INV-RSK-007 (Strict Non-Finite Input Sanitization)
 """
 
 from quant.execution.algorithms import (
@@ -71,6 +79,28 @@ from quant.execution.parent_order import (
     ImplementationShortfallReport,
     ParentOrder,
 )
+from quant.execution.risk import (
+    ERR_RSK_CONCENTRATION_LIMIT_EXCEEDED,
+    ERR_RSK_DRAWDOWN_LIMIT_EXCEEDED,
+    ERR_RSK_FAT_FINGER_NOTIONAL,
+    ERR_RSK_FAT_FINGER_QUANTITY,
+    ERR_RSK_INSUFFICIENT_MARGIN,
+    ERR_RSK_KILL_SWITCH_ACTIVE,
+    ERR_RSK_LEVERAGE_LIMIT_EXCEEDED,
+    ERR_RSK_NON_FINITE_INPUT,
+    ConcentrationLimitExceededException,
+    DrawdownLimitExceededException,
+    FatFingerNotionalException,
+    FatFingerQuantityException,
+    InsufficientMarginRiskException,
+    KillSwitchActiveException,
+    LeverageLimitExceededException,
+    NonFiniteRiskInputException,
+    PortfolioRiskState,
+    PreTradeRiskFirewall,
+    RiskError,
+    RiskLimits,
+)
 from quant.execution.sor import (
     RoutedVenueOrder,
     SmartOrderRouter,
@@ -105,6 +135,14 @@ __all__ = [
     "ERR_GW_INVALID_STATE_TRANSITION",
     "ERR_GW_NON_FINITE_INPUT",
     "ERR_GW_RATE_LIMIT_EXCEEDED",
+    "ERR_RSK_CONCENTRATION_LIMIT_EXCEEDED",
+    "ERR_RSK_DRAWDOWN_LIMIT_EXCEEDED",
+    "ERR_RSK_FAT_FINGER_NOTIONAL",
+    "ERR_RSK_FAT_FINGER_QUANTITY",
+    "ERR_RSK_INSUFFICIENT_MARGIN",
+    "ERR_RSK_KILL_SWITCH_ACTIVE",
+    "ERR_RSK_LEVERAGE_LIMIT_EXCEEDED",
+    "ERR_RSK_NON_FINITE_INPUT",
     "ERR_SOR_ALGORITHM_TIMEOUT",
     "ERR_SOR_CHILD_ORDER_FAILED",
     "ERR_SOR_INSUFFICIENT_LIQUIDITY",
@@ -115,25 +153,33 @@ __all__ = [
     "AlgorithmTimeoutException",
     "ChildFillRecord",
     "ChildOrderFailedException",
+    "ConcentrationLimitExceededException",
     "ConsolidatedQuote",
+    "DrawdownLimitExceededException",
     "DuplicateOrderException",
     "ExecutionGateway",
     "ExecutionReport",
     "ExecutionScheduler",
+    "FatFingerNotionalException",
+    "FatFingerQuantityException",
     "GatewayDisconnectedException",
     "GatewayError",
     "IdempotencyRouter",
     "ImplementationShortfallReport",
     "InsufficientLiquidityException",
     "InsufficientMarginException",
+    "InsufficientMarginRiskException",
     "InvalidOrderInputException",
     "InvalidSORInputException",
     "InvalidScheduleException",
     "InvalidStateTransitionException",
+    "KillSwitchActiveException",
+    "LeverageLimitExceededException",
     "MassConservationException",
     "NAMESPACE_QUANT_ORDER",
     "NBBOViolationException",
     "NonFiniteInputException",
+    "NonFiniteRiskInputException",
     "NonlinearArrivalPriceScheduler",
     "Order",
     "OrderAuditLogger",
@@ -144,7 +190,11 @@ __all__ = [
     "PaperExecutionGateway",
     "ParentOrder",
     "PoissonTWAPScheduler",
+    "PortfolioRiskState",
+    "PreTradeRiskFirewall",
     "RateLimitExceededException",
+    "RiskError",
+    "RiskLimits",
     "RoutedVenueOrder",
     "SORError",
     "ScheduledSlice",
