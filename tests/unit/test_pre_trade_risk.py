@@ -889,3 +889,212 @@ def test_validate_order_projected_equity_zero() -> None:
         firewall.validate_order(order, state)
     assert exc_info.value.code == ERR_RSK_LEVERAGE_LIMIT_EXCEEDED
     assert "non-positive" in exc_info.value.message
+
+
+# ============================================================================
+# Section 9: Phase 6 Step 3 Task 1 Adversarial Remediation Tests
+# ============================================================================
+
+
+def test_selling_long_positions_with_negative_cash_passes_margin_check() -> None:
+    """Remediation 1: Verify selling long inventory when cash is negative passes Check 6 unconditionally."""
+    # Leveraged account: cash = -$10,000, 200 shares AAPL @ $150 => equity = $20,000.
+    # free_margin = -$10,000. min_free_margin = 1,000.
+    limits = make_default_limits(
+        max_order_notional=100_000.0,
+        max_order_qty=1_000.0,
+        max_gross_leverage=3.5,
+        max_net_leverage=2.0,
+        max_concentration_nav_pct=2.0,
+        max_intraday_drawdown_pct=0.50,
+        min_free_margin=1_000.0,
+    )
+    state = PortfolioRiskState(
+        cash=-10_000.0,
+        positions={"AAPL": 200.0},
+        current_prices={"AAPL": 150.0},
+        peak_equity=20_000.0,
+        initial_equity=20_000.0,
+    )
+    firewall = PreTradeRiskFirewall(limits=limits)
+
+    # Selling 100 shares long AAPL: required_margin is 0.0.
+    # Must pass Check 6 unconditionally without raising InsufficientMarginRiskException!
+    sell_order = Order(
+        cl_ord_id="close-long-1",
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        order_type=OrderType.LIMIT,
+        quantity=100.0,
+        price=150.0,
+        time_in_force=TimeInForce.GTC,
+    )
+    firewall.validate_order(sell_order, state)
+
+    # Also test buying to close short when cash is negative:
+    state_short = PortfolioRiskState(
+        cash=-5_000.0,
+        positions={"AAPL": -100.0, "MSFT": 200.0},
+        current_prices={"AAPL": 150.0, "MSFT": 200.0},
+        peak_equity=20_000.0,
+        initial_equity=20_000.0,
+    )
+    # Buying 100 AAPL closes the short position, required_margin = 0.0, must pass Check 6 unconditionally!
+    buy_cover_order = Order(
+        cl_ord_id="close-short-1",
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=100.0,
+        price=150.0,
+        time_in_force=TimeInForce.GTC,
+    )
+    firewall.validate_order(buy_cover_order, state_short)
+
+
+def test_missing_or_corrupt_price_for_leaves_or_positions_raises() -> None:
+    """Remediation 2: Verify missing or non-positive price for non-order symbol raises ERR_RSK_NON_FINITE_INPUT."""
+    limits = make_default_limits(
+        max_order_notional=100_000.0,
+        max_order_qty=1_000.0,
+        max_gross_leverage=1.0,
+        max_net_leverage=1.0,
+        min_free_margin=0.0,
+    )
+
+    # Subcase A: resting leaves in unpriced symbol "GHOST"
+    state_unpriced_leaves = PortfolioRiskState(
+        cash=10_000.0,
+        positions={},
+        pending_leaves={"GHOST": 1_000_000.0},
+        current_prices={"AAPL": 100.0},
+        peak_equity=10_000.0,
+        initial_equity=10_000.0,
+    )
+    firewall = PreTradeRiskFirewall(limits=limits)
+    candidate_order = Order(
+        cl_ord_id="ord-1",
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=10.0,
+        price=100.0,
+        time_in_force=TimeInForce.GTC,
+    )
+    with pytest.raises(NonFiniteRiskInputException) as exc_info:
+        firewall.validate_order(candidate_order, state_unpriced_leaves)
+    assert exc_info.value.code == ERR_RSK_NON_FINITE_INPUT
+    assert (
+        "Missing current market price for symbol 'GHOST' in portfolio state"
+        in exc_info.value.message
+    )
+
+    # Subcase B: free_margin property directly on unpriced leaves raises
+    with pytest.raises(NonFiniteRiskInputException) as exc_fm:
+        _ = state_unpriced_leaves.free_margin
+    assert exc_fm.value.code == ERR_RSK_NON_FINITE_INPUT
+    assert (
+        "Missing current market price for symbol 'GHOST' in portfolio state" in exc_fm.value.message
+    )
+
+    # Subcase C: non-order symbol with corrupt/negative price raises
+    state_corrupt_price = PortfolioRiskState(
+        cash=10_000.0,
+        positions={"MSFT": 10.0},
+        current_prices={"AAPL": 100.0, "MSFT": 200.0},
+        peak_equity=12_000.0,
+        initial_equity=12_000.0,
+    )
+    # Bypass post-init to corrupt price
+    state_corrupt_price.current_prices["MSFT"] = -50.0
+    with pytest.raises(NonFiniteRiskInputException) as exc_corrupt:
+        firewall.validate_order(candidate_order, state_corrupt_price)
+    assert exc_corrupt.value.code == ERR_RSK_NON_FINITE_INPUT
+    assert "strictly positive finite scalar" in exc_corrupt.value.message
+
+
+def test_resting_short_leaves_encumber_free_margin() -> None:
+    """Remediation 3: Verify resting short sell leaves properly encumber margin in free_margin."""
+    limits = make_default_limits(min_free_margin=5_000.0)
+
+    # Cash = $10,000, resting short order of 40 shares @ $100 => locks $4,000
+    state = PortfolioRiskState(
+        cash=10_000.0,
+        positions={},
+        pending_leaves={"AAPL": -40.0},
+        current_prices={"AAPL": 100.0},
+        peak_equity=10_000.0,
+        initial_equity=10_000.0,
+    )
+    # free_margin should be exactly 10,000 - 4,000 = 6,000
+    assert math.isclose(state.free_margin, 6_000.0)
+
+    # Submitting another short order of 30 shares requires $3,000 margin:
+    # free_margin_after = 6,000 - 3,000 = 3,000 < min_free_margin (5,000) => REJECTED!
+    firewall = PreTradeRiskFirewall(limits=limits)
+    second_short = Order(
+        cl_ord_id="short-2",
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        order_type=OrderType.LIMIT,
+        quantity=30.0,
+        price=100.0,
+        time_in_force=TimeInForce.GTC,
+    )
+    with pytest.raises(InsufficientMarginRiskException) as exc_info:
+        firewall.validate_order(second_short, state)
+    assert exc_info.value.code == ERR_RSK_INSUFFICIENT_MARGIN
+    assert "3000.00 breaches minimum buffer 5000.00" in exc_info.value.message
+
+    # Test covered sell leaves: long 50 shares, sell leaves = -70 shares => uncovered = 20 shares
+    state_covered = PortfolioRiskState(
+        cash=10_000.0,
+        positions={"AAPL": 50.0},
+        pending_leaves={"AAPL": -70.0},
+        current_prices={"AAPL": 100.0},
+        peak_equity=15_000.0,
+        initial_equity=15_000.0,
+    )
+    # Uncovered short leaves = max(0, 70 - 50) = 20 => locked = $2,000 => free_margin = $8,000
+    assert math.isclose(state_covered.free_margin, 8_000.0)
+
+
+def test_universal_directional_netting_across_all_symbols() -> None:
+    """Remediation 4: Resting exit leaves on other symbols do not artificially double gross leverage."""
+    # NAV = $60k cash + 400 MSFT @ $100 ($40k) = $100,000 equity.
+    # Max gross leverage = 1.0 (max allowable gross notional = $100,000).
+    limits = make_default_limits(
+        max_gross_leverage=1.0,
+        max_order_notional=100_000.0,
+        max_order_qty=1_000.0,
+        max_concentration_nav_pct=1.0,
+    )
+    # Portfolio holds 400 MSFT and has resting limit order to sell 400 MSFT (leaves = -400)
+    state = PortfolioRiskState(
+        cash=60_000.0,
+        positions={"MSFT": 400.0},
+        pending_leaves={"MSFT": -400.0},
+        current_prices={"AAPL": 100.0, "MSFT": 100.0},
+        peak_equity=100_000.0,
+        initial_equity=100_000.0,
+    )
+    # 1. Directly check gross_leverage property:
+    # MSFT exposure is max(|400|, |400 - 400|) * 100 = $40,000 (not 80,000!)
+    # Gross leverage = $40,000 / $100,000 = 0.40
+    assert math.isclose(state.gross_leverage, 0.40)
+
+    # 2. In validate_order: submit BUY 300 AAPL @ $100 = $30,000 notional.
+    # Under naive addition: MSFT was 80k + AAPL 30k = 110k (1.1x leverage => REJECTED).
+    # Under universal directional netting: MSFT is 40k + AAPL 30k = 70k (0.7x leverage <= 1.0x => ACCEPTED).
+    firewall = PreTradeRiskFirewall(limits=limits)
+    buy_aapl = Order(
+        cl_ord_id="ord-aapl-1",
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=300.0,
+        price=100.0,
+        time_in_force=TimeInForce.GTC,
+    )
+    # Must clear cleanly without raising LeverageLimitExceededException
+    firewall.validate_order(buy_aapl, state)

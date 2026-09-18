@@ -405,10 +405,16 @@ class PortfolioRiskState:
             if abs(pos) > 1e-12:
                 if sym not in self.current_prices:
                     raise NonFiniteRiskInputException(
-                        f"Missing current market price for active position in {sym}",
+                        f"Missing current market price for symbol '{sym}' in portfolio state",
                         code=ERR_RSK_NON_FINITE_INPUT,
                     )
-                eq += pos * self.current_prices[sym]
+                p = self.current_prices[sym]
+                if isinstance(p, bool) or not math.isfinite(p) or p <= 0.0:
+                    raise NonFiniteRiskInputException(
+                        f"Price for symbol '{sym}' must be strictly positive finite scalar, got {p!r}",
+                        code=ERR_RSK_NON_FINITE_INPUT,
+                    )
+                eq += pos * p
         return float(eq)
 
     @property
@@ -428,7 +434,7 @@ class PortfolioRiskState:
 
     @property
     def gross_leverage(self) -> float:
-        r"""Portfolio gross leverage: $L_{\text{gross}} = \sum (|w_i| + |q_{\text{leaves}, i}|) \cdot P_i / W_t$."""
+        r"""Portfolio gross leverage: $L_{\text{gross}} = \sum \text{exposure}_i \cdot P_i / W_t$ with universal directional netting."""
         # Functional Purpose: Measure aggregate market commitment relative to net asset value for INV-RSK-002.
         # Explicit Dependency Tracking: self.positions, self.pending_leaves, self.current_prices, self.current_equity.
         # Structural Relationship: Queried by RiskOrchestrator and PreTradeRiskFirewall.
@@ -440,15 +446,26 @@ class PortfolioRiskState:
         symbols = set(self.positions.keys()) | set(self.pending_leaves.keys())
         gross_notional = 0.0
         for sym in symbols:
-            pos_qty = abs(self.positions.get(sym, 0.0))
-            leaves_qty = abs(self.pending_leaves.get(sym, 0.0))
-            if pos_qty > 1e-12 or leaves_qty > 1e-12:
+            pos = self.positions.get(sym, 0.0)
+            leaves = self.pending_leaves.get(sym, 0.0)
+            if abs(pos) > 1e-12 or abs(leaves) > 1e-12:
                 if sym not in self.current_prices:
                     raise NonFiniteRiskInputException(
-                        f"Missing current market price for exposure in {sym}",
+                        f"Missing current market price for symbol '{sym}' in portfolio state",
                         code=ERR_RSK_NON_FINITE_INPUT,
                     )
-                gross_notional += (pos_qty + leaves_qty) * self.current_prices[sym]
+                p = self.current_prices[sym]
+                if isinstance(p, bool) or not math.isfinite(p) or p <= 0.0:
+                    raise NonFiniteRiskInputException(
+                        f"Price for symbol '{sym}' must be strictly positive finite scalar, got {p!r}",
+                        code=ERR_RSK_NON_FINITE_INPUT,
+                    )
+                # Universal Directional Netting: opposite signs net to max(|pos|, |pos + leaves|);
+                # same signs add (|pos| + |leaves|).
+                if (pos > 0.0 and leaves < 0.0) or (pos < 0.0 and leaves > 0.0):
+                    gross_notional += max(abs(pos), abs(pos + leaves)) * p
+                else:
+                    gross_notional += (abs(pos) + abs(leaves)) * p
 
         return float(gross_notional / eq)
 
@@ -471,25 +488,48 @@ class PortfolioRiskState:
             if abs(pos_qty) > 1e-12 or abs(leaves_qty) > 1e-12:
                 if sym not in self.current_prices:
                     raise NonFiniteRiskInputException(
-                        f"Missing current market price for exposure in {sym}",
+                        f"Missing current market price for symbol '{sym}' in portfolio state",
                         code=ERR_RSK_NON_FINITE_INPUT,
                     )
-                net_notional += (pos_qty + leaves_qty) * self.current_prices[sym]
+                p = self.current_prices[sym]
+                if isinstance(p, bool) or not math.isfinite(p) or p <= 0.0:
+                    raise NonFiniteRiskInputException(
+                        f"Price for symbol '{sym}' must be strictly positive finite scalar, got {p!r}",
+                        code=ERR_RSK_NON_FINITE_INPUT,
+                    )
+                net_notional += (pos_qty + leaves_qty) * p
 
         return float(abs(net_notional) / eq)
 
     @property
     def free_margin(self) -> float:
-        """Unencumbered liquid buying power: cash minus margin locked in resting buy orders."""
+        """Unencumbered liquid buying power: cash minus margin locked in resting buy and short sell orders."""
         # Functional Purpose: Determine capital available to fund new order margin requirements for INV-RSK-005.
-        # Explicit Dependency Tracking: self.cash, self.pending_leaves, self.current_prices.
+        # Explicit Dependency Tracking: self.cash, self.positions, self.pending_leaves, self.current_prices.
         # Structural Relationship: Queried during margin sufficiency validation.
-        # Defensive Invariant: Locks capital for positive (buy) resting leaves; preserves cash.
+        # Defensive Invariant: Locks capital for buy leaves and uncovered short sell leaves; deducts from cash.
         locked = 0.0
         for sym, leaves in self.pending_leaves.items():
+            if abs(leaves) <= 1e-12:
+                continue
+            if sym not in self.current_prices:
+                raise NonFiniteRiskInputException(
+                    f"Missing current market price for symbol '{sym}' in portfolio state",
+                    code=ERR_RSK_NON_FINITE_INPUT,
+                )
+            price = self.current_prices[sym]
+            if isinstance(price, bool) or not math.isfinite(price) or price <= 0.0:
+                raise NonFiniteRiskInputException(
+                    f"Price for symbol '{sym}' must be strictly positive finite scalar, got {price!r}",
+                    code=ERR_RSK_NON_FINITE_INPUT,
+                )
             if leaves > 0.0:
-                price = self.current_prices.get(sym, 0.0)
                 locked += leaves * price
+            elif leaves < 0.0:
+                pos = self.positions.get(sym, 0.0)
+                short_leaves = max(0.0, abs(leaves) - max(0.0, pos))
+                locked += short_leaves * price
+
         return float(self.cash - locked)
 
     def update_price(self, symbol: str, price: float) -> None:
@@ -744,20 +784,28 @@ class PreTradeRiskFirewall:
         # Check 6: Margin & Borrow Sufficiency (INV-RSK-005)
         # -------------------------------------------------------------------------
         if order.side == OrderSide.BUY:
-            required_margin = order_notional
+            # If closing existing short position, no margin required for closing portion;
+            # if opening or expanding a long position, margin equals incremental long notional.
+            current_short_pos = max(0.0, -state.positions.get(order.symbol, 0.0))
+            long_units = max(0.0, order.quantity - current_short_pos)
+            required_margin = long_units * ref_price
         else:
             # Sell order: if closing existing long position, no margin required;
             # if opening or expanding a short position, margin equals short notional.
             current_long_pos = max(0.0, state.positions.get(order.symbol, 0.0))
-            short_units = order.quantity - current_long_pos
-            required_margin = max(0.0, short_units * ref_price)
+            short_units = max(0.0, order.quantity - current_long_pos)
+            required_margin = short_units * ref_price
 
-        free_margin_after = state.free_margin - required_margin
-        if free_margin_after < self.limits.min_free_margin:
-            raise InsufficientMarginRiskException(
-                f"Projected free margin {free_margin_after:.2f} breaches minimum buffer {self.limits.min_free_margin:.2f}",
-                code=ERR_RSK_INSUFFICIENT_MARGIN,
-            )
+        # Mandate Invariant: De-risking orders with required_margin <= 0.0 (e.g. selling
+        # long inventory or closing a short) do NOT consume incremental margin and pass
+        # Check 6 unconditionally, even if state.free_margin < min_free_margin (e.g. negative cash).
+        if required_margin > 0.0:
+            free_margin_after = state.free_margin - required_margin
+            if free_margin_after < self.limits.min_free_margin:
+                raise InsufficientMarginRiskException(
+                    f"Projected free margin {free_margin_after:.2f} breaches minimum buffer {self.limits.min_free_margin:.2f}",
+                    code=ERR_RSK_INSUFFICIENT_MARGIN,
+                )
 
         # -------------------------------------------------------------------------
         # Check 7 & 8: Projected Portfolio Gross & Net Leverage (INV-RSK-002)
@@ -765,7 +813,23 @@ class PreTradeRiskFirewall:
         # Calculate projected portfolio equity including latest reference price
         projected_equity = state.cash
         for sym, pos in state.positions.items():
-            p = ref_price if sym == order.symbol else state.current_prices.get(sym, 0.0)
+            if abs(pos) <= 1e-12:
+                continue
+            if sym == order.symbol:
+                p = ref_price
+            else:
+                if sym not in state.current_prices:
+                    raise NonFiniteRiskInputException(
+                        f"Missing current market price for symbol '{sym}' in portfolio state",
+                        code=ERR_RSK_NON_FINITE_INPUT,
+                    )
+                p_val = state.current_prices[sym]
+                if isinstance(p_val, bool) or not math.isfinite(p_val) or p_val <= 0.0:
+                    raise NonFiniteRiskInputException(
+                        f"Price for symbol '{sym}' must be strictly positive finite scalar, got {p_val!r}",
+                        code=ERR_RSK_NON_FINITE_INPUT,
+                    )
+                p = float(p_val)
             projected_equity += pos * p
 
         if projected_equity <= 0.0:
@@ -786,22 +850,43 @@ class PreTradeRiskFirewall:
         projected_net_notional = 0.0
 
         for sym in all_symbols:
-            p = ref_price if sym == order.symbol else state.current_prices.get(sym, 0.0)
             pos = state.positions.get(sym, 0.0)
             leaves = state.pending_leaves.get(sym, 0.0)
 
             if sym == order.symbol:
+                p = ref_price
                 proj_leaves = leaves + order_delta
                 projected_net_notional += (pos + proj_leaves) * p
 
-                # Rule 4 Best-of-the-Best Invariant: Position de-risking must never artificially double gross exposure
-                if (pos > 0.0 and order_delta < 0.0) or (pos < 0.0 and order_delta > 0.0):
+                # Universal Directional Netting for order symbol:
+                if (pos > 0.0 and (order_delta < 0.0 or proj_leaves < 0.0)) or (
+                    pos < 0.0 and (order_delta > 0.0 or proj_leaves > 0.0)
+                ):
                     projected_gross_notional += max(abs(pos), abs(pos + proj_leaves)) * p
                 else:
                     projected_gross_notional += (abs(pos) + abs(proj_leaves)) * p
             else:
+                if abs(pos) <= 1e-12 and abs(leaves) <= 1e-12:
+                    continue
+                if sym not in state.current_prices:
+                    raise NonFiniteRiskInputException(
+                        f"Missing current market price for symbol '{sym}' in portfolio state",
+                        code=ERR_RSK_NON_FINITE_INPUT,
+                    )
+                p_val = state.current_prices[sym]
+                if isinstance(p_val, bool) or not math.isfinite(p_val) or p_val <= 0.0:
+                    raise NonFiniteRiskInputException(
+                        f"Price for symbol '{sym}' must be strictly positive finite scalar, got {p_val!r}",
+                        code=ERR_RSK_NON_FINITE_INPUT,
+                    )
+                p = float(p_val)
                 projected_net_notional += (pos + leaves) * p
-                projected_gross_notional += (abs(pos) + abs(leaves)) * p
+
+                # Universal Directional Netting for non-order symbols:
+                if (pos > 0.0 and leaves < 0.0) or (pos < 0.0 and leaves > 0.0):
+                    projected_gross_notional += max(abs(pos), abs(pos + leaves)) * p
+                else:
+                    projected_gross_notional += (abs(pos) + abs(leaves)) * p
 
         projected_gross_leverage = projected_gross_notional / projected_equity
         if projected_gross_leverage > self.limits.max_gross_leverage:
@@ -824,7 +909,9 @@ class PreTradeRiskFirewall:
         target_leaves = state.pending_leaves.get(order.symbol, 0.0)
         target_proj_leaves = target_leaves + order_delta
 
-        if (target_pos > 0.0 and order_delta < 0.0) or (target_pos < 0.0 and order_delta > 0.0):
+        if (target_pos > 0.0 and (order_delta < 0.0 or target_proj_leaves < 0.0)) or (
+            target_pos < 0.0 and (order_delta > 0.0 or target_proj_leaves > 0.0)
+        ):
             projected_asset_exposure = (
                 max(abs(target_pos), abs(target_pos + target_proj_leaves)) * ref_price
             )
