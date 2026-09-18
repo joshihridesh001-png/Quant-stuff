@@ -3,8 +3,8 @@
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![SQLAlchemy 2.0](https://img.shields.io/badge/SQLAlchemy-2.0+-D71F00?logo=sqlalchemy&logoColor=white)](https://www.sqlalchemy.org/)
-[![Coverage 95%](https://img.shields.io/badge/Coverage-95%25-brightgreen)](https://pytest.org/)
-[![Tests 1664 Passed](https://img.shields.io/badge/Tests-1664%20Passed-brightgreen)](https://pytest.org/)
+[![Coverage 96%](https://img.shields.io/badge/Coverage-96%25-brightgreen)](https://pytest.org/)
+[![Tests 1932 Passed](https://img.shields.io/badge/Tests-1932%20Passed-brightgreen)](https://pytest.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Mypy Strict](https://img.shields.io/badge/Mypy-Strict-blue)](https://mypy-lang.org/)
 
@@ -19,9 +19,9 @@ The system's operational and architectural standards are codified across 6 canon
 1. **[`PRD.md`](./PRD.md)**: Product Requirements Document — product vision, market inefficiencies, user personas, and feature matrices.
 2. **[`Architecture.md`](./Architecture.md)**: System Architecture & Component Topology — layered domain design, hybrid storage (DuckDB + PostgreSQL), module maps, and data flow pipelines.
 3. **[`Rules.md`](./Rules.md)**: The Three Fundamental Engineering Rules — micro-level code transparency, zero-execution diagnostics, and strict CI quality gates.
-4. **[`Phases.md`](./Phases.md)**: Implementation Roadmap & Delivery Phases — granular phase-by-phase delivery schedule (Sprint 1 through Phase 6 Step 2 complete).
+4. **[`Phases.md`](./Phases.md)**: Implementation Roadmap & Delivery Phases — granular phase-by-phase delivery schedule (Sprint 1 through Phase 6 complete).
 5. **[`Design.md`](./Design.md)**: Quantitative & Technical Design Specification — mathematical formulations for decay kernels, fractional diff, triple-barrier labeling, CPCV, DSR, hypergamic mating, RD-DMA, circuit breakers, EVT tail risk, and live execution gateways.
-6. **[`Memory.md`](./Memory.md)**: Project Memory — Autonomous Decision Register (ADR-001 through ADR-023), Deterministic Diagnostic Failure Matrix (ERR-GW-001..006, ERR-SOR-001..007), and complete engineering audit trail.
+6. **[`Memory.md`](./Memory.md)**: Project Memory — Autonomous Decision Register (ADR-001 through ADR-024), Deterministic Diagnostic Failure Matrix (ERR-GW-001..006, ERR-SOR-001..007, ERR-RSK-001..008, ERR-HB-001..003), and complete engineering audit trail.
 
 ---
 
@@ -63,7 +63,11 @@ quant/
 │   │   ├── venues.py         # Multi-venue representation, VenueProfile, ConsolidatedQuote & NBBO
 │   │   ├── algorithms.py     # Institutional schedulers (PoissonTWAP, VolumeAdaptiveVWAP, ArrivalPrice)
 │   │   ├── sor.py            # SmartOrderRouter with dark midpoint probing & algebraic lit waterfilling
-│   │   └── parent_order.py   # ParentOrder lifecycle coordinator & Perold Implementation Shortfall TCA
+│   │   ├── parent_order.py   # ParentOrder lifecycle coordinator & Perold Implementation Shortfall TCA
+│   │   ├── risk.py           # PreTradeRiskFirewall, RiskLimits, PortfolioRiskState & directional netting
+│   │   ├── heartbeat.py      # HeartbeatWatchdog, ConnectionStatus, sequence/latency monitor
+│   │   ├── kill_switch.py    # EmergencyKillSwitch, PanicTrigger, concurrent multi-gateway mass cancel
+│   │   └── risk_orchestrator.py # RiskOrchestrator unified live risk, watchdog & panic façade
 │   ├── infrastructure/       # Concrete adapters, database ORM, and repository implementations
 │   │   ├── database/         # Async engine, sessionmaker, declarative models, DuckDBManager
 │   │   └── repositories/     # SqlAlchemyAssetRepository, SqlAlchemyEventRepository, DuckDBMarketDataRepository
@@ -77,7 +81,7 @@ quant/
 │   │   └── dependencies.py   # RBAC guards and session dependency injection
 │   └── main.py               # Application factory & lifespan manager
 ├── migrations/               # Alembic database schema migrations
-├── tests/                    # Unit, integration, and API test suites (1664 tests, 100% green)
+├── tests/                    # Unit, integration, and API test suites (1932 tests, 100% green)
 ├── pyproject.toml            # PEP 621 packaging, dependency locks, and linter settings
 └── CHANGELOG_DEV.md          # Technical audit log
 ```
@@ -184,14 +188,14 @@ ruff check .
 # 2. Code Formatting Verification
 ruff format --check .
 
-# 3. Static Type Checking (Strict Mode across 61 source files)
+# 3. Static Type Checking (Strict Mode across 65 source files)
 mypy src --strict
 
 # 4. Automated Test Suite with Coverage Enforcement (> 85%)
 pytest tests/unit
 ```
 
-All **1664 unit tests** pass with 100% green execution in $< 14$ seconds.
+All **1932 unit tests** pass with 100% green execution in $< 10$ seconds.
 
 ---
 
@@ -211,6 +215,6 @@ All **1664 unit tests** pass with 100% green execution in $< 14$ seconds.
 | **Sprint 5** | **Ensemble Aggregator, Tail Risk & Live Replay Simulator** | Regime-conditioned DMA (RD-DMA), epistemic disagreement entropy circuit breakers, semi-parametric EVT-POT GPD with closed-form PWM, unified strictly concave convex sizer, end-to-end live replay simulator & institutional benchmarking. | **Complete** |
 | **Phase 6: Step 1** | **Live Execution Gateway, State Machine & Audit Logger** | Pure domain models (`Order`, `ExecutionReport`), deterministic FSM (`OrderStateMachine`) with out-of-order reconciliation, UUIDv5 `IdempotencyRouter`, `PaperExecutionGateway` broker, and non-blocking SQLite WAL `OrderAuditLogger`. | **Complete** |
 | **Phase 6: Step 2** | **Microstructural Smart Order Router (SOR) & Algorithmic Execution** | Multi-venue domain (`VenueProfile`, `ConsolidatedQuote`), Poisson TWAP, Bayesian VWAP, Almgren-Chriss Arrival Price, two-phase dark/lit SOR with toxic markout watchdog, parent order lifecycle, and Perold (1988) implementation shortfall TCA. | **Complete** |
-| **Phase 6: Step 3** | **Real-Time Risk Monitor, OMS Heartbeats & Emergency Kill Switch** | Pre-trade/post-trade risk limits, exchange heartbeat monitors, and automated circuit breaker kill-switch tripwires. | *Upcoming* |
+| **Phase 6: Step 3** | **Real-Time Risk Monitor, OMS Heartbeats & Emergency Kill Switch** | In-memory pre-trade risk firewall (`PreTradeRiskFirewall`), multi-asset directional netting, heartbeat transport watchdog (`HeartbeatWatchdog`), emergency panic kill switch (`EmergencyKillSwitch`) with sub-5ms mass cancellation sweep, and unified `RiskOrchestrator` façade. | **Complete** |
 
 
