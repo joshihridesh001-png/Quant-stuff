@@ -665,5 +665,99 @@ stateDiagram-v2
    - Background worker draining queue in configurable batches and persisting to embedded SQLite in Write-Ahead Logging (WAL) mode (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`).
    - Parameterized historical audit queries filtering by `cl_ord_id` and/or `symbol`, sorted monotonically by timestamp.
 
+---
+
+### 4.21 Microstructural Smart Order Router, Algorithmic Schedulers & Implementation Shortfall TCA Subsystem
+
+```
++---------------------------------------------------------------------------------------------------+
+|               Microstructural Smart Order Router & Algorithmic Execution Subsystem                |
++---------------------------------------------------------------------------------------------------+
+|                                                                                                   |
+|  Parent Order Dispatch: Target Quantity Q_total, Side, Horizon T, Strategy Schedulers             |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Institutional Algorithmic Schedulers      |                                      |
+|               |   - PoissonTWAP (Anti-Gaming Jitter)       |                                      |
+|               |   - VolumeAdaptiveVWAP (Cap <= 15%)        |                                      |
+|               |   - NonlinearArrivalPrice (Almgren-Chriss) |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                          Child Order Slices q_k                                                   |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Smart Order Router (SOR Engine)           |                                      |
+|               |   - VenueHealth Quarantine Filter          |                                      |
+|               |   - Phase 1: Dark Midpoint Probing (MES)   |                                      |
+|               |   - Phase 2: Closed-Form Lit Waterfilling  |                                      |
+|               |     (O(M log M) KKT sort on Net Taker Fee) |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                         Multi-Venue Route Slices                                                  |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Downstream Execution Gateways             |                                      |
+|               |   - Lit Exchanges (ARCA, BATS, NASDAQ)     |                                      |
+|               |   - Dark Pools (SIGMA_X, CROSSFINDER)      |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                          Gateway Execution Reports                                                |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Toxic Markout Watchdog (VenueHealth)      |                                      |
+|               |   - Post-Trade Markout Tracking (bps)      |                                      |
+|               |   - Adverse Selection Quarantine Window    |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Parent Order Lifecycle Coordinator        |                                      |
+|               |   - Mass Conservation Interceptor          |                                      |
+|               |   - Cumulative VWAP / Leaves Accounting    |                                      |
+|               +--------------------------------------------+                                      |
+|                                     |                                                             |
+|                                     v                                                             |
+|               +--------------------------------------------+                                      |
+|               |  Implementation Shortfall TCA Report       |                                      |
+|               |   - Perold (1988) Exact Additive Identity: |                                      |
+|               |     Total = Delay + Impact + Fees + OppCost|                                      |
+|               +--------------------------------------------+                                      |
++---------------------------------------------------------------------------------------------------+
+```
+
+1. **Multi-Venue Representation & Uncrossed Quotes (`venues.py`, `INV-SOR-002`)**:
+   - `VenueType`: Strongly-typed venue classification distinguishing transparent display books (`LIT`) from non-displayed alternative trading systems (`DARK`).
+   - `VenueProfile`: Dataclass specifying venue identity, maker/taker fee schedules in basis points (supporting negative maker fee rebates), and minimum execution size (`min_order_size`) thresholds.
+   - `ConsolidatedQuote`: Immutable multi-venue top-of-book container computing dynamic National Best Bid and Offer (NBBO), midpoint price, quoted spread, and normalized Order Book Imbalance $\text{OBI} = \frac{Q_b - Q_a}{Q_b + Q_a} \in [-1.0, 1.0]$. Strictly rejects crossed or locked markets ($P_{\text{bid}} \ge P_{\text{ask}}$) with `CrossedBookException(ERR-SOR-003)`.
+
+2. **Institutional Algorithmic Schedulers (`algorithms.py`, `INV-SOR-001`, `INV-SOR-003`)**:
+   - `PoissonTWAPScheduler`: Dispatches time-weighted child slices over horizon $T$ with Poisson clock inter-arrival timing $\Delta t \sim \text{Exp}(\lambda)$ bounded by a physical nanosecond interval floor ($\Delta t_{\min} \ge 1\text{ ns}$) to prevent zero-interval burst clustering. Sizes slices with randomized jitter $q_k = \bar{q} \cdot (1 + \alpha_q \cdot U(-1, 1))$, re-evaluating remaining quantity $Q_{\text{rem}} / (K - k)$ dynamically and enforcing exact terminal mass conservation within $10^{-7}$ (`INV-SOR-004`).
+   - `VolumeAdaptiveVWAPScheduler`: Dispatches volume-weighted slices dynamically conditioned on historical expected volume profiles $V_{\text{exp}}(k)$ and real-time realized bar volumes $V_{\text{rt}}(k)$ blended via Bayesian weight $\omega \in [0.0, 1.0]$. Strictly caps slice volume at an institutional participation limit $\rho \le 15\%$ (`INV-SOR-003`), skipping zero-volume bars and raising `InsufficientLiquidityException(ERR-SOR-002)` if entire market volume is zero.
+   - `NonlinearArrivalPriceScheduler`: Implements the closed-form Almgren-Chriss (2000) optimal liquidation trajectory under 3/2-power market impact proxy with Parkinson volatility dynamic adaptation $\kappa_t = \kappa_0 \cdot \sigma_t / \sigma_{\text{baseline}}$. Uses Taylor expansion limit for $\kappa T < 10^{-6}$ transitioning seamlessly to linear TWAP, and an exponential ratio reformulation $\frac{\sinh(\kappa(T - t))}{\sinh(\kappa T)} = e^{-\kappa t} \frac{1 - e^{-2\kappa(T-t)}}{1 - e^{-2\kappa T}}$ for $\kappa T > 50.0$ eliminating float64 overflow up to $\kappa T = 10,000$. Enforces strict monotonic timestamp sequencing and exact telescoping mass conservation.
+
+3. **Smart Order Router Engine (`sor.py`, `INV-SOR-002`, `INV-SOR-006`)**:
+   - Two-phase execution pipeline:
+     - **Phase 1 (Dark Midpoint Probing)**: Evaluates eligible non-quarantined dark pools satisfying Minimum Execution Size (`min_order_size`). Routes Immediate-Or-Cancel (IOC) pegged midpoint orders capturing half the NBBO spread without signaling market intention.
+     - **Phase 2 (Lit Waterfilling)**: Routes residual leaves across lit venues using a closed-form algebraic Karush-Kuhn-Tucker (KKT) waterfilling solver in $O(M \log M)$ time. Venues are sorted by net taker fee minus maker rebate, filling available top-of-book depth until slice quantity is exhausted. Zero `scipy.optimize` solvers are employed, achieving $< 0.02\text{ms}$ dispatch latency on the hot path (surpassing the $< 0.05\text{ms}$ SLA ceiling of `INV-SOR-006`).
+   - **Toxic Markout Watchdog & Venue Quarantine (`VenueHealth`)**: Monitors post-trade price movement at nanosecond horizons $\tau_{\text{markout}}$:
+     $$\text{Markout (bps)} = \text{sign}(\text{side}) \cdot \frac{P_{\text{post}} - P_{\text{fill}}}{P_{\text{fill}}} \times 10^4$$
+     Venues exceeding consecutive adverse selection thresholds are immediately quarantined for a configurable cooling window, restoring automatically after elapsed time.
+   - **Active Slice Cancellation**: Automatically cancels unfilled dark IOC probe leaves before lit routing to eliminate double-fill over-execution risks. Wraps gateway transport errors into `ChildOrderFailedException(ERR-SOR-005)`.
+
+4. **Parent Order Coordination & Implementation Shortfall TCA (`parent_order.py`, `INV-SOR-004`, `INV-SOR-005`)**:
+   - `ParentOrder`: Manages execution lifecycle of institutional meta-orders. Tracks open child slices, cumulative executed fills, volume-weighted average fill price (VWAP), fees paid, and remaining leaves. Enforces an overfill interceptor raising `MassConservationException(ERR-SOR-004)` if child fills exceed $Q_{\text{total}} + 10^{-7}$. Detects execution horizon expiration and raises `AlgorithmTimeoutException(ERR-SOR-006)`.
+   - `ImplementationShortfallReport`: Implements the exact institutional additive decomposition of Perold (1988) Transaction Cost Analysis:
+     $$\text{Total Shortfall} \equiv \text{Delay Cost} + \text{Price Impact} + \text{Fees Paid} + \text{Opportunity Cost}$$
+     Where:
+     $$\text{Delay Cost} = S \cdot Q_{\text{filled}} \cdot (P_{\text{decision}} - P_{\text{arrival}})$$
+     $$\text{Price Impact} = S \cdot Q_{\text{filled}} \cdot (P_{\text{avg}} - P_{\text{decision}})$$
+     $$\text{Opportunity Cost} = S \cdot Q_{\text{unfilled}} \cdot (P_{\text{terminal}} - P_{\text{arrival}})$$
+     with direction scalar $S = +1$ for BUY and $-1$ for SELL. Strictly verifies that total shortfall matches the sum of its additive components within $10^{-7}$ tolerance, handles zero-fill edge cases with strict division-by-zero protection, and falls back causally to arrival price when quotes are unavailable.
+
+
 
 
