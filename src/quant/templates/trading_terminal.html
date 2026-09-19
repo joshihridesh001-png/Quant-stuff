@@ -145,7 +145,7 @@
           <div class="flex items-center gap-2">
             <h1 class="font-black text-sm md:text-base tracking-widest text-white">QUANT ALPHA TERMINAL <span class="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-emerald-400 font-mono">TITAN 4K</span></h1>
             <span class="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono font-bold tracking-wide">
-              100-ALGO LIVE ENGINE
+              <span id="headerAlgoEngineBadge">100-ALGO LIVE ENGINE</span>
             </span>
             <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono font-semibold">
               INSTITUTIONAL GRADE
@@ -264,7 +264,7 @@
       <!-- Card 5: 100-Algo Consensus -->
       <div class="glass-card glow-top-amber p-3.5 flex flex-col justify-between">
         <div class="flex items-center justify-between text-slate-400 text-[10px] uppercase font-bold tracking-wider">
-          <span>100-ALGO CONSENSUS</span>
+          <span id="hudConsensusTitle">100-ALGO CONSENSUS</span>
           <span class="text-amber-400 font-bold">NORMAL</span>
         </div>
         <div id="hudConsensus" class="text-xl font-black text-amber-400 mt-1">74% BUY</div>
@@ -372,7 +372,7 @@
           <div class="flex items-center justify-between border-b border-white/10 pb-2.5 text-xs font-semibold overflow-x-auto gap-2">
             <div class="flex items-center gap-2 font-mono">
               <button id="tabAlgosBtn" class="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 via-cyan-600 to-teal-500 text-white font-bold shadow-md shadow-cyan-500/20 border border-cyan-400/30 transition flex items-center gap-1.5">
-                <span>⚡ 100-Algo Leaderboard</span>
+                <span id="tabAlgosTitle">⚡ 100-Algo Leaderboard</span>
                 <span id="profitableCountBadge" class="bg-black/40 px-1.5 py-0.2 rounded text-[10px] text-emerald-300">74 Win</span>
               </button>
               <button id="tabPositionsBtn" class="px-3.5 py-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5">
@@ -398,18 +398,39 @@
           <!-- TAB 1: 100-STRATEGY LEADERBOARD -->
           <div id="tabContentAlgos" class="flex flex-col gap-2.5 text-xs font-mono">
             
-            <!-- Search & Filters -->
+            <!-- Search, Pool Selector, DB Sync & Filters -->
             <div class="flex flex-wrap items-center justify-between gap-2.5 bg-black/50 p-2.5 rounded-xl border border-white/5 text-[11px]">
-              <div class="flex items-center gap-2 flex-grow max-w-sm">
+              <div class="flex items-center gap-2 flex-grow max-w-xs">
                 <span class="text-slate-400">🔍</span>
                 <input type="text" id="algoSearchInput" placeholder="Search strategy ID or archetype..." class="w-full bg-slate-900/80 border border-slate-700/60 rounded-lg px-2.5 py-1 text-slate-200 outline-none focus:border-cyan-400 transition">
               </div>
 
-              <div class="flex items-center gap-1.5">
-                <button onclick="filterStrategies('ALL')" class="px-2.5 py-1 rounded-lg bg-slate-800 text-white font-bold border border-slate-700 hover:bg-slate-700 transition">All 100</button>
-                <button onclick="filterStrategies('PROFITABLE')" class="px-2.5 py-1 rounded-lg bg-emerald-950/60 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-900/60 transition">Profitable (74)</button>
-                <button onclick="filterStrategies('DRAWDOWN')" class="px-2.5 py-1 rounded-lg bg-rose-950/60 text-rose-300 border border-rose-500/30 hover:bg-rose-900/60 transition">Drawdown (26)</button>
-                <button onclick="filterStrategies('ELITE')" class="px-2.5 py-1 rounded-lg bg-purple-950/60 text-purple-300 border border-purple-500/30 hover:bg-purple-900/60 transition">Top 10 Pareto 👑</button>
+              <div class="flex items-center gap-2 flex-wrap">
+                <!-- Population Size Dropdown -->
+                <div class="flex items-center gap-1.5 bg-slate-900/90 border border-slate-700/70 rounded-lg px-2.5 py-1">
+                  <span class="text-slate-400 text-[10px] uppercase font-bold">Pool:</span>
+                  <select id="populationSizeSelect" class="bg-transparent text-cyan-300 font-bold outline-none cursor-pointer">
+                    <option value="50" class="bg-slate-950 text-white">50 Algos</option>
+                    <option value="100" selected class="bg-slate-950 text-white">100 Algos</option>
+                    <option value="250" class="bg-slate-950 text-white">250 Algos</option>
+                    <option value="500" class="bg-slate-950 text-white">500 Algos</option>
+                    <option value="1000" class="bg-slate-950 text-white">1,000 Algos</option>
+                  </select>
+                </div>
+
+                <!-- Sync DB Genotypes Button -->
+                <button id="syncDbBtn" class="px-2.5 py-1 rounded-lg bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 font-mono text-[11px] border border-cyan-500/30 transition flex items-center gap-1 active:scale-95 shadow-sm" title="Seed & Sync with Live FastAPI Genotypes DB">
+                  <span id="syncDbIcon">🔄</span>
+                  <span id="syncDbText" class="font-bold">Sync DB</span>
+                </button>
+
+                <!-- Filter Pills -->
+                <div class="flex items-center gap-1">
+                  <button id="filterAllBtn" onclick="filterStrategies('ALL')" class="px-2 py-1 rounded-lg bg-slate-800 text-white font-bold border border-slate-700 hover:bg-slate-700 transition">All 100</button>
+                  <button id="filterProfBtn" onclick="filterStrategies('PROFITABLE')" class="px-2 py-1 rounded-lg bg-emerald-950/60 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-900/60 transition">Profitable (74)</button>
+                  <button id="filterDrawBtn" onclick="filterStrategies('DRAWDOWN')" class="px-2 py-1 rounded-lg bg-rose-950/60 text-rose-300 border border-rose-500/30 hover:bg-rose-900/60 transition">Drawdown (26)</button>
+                  <button id="filterEliteBtn" onclick="filterStrategies('ELITE')" class="px-2 py-1 rounded-lg bg-purple-950/60 text-purple-300 border border-purple-500/30 hover:bg-purple-900/60 transition">Top 10 👑</button>
+                </div>
               </div>
             </div>
 
@@ -433,6 +454,20 @@
                 </tbody>
               </table>
             </div>
+
+            <!-- Pagination Bar -->
+            <div class="flex items-center justify-between px-3 py-2 bg-black/40 border border-white/5 rounded-lg text-[11px] text-slate-400 font-mono">
+              <div id="paginationInfo" class="flex items-center gap-2">
+                <span>Showing 1–25 of 100 strategies</span>
+              </div>
+              <div class="flex items-center gap-1">
+                <button id="firstPageBtn" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition" title="First Page">«</button>
+                <button id="prevPageBtn" class="px-2.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition">Prev</button>
+                <span id="pageIndicator" class="px-2.5 py-0.5 text-cyan-300 font-bold">Page 1 of 4</span>
+                <button id="nextPageBtn" class="px-2.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition">Next</button>
+                <button id="lastPageBtn" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition" title="Last Page">»</button>
+              </div>
+            </div>
           </div>
 
           <!-- TAB 2: ACTIVE POSITIONS -->
@@ -455,6 +490,20 @@
                 <tbody id="positionsTableBody" class="divide-y divide-white/5">
                 </tbody>
               </table>
+            </div>
+
+            <!-- Pagination Bar -->
+            <div class="flex items-center justify-between px-3 py-2 bg-black/40 border border-white/5 rounded-lg text-[11px] text-slate-400 font-mono">
+              <div id="paginationInfo" class="flex items-center gap-2">
+                <span>Showing 1–25 of 100 strategies</span>
+              </div>
+              <div class="flex items-center gap-1">
+                <button id="firstPageBtn" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition" title="First Page">«</button>
+                <button id="prevPageBtn" class="px-2.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition">Prev</button>
+                <span id="pageIndicator" class="px-2.5 py-0.5 text-cyan-300 font-bold">Page 1 of 4</span>
+                <button id="nextPageBtn" class="px-2.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition">Next</button>
+                <button id="lastPageBtn" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition" title="Last Page">»</button>
+              </div>
             </div>
           </div>
 
@@ -671,7 +720,7 @@
     let totalWins = 26;
     let totalLosses = 12;
 
-    // 100 Strategies Generator
+    // Scalable Quantitative Strategy Generator & Pagination State
     const archetypes = [
       "Fast Trend Follower (EMA 3/12)",
       "Fractional Diff Mean-Reversion (d=0.38)",
@@ -685,13 +734,23 @@
       "Heavy-Tailed Jump Exploiter"
     ];
 
+    let currentPopulationSize = 100;
+    let currentGenerationEpoch = 0;
+    let currentPage = 1;
+    const pageSize = 25;
     let strategies = [];
-    function generate100Strategies() {
+
+    function generateStrategies(count = 100) {
+      currentPopulationSize = count;
       strategies = [];
-      for (let i = 1; i <= 100; i++) {
-        const id = "ALGO-" + String(i).padStart(3, '0');
-        const archetype = archetypes[i % archetypes.length];
-        const isElite = i <= 10;
+      const eliteCount = Math.max(1, Math.min(25, Math.floor(count * 0.1)));
+      const baseWeight = (100.0 / count);
+      
+      for (let i = 1; i <= count; i++) {
+        const padLen = count >= 1000 ? 4 : 3;
+        const id = "ALGO-" + String(i).padStart(padLen, '0');
+        const archetype = archetypes[(i - 1) % archetypes.length];
+        const isElite = i <= eliteCount;
         const sharpe = parseFloat((1.3 + Math.random() * 2.2).toFixed(2));
         const maxDd = parseFloat((0.4 + Math.random() * 2.0).toFixed(2));
         const winRate = parseFloat((55 + Math.random() * 28).toFixed(1));
@@ -701,8 +760,8 @@
           : Math.floor((Math.random() - 0.26) * 1800);
         
         const weight = isElite
-          ? parseFloat((2.0 + Math.random() * 2.5).toFixed(2))
-          : parseFloat((0.2 + Math.random() * 0.9).toFixed(2));
+          ? parseFloat((baseWeight * 2.5).toFixed(2))
+          : parseFloat((baseWeight * (0.6 + Math.random() * 0.8)).toFixed(2));
 
         strategies.push({
           id,
@@ -718,8 +777,42 @@
         });
       }
       strategies.sort((a, b) => b.pnl - a.pnl);
+      currentPage = 1;
+      updateLeaderboardBadges();
+      renderAlgosTable();
     }
-    generate100Strategies();
+
+    function updateLeaderboardBadges() {
+      const profCount = strategies.filter(s => s.pnl >= 0).length;
+      const ddCount = strategies.length - profCount;
+      const eliteCount = strategies.filter(s => s.isElite).length;
+
+      const profBadge = document.getElementById('profitableCountBadge');
+      if (profBadge) profBadge.textContent = `${profCount} Win`;
+
+      const tabTitle = document.getElementById('tabAlgosTitle');
+      if (tabTitle) tabTitle.textContent = `⚡ ${strategies.length}-Algo Leaderboard`;
+
+      const headerBadge = document.getElementById('headerAlgoEngineBadge');
+      if (headerBadge) headerBadge.textContent = `${strategies.length}-ALGO LIVE ENGINE`;
+
+      const consensusTitle = document.getElementById('hudConsensusTitle');
+      if (consensusTitle) consensusTitle.textContent = `${strategies.length}-ALGO CONSENSUS`;
+
+      const fAll = document.getElementById('filterAllBtn');
+      if (fAll) fAll.textContent = `All ${strategies.length}`;
+
+      const fProf = document.getElementById('filterProfBtn');
+      if (fProf) fProf.textContent = `Profitable (${profCount})`;
+
+      const fDraw = document.getElementById('filterDrawBtn');
+      if (fDraw) fDraw.textContent = `Drawdown (${ddCount})`;
+
+      const fElite = document.getElementById('filterEliteBtn');
+      if (fElite) fElite.textContent = `Top ${eliteCount} 👑`;
+    }
+
+    generateStrategies(100);
 
     // DOM Elements
     const canvas = document.getElementById('priceChartCanvas');
@@ -1059,21 +1152,46 @@
       }
     }
 
-    // Render 100-Algos Leaderboard
+    // Render Paginated Strategies Leaderboard
     let currentFilter = 'ALL';
     window.filterStrategies = function(f) {
       currentFilter = f;
+      currentPage = 1;
       renderAlgosTable();
     };
 
     if (algoSearchInput) {
       algoSearchInput.addEventListener('input', () => {
+        currentPage = 1;
         renderAlgosTable();
       });
     }
 
-    function renderAlgosTable() {
-      if (!algosTableBody) return;
+    const popSelect = document.getElementById('populationSizeSelect');
+    if (popSelect) {
+      popSelect.addEventListener('change', (e) => {
+        generateStrategies(parseInt(e.target.value, 10));
+      });
+    }
+
+    // Pagination Controls
+    const firstPageBtn = document.getElementById('firstPageBtn');
+    const prevPageBtn = document.getElementById('prevPageBtn');
+    const nextPageBtn = document.getElementById('nextPageBtn');
+    const lastPageBtn = document.getElementById('lastPageBtn');
+    const pageIndicator = document.getElementById('pageIndicator');
+    const paginationInfo = document.getElementById('paginationInfo');
+
+    if (firstPageBtn) firstPageBtn.addEventListener('click', () => { currentPage = 1; renderAlgosTable(); });
+    if (prevPageBtn) prevPageBtn.addEventListener('click', () => { if (currentPage > 1) { currentPage--; renderAlgosTable(); } });
+    if (nextPageBtn) nextPageBtn.addEventListener('click', () => { currentPage++; renderAlgosTable(); });
+    if (lastPageBtn) lastPageBtn.addEventListener('click', () => { 
+      const totalFiltered = getFilteredStrategies().length;
+      currentPage = Math.max(1, Math.ceil(totalFiltered / pageSize)); 
+      renderAlgosTable(); 
+    });
+
+    function getFilteredStrategies() {
       const search = algoSearchInput ? algoSearchInput.value.trim().toLowerCase() : '';
       let list = strategies.filter(s => {
         if (currentFilter === 'PROFITABLE') return s.pnl >= 0;
@@ -1081,26 +1199,53 @@
         if (currentFilter === 'ELITE') return s.isElite;
         return true;
       });
-
       if (search) {
         list = list.filter(s => s.id.toLowerCase().includes(search) || s.archetype.toLowerCase().includes(search));
       }
+      return list;
+    }
+
+    function renderAlgosTable() {
+      if (!algosTableBody) return;
+      const filtered = getFilteredStrategies();
+      const totalFiltered = filtered.length;
+      const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
+      
+      if (currentPage > totalPages) currentPage = totalPages;
+      if (currentPage < 1) currentPage = 1;
+
+      const startIdx = (currentPage - 1) * pageSize;
+      const endIdx = Math.min(startIdx + pageSize, totalFiltered);
+      const pageSlice = filtered.slice(startIdx, endIdx);
+
+      // Update Pagination Bar
+      if (paginationInfo) {
+        paginationInfo.innerHTML = totalFiltered > 0 
+          ? `<span>Showing <strong class="text-white">${startIdx + 1}–${endIdx}</strong> of <strong class="text-cyan-300">${totalFiltered}</strong> strategies</span>`
+          : `<span class="text-slate-500">No strategies found matching filters</span>`;
+      }
+      if (pageIndicator) pageIndicator.textContent = `Page ${currentPage} of ${totalPages}`;
+      if (firstPageBtn) firstPageBtn.disabled = (currentPage <= 1);
+      if (prevPageBtn) prevPageBtn.disabled = (currentPage <= 1);
+      if (nextPageBtn) nextPageBtn.disabled = (currentPage >= totalPages);
+      if (lastPageBtn) lastPageBtn.disabled = (currentPage >= totalPages);
 
       algosTableBody.innerHTML = '';
-      list.forEach((s, idx) => {
+      pageSlice.forEach((s, idx) => {
+        const globalRank = startIdx + idx + 1;
         const tr = document.createElement('tr');
         tr.className = `hover:bg-slate-800/50 transition duration-150 ${s.isElite ? 'bg-purple-950/20' : ''}`;
         
-        let rankBadge = `<span class="text-slate-500 font-mono">#${idx + 1}</span>`;
-        if (idx === 0) rankBadge = `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">🥇 #1</span>`;
-        else if (idx === 1) rankBadge = `<span class="px-1.5 py-0.5 rounded bg-slate-300/20 text-slate-200 border border-slate-400/40 font-bold">🥈 #2</span>`;
-        else if (idx === 2) rankBadge = `<span class="px-1.5 py-0.5 rounded bg-amber-700/20 text-amber-500 border border-amber-600/40 font-bold">🥉 #3</span>`;
+        let rankBadge = `<span class="text-slate-500 font-mono">#${globalRank}</span>`;
+        if (globalRank === 1) rankBadge = `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">🥇 #1</span>`;
+        else if (globalRank === 2) rankBadge = `<span class="px-1.5 py-0.5 rounded bg-slate-300/20 text-slate-200 border border-slate-400/40 font-bold">🥈 #2</span>`;
+        else if (globalRank === 3) rankBadge = `<span class="px-1.5 py-0.5 rounded bg-amber-700/20 text-amber-500 border border-amber-600/40 font-bold">🥉 #3</span>`;
 
         const isProf = s.pnl >= 0;
         tr.innerHTML = `
           <td class="py-2.5 px-2.5 whitespace-nowrap">${rankBadge}</td>
           <td class="py-2.5 px-2.5 whitespace-nowrap font-bold text-white flex items-center gap-1.5">
-            ${s.isElite ? '<span class="text-amber-400">★</span>' : ''}
+            ${s.isElite ? '<span class="text-amber-400" title="Pareto Optimal Frontier">★</span>' : ''}
             <span>${s.id}</span>
           </td>
           <td class="py-2.5 px-2.5 whitespace-nowrap text-slate-300">${s.archetype}</td>
@@ -1125,6 +1270,68 @@
           </td>
         `;
         algosTableBody.appendChild(tr);
+      });
+    }
+
+    // Live Backend Genotype Syncing
+    const syncDbBtn = document.getElementById('syncDbBtn');
+    if (syncDbBtn) {
+      syncDbBtn.addEventListener('click', async () => {
+        const icon = document.getElementById('syncDbIcon');
+        const text = document.getElementById('syncDbText');
+        if (icon) icon.className = 'inline-block animate-spin';
+        if (text) text.textContent = 'Syncing...';
+
+        try {
+          await ensureAuth();
+          // Seed the chosen population size into backend database
+          const seedRes = await fetch('/api/v1/genotypes/seed', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + (authToken || '')
+            },
+            body: JSON.stringify({ population_size: currentPopulationSize })
+          });
+
+          if (seedRes.ok) {
+            const dbGenotypes = await seedRes.json();
+            if (Array.isArray(dbGenotypes) && dbGenotypes.length > 0) {
+              strategies = dbGenotypes.map((g, idx) => {
+                const isElite = g.cohort === 'ALPHA' || idx < Math.max(1, Math.floor(dbGenotypes.length * 0.1));
+                const pnl = isElite 
+                  ? Math.floor(1200 + g.fitness_score * 800)
+                  : Math.floor((g.fitness_score - 0.4) * 2200);
+                return {
+                  id: "DB-" + g.id.substring(0, 8).toUpperCase(),
+                  archetype: `${g.cohort} (Fit: ${g.fitness_score.toFixed(2)})`,
+                  isElite,
+                  sharpe: parseFloat((g.deflated_sharpe || 1.8).toFixed(2)),
+                  maxDd: parseFloat(((g.max_drawdown || 0.05) * 100).toFixed(2)),
+                  winRate: parseFloat((52 + g.fitness_score * 35).toFixed(1)),
+                  pnl,
+                  weight: parseFloat((100.0 / dbGenotypes.length).toFixed(2)),
+                  regimeFitness: `Nov: ${(g.novelty_score || 0.8).toFixed(2)}`,
+                  status: pnl >= 0 ? "PROFITABLE" : "DRAWDOWN"
+                };
+              });
+              strategies.sort((a, b) => b.pnl - a.pnl);
+              currentPage = 1;
+              updateLeaderboardBadges();
+              renderAlgosTable();
+              if (text) text.textContent = `Synced (${dbGenotypes.length} DB)`;
+            }
+          } else {
+            // If already seeded or auth required, fallback to local generation
+            if (text) text.textContent = 'Local Mode';
+          }
+        } catch (err) {
+          console.warn('DB Sync failed:', err);
+          if (text) text.textContent = 'Offline (Sim)';
+        } finally {
+          if (icon) icon.className = '';
+          setTimeout(() => { if (text) text.textContent = 'Sync DB'; }, 3000);
+        }
       });
     }
 
@@ -1524,14 +1731,13 @@
       }, 1200);
     });
 
-    // Evolve Population Button
+    // Evolve Population Button with Dynamic Generation Epoch Tracking
     evolvePopBtn.addEventListener('click', () => {
-      evolvePopBtn.textContent = '🧬 Breeding Gen 1...';
-      if (window.triggerWebGLShockwave) window.triggerWebGLShockwave();
+      currentGenerationEpoch++;
+      evolvePopBtn.textContent = `🧬 Breeding Gen ${currentGenerationEpoch}...`;
       setTimeout(() => {
-        generate100Strategies();
-        renderAlgosTable();
-        evolvePopBtn.textContent = '🧬 Evolve Next Generation';
+        generateStrategies(currentPopulationSize);
+        evolvePopBtn.textContent = `🧬 Evolve Next Gen (G${currentGenerationEpoch + 1})`;
       }, 600);
     });
 
