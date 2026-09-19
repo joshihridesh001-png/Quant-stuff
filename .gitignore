@@ -39,7 +39,7 @@ models/
 quant.db
 *.db
 *.duckdb
-data/
+/data/
 .coverage
 coverage.xml
 .pytest_cache/
