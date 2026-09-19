@@ -28,6 +28,10 @@ gantt
     Step 1: Live Execution Gateway & State Machine :done, s6_1, 2026-10-15, 2d
     Step 2: Smart Order Router (SOR)        :done, s6_2, 2026-10-17, 3d
     Step 3: Real-Time Risk & Kill Switch    :done, s6_3, 2026-10-20, 2d
+    section Phase 7: REST & WebSocket API
+    Step 1: Services & DTO Contracts        :done, s7_1, 2026-10-22, 2d
+    Step 2: Live Execution REST Endpoints   :done, s7_2, 2026-10-24, 2d
+    Step 3: WebSockets & Trading Terminal   :done, s7_3, 2026-10-26, 2d
 ```
 
 ---
