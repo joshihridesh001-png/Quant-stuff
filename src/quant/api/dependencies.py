@@ -9,13 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from quant.core.config import get_settings
 from quant.core.security import decode_access_token, verify_api_key
+from quant.data.alpaca_feed import AlpacaMarketDataFeed
 from quant.domain.interfaces import (
     IAssetRepository,
     IEventRepository,
     IGenotypeRepository,
     IMarketDataRepository,
 )
-from quant.execution.gateway import PaperExecutionGateway
+from quant.execution.alpaca_gateway import AlpacaExecutionGateway
+from quant.execution.gateway import ExecutionGateway, PaperExecutionGateway
 from quant.execution.heartbeat import HeartbeatWatchdog
 from quant.execution.kill_switch import EmergencyKillSwitch
 from quant.execution.risk import (
@@ -32,6 +34,7 @@ from quant.infrastructure.repositories.duckdb_market_data_repository import (
 )
 from quant.infrastructure.repositories.event_repository import SqlAlchemyEventRepository
 from quant.infrastructure.repositories.genotype_repository import SqlAlchemyGenotypeRepository
+from quant.services.autonomous_trader import AutonomousTradingEngine
 from quant.services.event_service import EventService
 from quant.services.execution_service import ExecutionService
 from quant.services.genotype_service import GenotypeService
@@ -97,8 +100,11 @@ def get_market_data_service(
 # Execution & Risk Singletons & Dependencies
 _risk_orchestrator: RiskOrchestrator | None = None
 _paper_gateway: PaperExecutionGateway | None = None
+_execution_gateway: ExecutionGateway | None = None
 _execution_service: ExecutionService | None = None
 _risk_service: RiskService | None = None
+_alpaca_feed: AlpacaMarketDataFeed | None = None
+_autonomous_trader: AutonomousTradingEngine | None = None
 
 
 def get_paper_gateway() -> PaperExecutionGateway:
@@ -112,6 +118,25 @@ def get_paper_gateway() -> PaperExecutionGateway:
         _paper_gateway.set_market_price("MSFT", 420.0)
         _paper_gateway.set_market_price("SPY", 510.0)
     return _paper_gateway
+
+
+def get_execution_gateway() -> ExecutionGateway:
+    """Provide singleton pluggable ExecutionGateway (Paper or Alpaca)."""
+    global _execution_gateway
+    if _execution_gateway is None:
+        if (
+            settings.BROKER_TYPE.lower() == "alpaca"
+            and settings.ALPACA_API_KEY
+            and settings.ALPACA_SECRET_KEY
+        ):
+            _execution_gateway = AlpacaExecutionGateway(
+                api_key=settings.ALPACA_API_KEY,
+                secret_key=settings.ALPACA_SECRET_KEY,
+                base_url=settings.ALPACA_BASE_URL,
+            )
+        else:
+            _execution_gateway = get_paper_gateway()
+    return _execution_gateway
 
 
 def get_risk_orchestrator() -> RiskOrchestrator:
@@ -137,17 +162,24 @@ def get_risk_orchestrator() -> RiskOrchestrator:
             admin_token="DEFAULT_ADMIN_TOKEN",
         )
         # Register default paper broker and watchdog
-        gateway = get_paper_gateway()
-        watchdog = HeartbeatWatchdog(gateway_id="PAPER_BROKER")
+        paper = get_paper_gateway()
+        paper_watchdog = HeartbeatWatchdog(gateway_id="PAPER_BROKER")
         _risk_orchestrator.register_gateway(
-            gateway, watchdog=watchdog, gateway_id="PAPER_BROKER", is_default=True
+            paper, watchdog=paper_watchdog, gateway_id="PAPER_BROKER", is_default=True
         )
+        # If live execution gateway is separate (e.g. Alpaca), register and set as default
+        live_gateway = get_execution_gateway()
+        if live_gateway is not paper:
+            alpaca_watchdog = HeartbeatWatchdog(gateway_id="ALPACA_BROKER")
+            _risk_orchestrator.register_gateway(
+                live_gateway, watchdog=alpaca_watchdog, gateway_id="ALPACA_BROKER", is_default=True
+            )
     return _risk_orchestrator
 
 
 def get_execution_service(
     orchestrator: RiskOrchestrator = Depends(get_risk_orchestrator),
-    gateway: PaperExecutionGateway = Depends(get_paper_gateway),
+    gateway: ExecutionGateway = Depends(get_execution_gateway),
 ) -> ExecutionService:
     """Provide live ExecutionService application coordinator."""
     global _execution_service
@@ -164,6 +196,48 @@ def get_risk_service(
     if _risk_service is None:
         _risk_service = RiskService(orchestrator=orchestrator)
     return _risk_service
+
+
+def get_market_feed(
+    manager: DuckDBManager = Depends(get_duckdb_manager),
+) -> AlpacaMarketDataFeed:
+    """Provide singleton AlpacaMarketDataFeed instance bound to active DuckDBManager."""
+    global _alpaca_feed
+    current_manager = (
+        getattr(_alpaca_feed._repository, "_manager", None) if _alpaca_feed is not None else None
+    )
+    if _alpaca_feed is None or current_manager is not manager:
+        repo = DuckDBMarketDataRepository(manager)
+        _alpaca_feed = AlpacaMarketDataFeed(
+            repository=repo,
+            api_key=settings.ALPACA_API_KEY,
+            secret_key=settings.ALPACA_SECRET_KEY,
+            data_url=settings.ALPACA_DATA_URL,
+        )
+    return _alpaca_feed
+
+
+def get_autonomous_trader(
+    execution_service: ExecutionService = Depends(get_execution_service),
+    gateway: ExecutionGateway = Depends(get_execution_gateway),
+    market_feed: AlpacaMarketDataFeed = Depends(get_market_feed),
+) -> AutonomousTradingEngine:
+    """Provide singleton AutonomousTradingEngine daemon bound to active gateway and feed."""
+    global _autonomous_trader
+    if (
+        _autonomous_trader is None
+        or getattr(_autonomous_trader, "_market_feed", None) is not market_feed
+        or getattr(_autonomous_trader, "_gateway", None) is not gateway
+    ):
+        _autonomous_trader = AutonomousTradingEngine(
+            execution_service=execution_service,
+            gateway=gateway,
+            market_feed=market_feed,
+            universe=settings.TRADING_UNIVERSE,
+            interval_sec=settings.AUTONOMOUS_LOOP_INTERVAL_SEC,
+            min_trade_notional=settings.MIN_TRADE_NOTIONAL,
+        )
+    return _autonomous_trader
 
 
 # Security & Role Dependencies

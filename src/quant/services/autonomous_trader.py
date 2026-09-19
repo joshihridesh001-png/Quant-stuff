@@ -75,6 +75,7 @@ class AutonomousStepReport:
 
     iteration: int
     timestamp_ns: int
+    universe: list[str]
     bars: dict[str, PriceBar]
     target_allocations: dict[str, float]
     current_positions: dict[str, float]
@@ -154,6 +155,16 @@ class AutonomousTradingEngine:
     def universe(self) -> list[str]:
         """Monitored trading instrument universe."""
         return list(self._universe)
+
+    @property
+    def target_allocations(self) -> dict[str, float]:
+        """Target dollar allocations computed during the last rebalance cycle."""
+        return dict(self._target_allocations)
+
+    @property
+    def last_report(self) -> AutonomousStepReport | None:
+        """Most recent rebalancing iteration report."""
+        return self._last_report
 
     def add_listener(self, listener: Callable[[AutonomousStepReport], None]) -> None:
         """Register a callback observer for rebalancing completion events."""
@@ -289,6 +300,7 @@ class AutonomousTradingEngine:
         report = AutonomousStepReport(
             iteration=self._iteration,
             timestamp_ns=start_ns,
+            universe=list(self._universe),
             bars=bars,
             target_allocations=target_allocations,
             current_positions=positions,

@@ -44,9 +44,9 @@ from quant.execution.algorithms import (
     ScheduledSlice,
     VolumeAdaptiveVWAPScheduler,
 )
+from quant.execution.alpaca_gateway import AlpacaExecutionGateway
 from quant.execution.audit import OrderAuditLogger
 from quant.execution.fsm import OrderStateMachine
-from quant.execution.alpaca_gateway import AlpacaExecutionGateway
 from quant.execution.gateway import (
     ExecutionGateway,
     PaperExecutionGateway,

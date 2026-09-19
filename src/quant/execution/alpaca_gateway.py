@@ -351,9 +351,7 @@ class AlpacaExecutionGateway:
                 return None
             data = response.json()
             side = OrderSide.BUY if data.get("side") == "buy" else OrderSide.SELL
-            order_type = (
-                OrderType.MARKET if data.get("type") == "market" else OrderType.LIMIT
-            )
+            order_type = OrderType.MARKET if data.get("type") == "market" else OrderType.LIMIT
             price = float(data["limit_price"]) if data.get("limit_price") else None
             return Order(
                 cl_ord_id=data.get("client_order_id", cl_ord_id),
@@ -380,9 +378,7 @@ class AlpacaExecutionGateway:
             orders: list[Order] = []
             for item in response.json():
                 side = OrderSide.BUY if item.get("side") == "buy" else OrderSide.SELL
-                order_type = (
-                    OrderType.MARKET if item.get("type") == "market" else OrderType.LIMIT
-                )
+                order_type = OrderType.MARKET if item.get("type") == "market" else OrderType.LIMIT
                 price = float(item["limit_price"]) if item.get("limit_price") else None
                 orders.append(
                     Order(

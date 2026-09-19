@@ -328,3 +328,41 @@ class HeartbeatPingRequest(BaseModel):
     timestamp_ns: int | None = Field(
         None, ge=0, description="Optional explicit epoch nanoseconds timestamp"
     )
+
+
+class AutonomousStatusDTO(BaseModel):
+    """Response DTO reporting the operational state and telemetry of the autonomous trading engine."""
+
+    state: str = Field(
+        ..., description="Operational state: IDLE, RUNNING, PAUSED, STOPPED, or ERROR"
+    )
+    iteration: int = Field(..., description="Total completed rebalancing cycle iterations")
+    universe: list[str] = Field(..., description="Active trading universe symbols")
+    target_allocations: dict[str, float] = Field(
+        default_factory=dict, description="Last target dollar allocations"
+    )
+    last_step: dict[str, Any] | None = Field(
+        None, description="Telemetry from the most recent rebalance step"
+    )
+
+
+class AutonomousStepReportDTO(BaseModel):
+    """Response DTO reporting execution of a single discrete autonomous trading iteration."""
+
+    iteration: int = Field(..., description="Completed iteration counter")
+    timestamp_ns: int = Field(..., description="Execution epoch nanoseconds")
+    universe: list[str] = Field(..., description="Monitored universe symbols")
+    target_allocations: dict[str, float] = Field(
+        ..., description="Calculated target dollar allocations"
+    )
+    current_positions: dict[str, float] = Field(
+        ..., description="Broker share positions at cycle execution"
+    )
+    orders_dispatched: list[str] = Field(
+        ..., description="IDs of parent orders submitted in this cycle"
+    )
+    duration_ms: float = Field(..., description="Cycle compute duration in milliseconds")
+    haircut: float = Field(..., description="Risk circuit-breaker multiplier applied")
+    is_kill_switch_active: bool = Field(
+        ..., description="Whether emergency panic lockout was active"
+    )

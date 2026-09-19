@@ -12,6 +12,7 @@ from sqlalchemy import text
 from quant.api.middleware import CorrelationAndTimingMiddleware, register_exception_handlers
 from quant.api.v1.endpoints import (
     auth,
+    autonomous,
     events,
     gateways,
     genotypes,
@@ -31,7 +32,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Application lifespan manager."""
     # Startup verification
     yield
-    # Graceful shutdown: dispose connection pool
+    # Graceful shutdown: stop autonomous trader daemon if running and dispose connection pool
+    from quant.api.dependencies import _autonomous_trader
+
+    if _autonomous_trader is not None:
+        await _autonomous_trader.stop()
     await engine.dispose()
 
 
@@ -66,6 +71,7 @@ def create_application() -> FastAPI:
     app.include_router(risk.router, prefix=settings.API_V1_PREFIX)
     app.include_router(gateways.router, prefix=settings.API_V1_PREFIX)
     app.include_router(streaming.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(autonomous.router, prefix=settings.API_V1_PREFIX)
 
     # 4. System Health Check Endpoint
     @app.get("/healthz", tags=["System Health"], summary="Liveness & Readiness Probe")

@@ -2,6 +2,7 @@
 
 from quant.api.v1.endpoints import (
     auth,
+    autonomous,
     events,
     gateways,
     genotypes,
@@ -13,6 +14,7 @@ from quant.api.v1.endpoints import (
 
 __all__ = [
     "auth",
+    "autonomous",
     "events",
     "gateways",
     "genotypes",
