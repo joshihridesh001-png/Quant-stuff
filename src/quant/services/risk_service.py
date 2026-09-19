@@ -28,8 +28,10 @@ Invariants Enforced:
 
 from __future__ import annotations
 
+import contextlib
 import math
 import time
+from collections.abc import Callable
 from typing import Any
 
 from quant.api.v1.schemas import (
@@ -50,7 +52,7 @@ from quant.execution.risk_orchestrator import RiskOrchestrator
 class RiskService:
     """Application service coordinating real-time risk telemetry, dynamic limits, and emergency kill switch."""
 
-    __slots__ = ("_orchestrator",)
+    __slots__ = ("_orchestrator", "_risk_listeners")
 
     def __init__(self, orchestrator: RiskOrchestrator) -> None:
         """Initialize RiskService with injected RiskOrchestrator instance.
@@ -71,11 +73,38 @@ class RiskService:
                 code=ERR_RSK_NON_FINITE_INPUT,
             )
         self._orchestrator: RiskOrchestrator = orchestrator
+        self._risk_listeners: list[Callable[[dict[str, Any]], None]] = []
 
     @property
     def orchestrator(self) -> RiskOrchestrator:
         """Return underlying RiskOrchestrator instance."""
         return self._orchestrator
+
+    def register_risk_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        """Register callback for real-time risk telemetry and kill switch events.
+
+        Args:
+            listener: Callback taking event dictionary.
+        """
+        # Functional Purpose: Register observer callback for real-time WebSocket risk broadcasts.
+        # Explicit Dependency Tracking: self._risk_listeners.
+        # Structural Relationship: Connected to /api/v1/ws/risk streaming router.
+        # Defensive Invariant: Prevents duplicate risk listener registration.
+        if listener not in self._risk_listeners:
+            self._risk_listeners.append(listener)
+
+    def unregister_risk_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        """Unregister risk event callback.
+
+        Args:
+            listener: Previously registered callback.
+        """
+        # Functional Purpose: Remove risk listener on WebSocket client disconnection.
+        # Explicit Dependency Tracking: self._risk_listeners.
+        # Structural Relationship: Cleans up connection resources.
+        # Defensive Invariant: Idempotent removal without raising ValueError.
+        if listener in self._risk_listeners:
+            self._risk_listeners.remove(listener)
 
     def get_risk_status(self) -> RiskStatusResponse:
         """Retrieve real-time firm-wide portfolio valuation, exposure, leverage, and kill switch status.
@@ -231,11 +260,23 @@ class RiskService:
             )
 
         panic_reason = PanicTriggerReason.MANUAL_OPERATOR
-        return await self._orchestrator.trigger_emergency_panic(
+        event = await self._orchestrator.trigger_emergency_panic(
             reason=panic_reason,
             source="OPERATOR_MANUAL",
             details=f"operator_reason: {reason.strip()}",
         )
+        event_payload = {
+            "type": "KILL_SWITCH_EVENT",
+            "status": "PANIC_TRIGGERED",
+            "trigger_reason": event.trigger_reason.value,
+            "cancelled_orders_count": event.cancelled_orders_count,
+            "timestamp_ns": event.timestamp_ns,
+            "details": event.details,
+        }
+        for listener in list(self._risk_listeners):
+            with contextlib.suppress(Exception):
+                listener(event_payload)
+        return event
 
     def reset_kill_switch(self, admin_token: str) -> bool:
         """Disarm and reset emergency kill switch using constant-time cryptographic verification.
@@ -259,6 +300,14 @@ class RiskService:
 
         try:
             self._orchestrator.reset_kill_switch(admin_token.strip())
+            event_payload = {
+                "type": "KILL_SWITCH_EVENT",
+                "status": "ARMED_STANDBY",
+                "message": "Kill switch disarmed and reset to standby",
+            }
+            for listener in list(self._risk_listeners):
+                with contextlib.suppress(Exception):
+                    listener(event_payload)
             return True
         except Exception:
             return False

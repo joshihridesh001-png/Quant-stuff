@@ -62,6 +62,11 @@
 
       <!-- SIMULATION & KILL SWITCH CONTROLS -->
       <div class="flex items-center gap-2">
+        <div id="wsStatusBadge" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-800 border border-gray-700 text-gray-400">
+          <span id="wsStatusDot" class="w-2 h-2 rounded-full bg-gray-500"></span>
+          <span id="wsStatusText">API Offline (Sim)</span>
+        </div>
+
         <button id="simToggleBtn" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-800 hover:bg-gray-700 border border-gray-600 transition">
           <span id="simIcon" class="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
           <span id="simBtnText">Market Live (Sim)</span>
@@ -1017,8 +1022,159 @@
       sideBuyBtn.className = 'py-2 rounded-lg font-bold text-xs tracking-wider transition bg-gray-800 text-gray-300';
     });
 
-    // Order Dispatcher (Adds to Positions & Plots Marker)
-    dispatchOrderBtn.addEventListener('click', () => {
+    // ========================================================================
+    // BACKEND REST & WEBSOCKET BRIDGE
+    // ========================================================================
+    let authToken = '';
+    let wsRisk = null;
+    let wsExec = null;
+
+    async function ensureAuth() {
+      try {
+        const res = await fetch('/api/v1/auth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: 'lead_quant',
+            password: 'quant-secret-pass',
+            role: 'ADMIN'
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          authToken = data.access_token;
+          console.log('Authenticated with live execution backend');
+        }
+      } catch (err) {
+        console.log('Running in local simulated execution mode', err);
+      }
+    }
+
+    function connectWebSockets() {
+      if (!window.location.host) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+
+      try {
+        wsRisk = new WebSocket(`${protocol}//${host}/api/v1/ws/risk`);
+        wsRisk.onopen = () => {
+          const dot = document.getElementById('wsStatusDot');
+          const text = document.getElementById('wsStatusText');
+          const badge = document.getElementById('wsStatusBadge');
+          if (dot) dot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse';
+          if (text) text.textContent = 'API Live (WS)';
+          if (badge) badge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-950/60 border border-emerald-600/50 text-emerald-400';
+        };
+
+        wsRisk.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'SNAPSHOT' || msg.type === 'RISK_UPDATE') {
+              const r = msg.risk;
+              if (r) {
+                if (r.is_kill_switch_active) {
+                  isKillSwitchActive = true;
+                  killSwitchBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-red-950/80 border border-red-500 text-red-400 pulsing-red';
+                  killSwitchBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-500"></span><span>PANIC TRIGGERED</span>';
+                  chartHaltOverlay.classList.remove('hidden');
+                } else {
+                  isKillSwitchActive = false;
+                  killSwitchBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-950/60 border border-emerald-600/50 text-emerald-400';
+                  killSwitchBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>ARMED</span>';
+                  chartHaltOverlay.classList.add('hidden');
+                }
+              }
+            } else if (msg.type === 'KILL_SWITCH_EVENT') {
+              if (msg.status === 'PANIC_TRIGGERED') {
+                isKillSwitchActive = true;
+                killSwitchBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-red-950/80 border border-red-500 text-red-400 pulsing-red';
+                killSwitchBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-500"></span><span>PANIC TRIGGERED</span>';
+                chartHaltOverlay.classList.remove('hidden');
+              } else if (msg.status === 'ARMED_STANDBY') {
+                isKillSwitchActive = false;
+                killSwitchBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-950/60 border border-emerald-600/50 text-emerald-400';
+                killSwitchBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>ARMED</span>';
+                chartHaltOverlay.classList.add('hidden');
+              }
+            }
+          } catch (e) {
+            console.error('Error handling risk WS frame', e);
+          }
+        };
+
+        wsRisk.onclose = () => {
+          const dot = document.getElementById('wsStatusDot');
+          const text = document.getElementById('wsStatusText');
+          const badge = document.getElementById('wsStatusBadge');
+          if (dot) dot.className = 'w-2 h-2 rounded-full bg-amber-400';
+          if (text) text.textContent = 'API Offline (Sim)';
+          if (badge) badge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-800 border border-gray-700 text-gray-400';
+          setTimeout(connectWebSockets, 3000);
+        };
+
+        wsExec = new WebSocket(`${protocol}//${host}/api/v1/ws/executions`);
+        wsExec.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'SNAPSHOT' && Array.isArray(msg.orders)) {
+              msg.orders.forEach(o => {
+                if (!ordersList.some(item => item.id === o.order_id)) {
+                  ordersList.unshift({
+                    id: o.order_id,
+                    time: new Date(o.start_time_ns / 1_000_000).toTimeString().split(' ')[0],
+                    side: o.side,
+                    symbol: o.symbol,
+                    algo: 'SOR / ALGO',
+                    target: o.total_quantity,
+                    filled: o.filled_quantity,
+                    avgPrice: o.vwap_execution_price || o.arrival_price,
+                    status: o.is_closed ? 'FILLED' : 'WORKING'
+                  });
+                }
+              });
+              renderOrdersTable();
+            } else if (msg.type === 'ORDER_UPDATE' && msg.order) {
+              const o = msg.order;
+              const existing = ordersList.find(item => item.id === o.order_id);
+              if (existing) {
+                existing.filled = o.filled_quantity;
+                existing.avgPrice = o.vwap_execution_price || o.arrival_price;
+                existing.status = o.is_closed ? 'FILLED' : (msg.event === 'CANCELLED' ? 'CANCELLED' : 'WORKING');
+              } else {
+                ordersList.unshift({
+                  id: o.order_id,
+                  time: new Date(o.start_time_ns / 1_000_000).toTimeString().split(' ')[0],
+                  side: o.side,
+                  symbol: o.symbol,
+                  algo: 'SOR / ALGO',
+                  target: o.total_quantity,
+                  filled: o.filled_quantity,
+                  avgPrice: o.vwap_execution_price || o.arrival_price,
+                  status: o.is_closed ? 'FILLED' : (msg.event === 'CANCELLED' ? 'CANCELLED' : 'WORKING')
+                });
+              }
+              renderOrdersTable();
+            } else if (msg.type === 'CHILD_FILL' && msg.fill) {
+              const f = msg.fill;
+              const parent = ordersList.find(item => item.id === msg.parent_id);
+              if (parent) {
+                parent.filled = Math.min(parent.target, parent.filled + f.quantity);
+                parent.avgPrice = f.price;
+                if (parent.filled >= parent.target) parent.status = 'FILLED';
+                renderOrdersTable();
+              }
+            }
+          } catch (e) {
+            console.error('Error handling exec WS frame', e);
+          }
+        };
+      } catch (err) {
+        console.warn('WS connection failed; running in simulated mode', err);
+      }
+    }
+
+    // Order Dispatcher (Calls API and Adds to Blotter & Chart)
+    dispatchOrderBtn.addEventListener('click', async () => {
       if (isKillSwitchActive) {
         alert("CRITICAL: Emergency Kill Switch is ACTIVE. Submissions locked out.");
         return;
@@ -1026,15 +1182,51 @@
 
       const qty = parseInt(orderQtyInput.value, 10);
       const price = parseFloat(orderPriceInput.value);
-      const algo = document.getElementById('algoSelect').selectedOptions[0].text.split('(')[0].trim();
-      const newId = 'ORD-' + Math.floor(1000 + Math.random() * 9000);
+      const algoText = document.getElementById('algoSelect').selectedOptions[0].text.split('(')[0].trim();
+      let newId = 'ORD-' + Math.floor(1000 + Math.random() * 9000);
+
+      // Attempt live API dispatch if server is available
+      if (authToken) {
+        try {
+          let mappedAlgo = 'POISSON_TWAP';
+          if (algoText.includes('VWAP')) mappedAlgo = 'VOLUME_ADAPTIVE_VWAP';
+          else if (algoText.includes('Arrival') || algoText.includes('ARRIVAL')) mappedAlgo = 'ARRIVAL_PRICE';
+          else if (algoText.includes('Market') || algoText.includes('MARKET')) mappedAlgo = 'DIRECT_MARKET';
+
+          const res = await fetch('/api/v1/orders', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify({
+              symbol: currentAsset,
+              side: currentSide,
+              quantity: qty,
+              price: price > 0 ? price : null,
+              order_type: price > 0 ? 'LIMIT' : 'MARKET',
+              algorithm: mappedAlgo,
+              horizon_seconds: 60.0
+            })
+          });
+          if (res.ok) {
+            const apiOrder = await res.json();
+            newId = apiOrder.order_id;
+          } else if (res.status === 400) {
+            alert('Order rejected by Risk Firewall / Kill Switch');
+            return;
+          }
+        } catch (e) {
+          console.warn('API submission failed, using local simulated order', e);
+        }
+      }
 
       ordersList.unshift({
         id: newId,
         time: new Date().toTimeString().split(' ')[0],
         side: currentSide,
         symbol: currentAsset,
-        algo: algo,
+        algo: algoText,
         target: qty,
         filled: qty,
         avgPrice: price,
@@ -1076,7 +1268,7 @@
       renderPositionsTable();
       renderChart();
 
-      dispatchOrderBtn.textContent = 'ORDER FILLED AT NBBO!';
+      dispatchOrderBtn.textContent = 'ORDER ROUTED VIA SOR!';
       dispatchOrderBtn.classList.replace('bg-blue-600', 'bg-emerald-600');
       setTimeout(() => {
         dispatchOrderBtn.textContent = 'TRANSMIT PARENT ORDER';
@@ -1116,6 +1308,17 @@
       killSwitchBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-red-950/80 border border-red-500 text-red-400 pulsing-red';
       killSwitchBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-500"></span><span>PANIC TRIGGERED</span>';
       chartHaltOverlay.classList.remove('hidden');
+
+      if (authToken) {
+        fetch('/api/v1/risk/panic', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`
+          },
+          body: JSON.stringify({ reason: 'Operator panic kill switch activated from Terminal HUD' })
+        }).catch(err => console.warn('Panic API call failed', err));
+      }
     });
 
     chartResetBtn.addEventListener('click', () => {
@@ -1123,6 +1326,17 @@
       killSwitchBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-950/60 border border-emerald-600/50 text-emerald-400';
       killSwitchBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>ARMED</span>';
       chartHaltOverlay.classList.add('hidden');
+
+      if (authToken) {
+        fetch('/api/v1/risk/reset', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`
+          },
+          body: JSON.stringify({ admin_token: 'DEFAULT_ADMIN_TOKEN' })
+        }).catch(err => console.warn('Reset API call failed', err));
+      }
     });
 
     simToggleBtn.addEventListener('click', () => {
@@ -1156,6 +1370,7 @@
       renderPositionsTable();
       renderOrdersTable();
       renderOrderBook();
+      ensureAuth().then(connectWebSockets);
     }, 100);
   </script>
 </body>

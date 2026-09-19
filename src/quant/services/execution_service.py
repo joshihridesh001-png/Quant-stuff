@@ -35,8 +35,10 @@ Invariants Enforced:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
+from collections.abc import Callable
 
 from quant.api.v1.schemas import (
     ChildOrderDTO,
@@ -78,8 +80,10 @@ class ExecutionService:
         "_active_tasks",
         "_audit_logger",
         "_cancelled_orders",
+        "_fill_listeners",
         "_gateway",
         "_orchestrator",
+        "_order_listeners",
         "_orders",
         "_report_order_ids",
     )
@@ -118,6 +122,8 @@ class ExecutionService:
         self._cancelled_orders: set[str] = set()
         self._active_tasks: set[asyncio.Task[None]] = set()
         self._report_order_ids: dict[int, str] = {}
+        self._order_listeners: list[Callable[[ParentOrder, str], None]] = []
+        self._fill_listeners: list[Callable[[str, ChildOrderDTO], None]] = []
 
     @property
     def orchestrator(self) -> RiskOrchestrator:
@@ -128,6 +134,58 @@ class ExecutionService:
     def gateway(self) -> ExecutionGateway:
         """Return primary ExecutionGateway."""
         return self._gateway
+
+    def register_order_listener(self, listener: Callable[[ParentOrder, str], None]) -> None:
+        """Register callback for parent order lifecycle state transitions.
+
+        Args:
+            listener: Callback taking (ParentOrder, event_type string).
+        """
+        # Functional Purpose: Register observer callback for real-time WebSocket order broadcasts.
+        # Explicit Dependency Tracking: self._order_listeners.
+        # Structural Relationship: Connected to /api/v1/ws/executions streaming router.
+        # Defensive Invariant: Prevents duplicate listener registration.
+        if listener not in self._order_listeners:
+            self._order_listeners.append(listener)
+
+    def unregister_order_listener(self, listener: Callable[[ParentOrder, str], None]) -> None:
+        """Unregister parent order lifecycle callback.
+
+        Args:
+            listener: Previously registered callback.
+        """
+        # Functional Purpose: Remove listener on WebSocket client disconnection.
+        # Explicit Dependency Tracking: self._order_listeners.
+        # Structural Relationship: Cleans up connection resources.
+        # Defensive Invariant: Idempotent removal without raising ValueError.
+        if listener in self._order_listeners:
+            self._order_listeners.remove(listener)
+
+    def register_fill_listener(self, listener: Callable[[str, ChildOrderDTO], None]) -> None:
+        """Register callback for child order slice executions.
+
+        Args:
+            listener: Callback taking (parent_id, ChildOrderDTO).
+        """
+        # Functional Purpose: Register observer callback for real-time WebSocket fill broadcasts.
+        # Explicit Dependency Tracking: self._fill_listeners.
+        # Structural Relationship: Connected to /api/v1/ws/executions streaming router.
+        # Defensive Invariant: Prevents duplicate fill listener registration.
+        if listener not in self._fill_listeners:
+            self._fill_listeners.append(listener)
+
+    def unregister_fill_listener(self, listener: Callable[[str, ChildOrderDTO], None]) -> None:
+        """Unregister child order slice execution callback.
+
+        Args:
+            listener: Previously registered callback.
+        """
+        # Functional Purpose: Remove fill listener on WebSocket client disconnection.
+        # Explicit Dependency Tracking: self._fill_listeners.
+        # Structural Relationship: Cleans up connection resources.
+        # Defensive Invariant: Idempotent removal without raising ValueError.
+        if listener in self._fill_listeners:
+            self._fill_listeners.remove(listener)
 
     def _generate_slices(
         self,
@@ -294,6 +352,17 @@ class ExecutionService:
                             timestamp_ns=report.timestamp_ns or time.time_ns(),
                             spread_slippage=0.0,
                         )
+                        child_dto = ChildOrderDTO(
+                            child_id=report.cl_ord_id,
+                            quantity=fill_qty,
+                            price=fill_px,
+                            fee=report.fee,
+                            timestamp_ns=report.timestamp_ns or time.time_ns(),
+                            spread_slippage=0.0,
+                        )
+                        for fill_listener in list(self._fill_listeners):
+                            with contextlib.suppress(Exception):
+                                fill_listener(parent_order.parent_id, child_dto)
 
                     if self._audit_logger is not None:
                         self._audit_logger.log_report(report)
@@ -301,6 +370,11 @@ class ExecutionService:
             except Exception:
                 # Execution slice failure or rejection; continue remaining slices
                 continue
+
+        status_str = "COMPLETED" if parent_order.is_completed else "UPDATED"
+        for ord_listener in list(self._order_listeners):
+            with contextlib.suppress(Exception):
+                ord_listener(parent_order, status_str)
 
     def submit_parent_order(
         self,
@@ -378,6 +452,11 @@ class ExecutionService:
             task.add_done_callback(self._active_tasks.discard)
         except RuntimeError:
             pass
+
+        # Notify registered order listeners of new submission
+        for ord_listener in list(self._order_listeners):
+            with contextlib.suppress(Exception):
+                ord_listener(parent_order, "CREATED")
 
         return parent_order
 
@@ -511,6 +590,9 @@ class ExecutionService:
             return False
 
         self._cancelled_orders.add(order_id)
+        for ord_listener in list(self._order_listeners):
+            with contextlib.suppress(Exception):
+                ord_listener(order, "CANCELLED")
         return True
 
     def get_shortfall_report(

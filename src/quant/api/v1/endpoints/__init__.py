@@ -1,6 +1,15 @@
 """API v1 endpoint package."""
 
-from quant.api.v1.endpoints import auth, events, gateways, genotypes, market_data, orders, risk
+from quant.api.v1.endpoints import (
+    auth,
+    events,
+    gateways,
+    genotypes,
+    market_data,
+    orders,
+    risk,
+    streaming,
+)
 
 __all__ = [
     "auth",
@@ -10,4 +19,5 @@ __all__ = [
     "market_data",
     "orders",
     "risk",
+    "streaming",
 ]
