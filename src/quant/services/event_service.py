@@ -1,49 +1,13 @@
 """Application service orchestrating news event ingestion, causal graph updates, and decay state calculation."""
 
-import math
 from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
 
+from quant.analytics.price_reaction import compute_decay_kernel
 from quant.domain.interfaces import IAssetRepository, IEventRepository, INewsIngestionEngine
 from quant.domain.models import Asset, EventCentrality, NewsEvent
-
-
-def compute_decay_kernel(
-    delta_t_seconds: float,
-    urgency: float,
-    alpha: float = 0.5,
-    tau_fast: float = 3600.0,
-    tau_slow: float = 86400.0,
-    beta: float = 1.0,
-    tolerance: float = 1e-4,
-    max_lookback_seconds: float | None = 604800.0,  # 7 days max horizon
-) -> float:
-    """Hybrid temporal decay kernel combining exponential and power-law memory.
-
-    kappa(Delta t, u) = alpha * exp(-Delta t / (tau_fast * (1 - u)))
-                      + (1 - alpha) * (1 + Delta t / tau_slow)^(-beta)
-
-    Includes explicit numerical truncation (tolerance) and maximum lookback bound.
-    """
-    if delta_t_seconds < 0:
-        return 0.0
-
-    if max_lookback_seconds is not None and delta_t_seconds > max_lookback_seconds:
-        return 0.0
-
-    # Guard urgency from 1.0 to prevent division by zero in denominator
-    clamped_u = min(max(urgency, 0.0), 0.999)
-    fast_denom = max(tau_fast * (1.0 - clamped_u), 1e-6)
-
-    term_fast = alpha * math.exp(-delta_t_seconds / fast_denom)
-    term_slow = (1.0 - alpha) * math.pow(1.0 + (delta_t_seconds / tau_slow), -beta)
-
-    val = float(term_fast + term_slow)
-    if val < tolerance:
-        return 0.0
-    return val
 
 
 def compute_projected_feature_vector(
