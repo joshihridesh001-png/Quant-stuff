@@ -1,10 +1,10 @@
 """Pydantic request and response schemas (DTOs) for API v1."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # Event Schemas
@@ -166,6 +166,9 @@ class ParentOrderCreateRequest(BaseModel):
     price: float | None = Field(
         None, gt=0.0, description="Limit price ceiling/floor (required for LIMIT orders)"
     )
+    price_limit: float | None = Field(
+        None, gt=0.0, description="Limit price ceiling/floor alias"
+    )
     algorithm: str = Field(
         "POISSON_TWAP",
         pattern="^(POISSON_TWAP|VOLUME_ADAPTIVE_VWAP|ARRIVAL_PRICE|DIRECT_MARKET)$",
@@ -178,6 +181,14 @@ class ParentOrderCreateRequest(BaseModel):
     algo_params: dict[str, Any] = Field(
         default_factory=dict, description="Algorithm-specific tuning parameters"
     )
+
+    @model_validator(mode="after")
+    def _reconcile_price(self) -> Self:
+        if self.price is None and self.price_limit is not None:
+            self.price = self.price_limit
+        elif self.price_limit is None and self.price is not None:
+            self.price_limit = self.price
+        return self
 
 
 class ChildOrderDTO(BaseModel):
