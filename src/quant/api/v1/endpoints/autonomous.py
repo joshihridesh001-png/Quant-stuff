@@ -36,6 +36,34 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/autonomous", tags=["Autonomous Live Trading Swarm"])
 
 
+def _serialize_report(report: Any) -> dict[str, Any] | None:
+    """Serialize an AutonomousStepReport or similar object to a JSON-safe dictionary.
+
+    Args:
+        report: Step report instance or None.
+
+    Returns:
+        Dictionary representation of report fields or None.
+    """
+    # Functional Purpose: Safe serialization of slotted dataclass step reports.
+    # Explicit Dependency Tracking: AutonomousStepReport attributes.
+    # Structural Relationship: Used by status endpoints to serialize last_step.
+    # Defensive Invariant: Handles None cleanly without __dict__ attribute error on slotted classes.
+    if report is None:
+        return None
+    return {
+        "iteration": report.iteration,
+        "timestamp_ns": report.timestamp_ns,
+        "universe": list(report.universe),
+        "target_allocations": dict(report.target_allocations),
+        "current_positions": dict(report.current_positions),
+        "orders_dispatched": list(report.orders_dispatched),
+        "duration_ms": float(report.duration_ms),
+        "haircut": float(report.haircut),
+        "is_kill_switch_active": bool(report.is_kill_switch_active),
+    }
+
+
 @router.get(
     "/status",
     response_model=AutonomousStatusDTO,
@@ -63,7 +91,7 @@ def get_autonomous_status(
         iteration=trader.iteration,
         universe=trader.universe,
         target_allocations=trader.target_allocations,
-        last_step=trader.last_report.__dict__ if trader.last_report else None,
+        last_step=_serialize_report(trader.last_report),
     )
 
 
@@ -96,7 +124,7 @@ async def start_autonomous_loop(
         iteration=trader.iteration,
         universe=trader.universe,
         target_allocations=trader.target_allocations,
-        last_step=trader.last_report.__dict__ if trader.last_report else None,
+        last_step=_serialize_report(trader.last_report),
     )
 
 
@@ -129,7 +157,7 @@ async def stop_autonomous_loop(
         iteration=trader.iteration,
         universe=trader.universe,
         target_allocations=trader.target_allocations,
-        last_step=trader.last_report.__dict__ if trader.last_report else None,
+        last_step=_serialize_report(trader.last_report),
     )
 
 
@@ -162,7 +190,7 @@ def pause_autonomous_loop(
         iteration=trader.iteration,
         universe=trader.universe,
         target_allocations=trader.target_allocations,
-        last_step=trader.last_report.__dict__ if trader.last_report else None,
+        last_step=_serialize_report(trader.last_report),
     )
 
 
@@ -195,7 +223,7 @@ def resume_autonomous_loop(
         iteration=trader.iteration,
         universe=trader.universe,
         target_allocations=trader.target_allocations,
-        last_step=trader.last_report.__dict__ if trader.last_report else None,
+        last_step=_serialize_report(trader.last_report),
     )
 
 

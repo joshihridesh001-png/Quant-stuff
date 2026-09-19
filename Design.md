@@ -289,3 +289,94 @@ guaranteeing unbiased expectation $\mathbb{E}[\tilde{\boldsymbol{\nu}}] = \bolds
 * Emits observer hooks via `SimulationListener` protocol (`on_bar_start`, `on_decision`, `on_fill`, `on_bar_end`).
 * Latency SLA: 100 bars $\times$ 10 assets completes in $\approx 15.5\text{ms} \le 25\text{ms}$ (`INV-SIM-006`).
 
+---
+
+## 11. Live Execution Gateway, Order State Machine & Risk Firewall (Phase 6)
+
+### 11.1 Deterministic Order State Machine & Causal Reconciliation
+* **Monotonic DAG Transitions (`INV-GW-001`)**:
+  $$\text{PENDING\_NEW} \longrightarrow \text{NEW} \longleftrightarrow \text{PARTIALLY\_FILLED} \longrightarrow \text{FILLED} \; / \; \text{CANCELLED} \; / \; \text{REJECTED}$$
+* **Terminal State Immutability**: States `FILLED`, `CANCELLED`, `REJECTED`, and `EXPIRED` are strictly absorbing and reject subsequent state mutations.
+* **Mass Conservation Invariant (`INV-GW-003`)**:
+  $$Q_{\text{filled}} + Q_{\text{leaves}} \equiv Q_{\text{target}} \pm 10^{-7}$$
+* **Causal Out-of-Order Packet Reconciliation (`INV-GW-004`)**: If a fill execution report arrives before the parent `NEW` acknowledgement, the FSM transitions directly to `PARTIALLY_FILLED` or `FILLED`, recording the out-of-order fill causally without exception.
+* **Cryptographic Idempotency Router (`INV-GW-002`)**: Client order IDs derived deterministically via RFC 4122 UUIDv5 over `(strategy_id, asset_id, client_timestamp_ns, order_quantity)`. Duplicate tokens in the active in-flight ring buffer return cached existing orders.
+
+### 11.2 Microstructural Schedulers & Smart Order Router
+* **Poisson TWAP Scheduler (`INV-SOR-001`, `INV-SOR-004`)**:
+  Interval durations randomized via Poisson clock with physical floor $\Delta t_{\min} \ge 1\text{ ns}$:
+  $$\Delta t_k = \max\left(\Delta t_{\min}, \; \bar{\tau} \cdot (1 + U(-\alpha_t, \alpha_t))\right)$$
+  Randomized sizing jitter $q_k = \bar{q} \cdot (1 + U(-\alpha_q, \alpha_q))$ with final slice closure strictly enforcing $\sum q_k \equiv Q_{\text{rem}}$.
+* **Volume-Adaptive VWAP Scheduler (`INV-SOR-003`)**:
+  Bayesian volume blending $\widehat{V}_k = \omega V_{\text{hist}, k} + (1 - \omega) V_{\text{realtime}, k}$ with hard institutional participation cap $\rho \le 15\%$ across all trading slices:
+  $$q_k \le \rho \cdot \widehat{V}_k$$
+* **Nonlinear Arrival Price Scheduler**:
+  Closed-form Almgren-Chriss (2000) optimal liquidation trajectory under 3/2-power market impact proxy:
+  $$x_j = X_0 \cdot \frac{\sinh(\kappa_t (T - t_j))}{\sinh(\kappa_t T)}, \quad \kappa_t = \kappa_0 \cdot \frac{\sigma_t}{\sigma_{\text{baseline}}}$$
+  Numerically stabilized using linear Taylor expansion $x_j = X_0 (T - t_j) / T$ when $\kappa T < 10^{-6}$, and exponential ratio formulation $x_j = X_0 \cdot e^{-\kappa t_j} (1 - e^{-2\kappa(T - t_j)}) / (1 - e^{-2\kappa T})$ when $\kappa T > 50.0$ to prevent IEEE 754 floating-point overflow.
+* **Smart Order Router (Two-Phase Routing, `INV-SOR-002`, `INV-SOR-006`)**:
+  1. *Phase 1 (Dark Midpoint Probing)*: Sequential probing of registered dark pools (`DARK_POOL`) at uncrossed NBBO midpoint $P_{\text{mid}} = (P_{\text{bid}} + P_{\text{ask}}) / 2$ with Minimum Execution Size (MES) filter, capturing half-spread price improvement without information leakage.
+  2. *Phase 2 (Lit Algebraic Waterfilling)*: Unfilled residual routed across lit venues (`LIT_EXCHANGE`) sorted by marginal effective net cost (taker fee minus maker rebate) in $O(M \log M)$ closed-form algebraic waterfilling without black-box numerical solvers, achieving $< 0.02\text{ms}$ routing latency.
+  3. *Toxic Markout Watchdog*: Evaluates post-trade adverse selection:
+     $$\Delta P_{\text{markout}} = \text{sign}(\text{side}) \cdot \frac{P_{\text{post}} - P_{\text{fill}}}{P_{\text{fill}}} \cdot 10^4$$
+     Automatically quarantines venues breaching consecutive toxicity limits.
+
+### 11.3 Perold (1988) Implementation Shortfall TCA Decomposition (`INV-SOR-005`)
+Strictly preserves exact additive identity for both BUY and SELL sides:
+$$\text{Total Shortfall} \equiv \text{Delay Cost} + \text{Price Impact} + \text{Spread Slippage} + \text{Fees Paid} + \text{Opportunity Cost}$$
+* **Delay Cost**: $(P_{\text{decision\_arrival}} - P_{\text{arrival}}) \cdot Q_{\text{filled}}$
+* **Price Impact**: $(P_{\text{vwap}} - P_{\text{decision\_arrival}}) \cdot Q_{\text{filled}}$
+* **Opportunity Cost**: $(P_{\text{terminal}} - P_{\text{arrival}}) \cdot Q_{\text{unfilled}}$
+
+### 11.4 In-Memory Pre-Trade Risk Firewall & Emergency Kill Switch
+* **Directional Netting Exposure (`INV-RSK-001` - `INV-RSK-007`)**:
+  $$\text{Exposure}_i = \max(|w_i|, |w_i + q_{\text{leaves}, i}|) \cdot P_i$$
+  Allows de-risking closing orders to execute unconditionally even when cash balance is negative (`required_margin <= 0.0`).
+* **Sub-1.5$\mu$s Hot Path**: All checks (fat finger, gross leverage, net leverage, concentration, margin, intraday drawdown tripwire, non-finite input guards) execute in memory in $\approx 1.5\mu\text{s}$.
+* **Emergency Panic Kill Switch (`INV-RSK-008`)**: Multi-trigger tripwire (`MANUAL`, `GATEWAY_DISCONNECT`, `DRAWDOWN_BREACH`, `ROGUE_FILL`) executing concurrent multi-gateway mass cancellation sweep via `asyncio.gather` in $< 5\text{ms} \le 50\text{ms}$ SLA, freezing schedulers, and locking order submission (`ERR-RSK-008`).
+
+---
+
+## 12. Live Execution REST, WebSockets & Terminal Bridge (Phase 7)
+
+### 12.1 Execution & Risk Application Services
+* `ExecutionService`: Coordinates parent order lifecycles, maps strategy requests to schedulers (`POISSON_TWAP`, `VOLUME_ADAPTIVE_VWAP`, `ARRIVAL_PRICE`), coordinates slice dispatch through `RiskOrchestrator`, updates child order blotters, and computes Perold (1988) TCA shortfall reports.
+* `RiskService`: Aggregates real-time portfolio risk telemetry, updates pre-trade firewall parameters, monitors gateway heartbeats, and handles emergency kill switch triggers/resets.
+
+### 12.2 Full-Duplex WebSockets & Institutional Trading Terminal HUD
+* `/api/v1/ws/executions`: Real-time streaming of parent order transitions, child slice dispatches, and fill notifications.
+* `/api/v1/ws/risk`: Real-time streaming of portfolio NAV, leverage, margin, drawdowns, watchdog heartbeats, and circuit breaker tripwire alerts.
+* `trading_terminal.html`: High-refresh browser HUD featuring WebGL/Canvas order book depth rendering, candlestick chart, strategy population explorer with pagination across 1,000 genotypes, active execution blotter, autonomous swarm controls, and emergency kill switch panel.
+
+---
+
+## 13. Production Live Trading Engine & Autonomous Swarm Daemon (Phase 8)
+
+### 13.1 Institutional Alpaca Gateway Protocol Adapter
+* Implements `ExecutionGateway` protocol for Alpaca Markets v2 Live and Paper trading endpoints.
+* HTTP/2 connection pooling via `httpx.AsyncClient` with authentication headers (`APCA-API-KEY-ID`, `APCA-API-SECRET-KEY`).
+* Monotonic state mapping between Alpaca order states and domain `OrderState`:
+  $$\text{new} \to \text{NEW}, \; \text{partially\_filled} \to \text{PARTIALLY\_FILLED}, \; \text{filled} \to \text{FILLED}, \; \text{canceled} \to \text{CANCELLED}, \; \text{rejected} \to \text{REJECTED}$$
+* UUIDv5 idempotency token passed as `client_order_id`, eliminating duplicate execution risks across transport retries.
+* Account telemetry extraction (`cash`, `portfolio_value`, `buying_power`) and open position reconciliation.
+
+### 13.2 Real-Time Market Data Ingestion Feed & Online Feature Pipeline
+* `AlpacaMarketDataFeed`: Streams live OHLCV bars and NBBO consolidated quotes into DuckDB columnar storage (`add_bars_batch`) and `StreamingFracDiffBuffer`.
+* Enforces boundary invariants: $H \ge \max(O, C)$, $L \le \min(O, C)$, $P > 0$, $V \ge 0$.
+* Deterministic synthetic replay fallback for hermetic offline testing when live API credentials are unavailable.
+
+### 13.3 Autonomous Swarm Clock Loop & Delta Rebalancing Daemon
+* `AutonomousTradingEngine`: Continuous async clock loop orchestrating the end-to-end econometric prediction and execution pipeline:
+  1. Ingests latest market data and updates online fractional differentiation buffers.
+  2. Evaluates Bayesian jump-regime posterior probabilities and CUSUM panic gates.
+  3. Computes dynamic model weights $\mathbf{w}_t \in \Delta^K$ via RD-DMA ensemble across elite strategy swarm.
+  4. Evaluates epistemic disagreement entropy circuit breakers and continuous logistic haircut $\kappa_t$.
+  5. Estimates semi-parametric EVT-POT Generalized Pareto tails, VaR, and Expected Shortfall (CVaR).
+  6. Solves unified strictly concave execution sizing objective via exact 2D dual projection onto gross leverage and CVaR drawdown budget.
+  7. Computes target dollar positions $\boldsymbol{\nu}^* = \mathbf{x}^* \cdot W_t$ and delta rebalancing quantities $\Delta q_i = (\nu_i^* - w_i P_i) / P_i$.
+  8. Applies churn suppression filter: orders with $|\Delta q_i| \cdot P_i < \text{MIN\_TRADE\_NOTIONAL}$ are pruned.
+  9. Validates proposed trades against pre-trade risk firewall directional netting matrix.
+  10. Routes approved orders through algorithmic meta-order schedulers and the Smart Order Router to the live broker gateway.
+* **Emergency Coupling**: When emergency kill switch is activated or drawdown limits are breached, target allocations instantly collapse to $\mathbf{0}$, halting trading loop execution.
+* **REST & Operational Controls**: Full lifecycle management via `/api/v1/autonomous` (`status`, `start`, `stop`, `pause`, `resume`, `step`).
+

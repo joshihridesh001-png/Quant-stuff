@@ -24,6 +24,9 @@ The system is an institutional-grade, multi-algorithmic quantitative prediction 
 6. Validates all statistical alpha using **Combinatorial Purged Cross-Validation (CPCV)** and the **Deflated Sharpe Ratio (DSR)**.
 7. Aggregates elite model predictions into risk-budgeted execution mandates with automated disagreement entropy circuit breakers.
 8. Replays historical live execution causal event loops coupling RD-DMA, Epistemic Circuit Breakers, EVT Tail Risk, and Unified Convex Sizing under Kyle-Obizhaeva market impact, mark-to-market portfolio accounting, and Deflated Sharpe institutional benchmarking.
+9. Manages live order lifecycles via a deterministic Order State Machine, microstructural SOR (dark pool midpoint probing + lit waterfilling), and in-memory pre-trade risk firewall with sub-5ms concurrent mass cancellation sweeps.
+10. Exposes institutional REST endpoints, full-duplex WebSockets, and a WebGL/Canvas dark-mode trading terminal HUD.
+11. Connects to institutional broker gateways (Alpaca Markets Live/Paper v2) and executes continuous background autonomous trading swarm rebalancing loops.
 
 ### 1.3 Definitions, Acronyms, and Abbreviations
 * **ADF**: Augmented Dickey-Fuller unit-root test for time series stationarity.
@@ -280,12 +283,52 @@ Combines predictions from elite Alpha models conditional on market regime and en
 
 ---
 
+### 4.8 Subsystem 8: Live Execution Gateway, SOR & Pre-Trade Risk Firewall
+
+#### 4.8.1 Description
+Manages order lifecycles, causal out-of-order packet reconciliation, anti-gaming algorithmic execution scheduling, dark/lit smart order routing, pre-trade risk validation, broker transport liveness, and firm-wide emergency kill switch.
+
+#### 4.8.2 Detailed Requirements
+* **FR-8.1 Deterministic Order State Machine**: The order state machine shall enforce monotonic DAG transitions, absorbing terminal states (`FILLED`, `CANCELLED`, `REJECTED`), mass conservation ($Q_{\text{filled}} + Q_{\text{leaves}} \equiv Q_{\text{target}} \pm 10^{-7}$), and causal out-of-order packet reconciliation (`INV-GW-004`).
+* **FR-8.2 Microstructural Algorithmic Schedulers**: Schedulers shall support Poisson TWAP with randomized jitter, Volume-Adaptive VWAP with Bayesian blending and 15% participation cap, and closed-form hyperbolic Almgren-Chriss arrival price trajectories.
+* **FR-8.3 Smart Order Router (SOR)**: The SOR shall execute two-phase routing: dark pool midpoint probing capturing half-spread price improvement, followed by $O(M \log M)$ algebraic lit waterfilling with toxic markout watchdog quarantine.
+* **FR-8.4 Pre-Trade Risk Firewall & Kill Switch**: All orders shall pass in-memory pre-trade risk checks (fat finger, directional netting gross/net leverage, concentration, margin, drawdown) in $< 10\mu\text{s}$. The emergency panic kill switch shall execute firm-wide mass cancellations across all gateways in $< 50\text{ms}$ (`INV-RSK-008`).
+
+---
+
+### 4.9 Subsystem 9: Presentation Layer, WebSockets & Trading Terminal HUD
+
+#### 4.9.1 Description
+Provides institutional REST endpoints, full-duplex WebSocket streams, and a WebGL/Canvas trading terminal HUD.
+
+#### 4.9.2 Detailed Requirements
+* **FR-9.1 Parent Order & TCA Endpoints**: The system shall expose `/api/v1/orders` endpoints supporting parent order creation, state query, cancellation, and additive Perold (1988) implementation shortfall TCA reporting.
+* **FR-9.2 Full-Duplex WebSockets**: The streaming subsystem shall publish real-time execution events (`/api/v1/ws/executions`) and portfolio risk metrics/heartbeats (`/api/v1/ws/risk`).
+* **FR-9.3 Institutional Trading Terminal HUD**: The system shall serve a browser-based trading terminal at `/terminal` rendering order book depth, candlestick charts, 1,000-strategy swarm pagination, execution blotter, autonomous swarm controls, and emergency kill switch controls.
+
+---
+
+### 4.10 Subsystem 10: Production Live Trading Engine & Autonomous Swarm Daemon
+
+#### 4.10.1 Description
+Connects the quantitative platform to live broker infrastructure and orchestrates a continuous autonomous background trading loop.
+
+#### 4.10.2 Detailed Requirements
+* **FR-10.1 Alpaca Protocol Gateway Adapter**: The system shall implement the `ExecutionGateway` protocol for Alpaca Markets v2 Live/Paper trading with connection pooling, client order ID idempotency token matching, and account balance reconciliation.
+* **FR-10.2 Live Market Data Feed**: The system shall stream real-time OHLCV bars and NBBO quotes from Alpaca Markets into DuckDB columnar storage and `StreamingFracDiffBuffer` with synthetic replay fallback.
+* **FR-10.3 Autonomous Rebalancing Loop**: The autonomous daemon (`AutonomousTradingEngine`) shall continuously execute the multi-stage econometric pipeline (Feed $\to$ FracDiff $\to$ Regimes $\to$ RD-DMA Swarm $\to$ Circuit Breakers $\to$ EVT CVaR $\to$ Convex Dual Projection $\to$ Delta Churn Filter $\to$ Firewall $\to$ SOR), collapsing target allocations to $\mathbf{0}$ on emergency kill switch activation.
+* **FR-10.4 Autonomous REST Management**: The system shall expose `/api/v1/autonomous` routes (`status`, `start`, `stop`, `pause`, `resume`, `step`) for real-time daemon supervision.
+
+---
+
 ## 5. Non-Functional Requirements (NFR)
 
 ### 5.1 Performance & Latency Requirements
 * **NFR-1.1 Vectorized Computation**: All matrix multiplications, fractional differentiations, and decay kernel calculations shall execute via vectorized NumPy/SciPy operations without raw Python loops.
 * **NFR-1.2 API Response Time**: Ingestion endpoints (`POST /api/v1/events/ingest`) shall process, validate, and persist events in under **100 milliseconds** at the 99th percentile ($p99$).
 * **NFR-1.3 Query Latency**: Active state vector lookups (`GET /api/v1/events/state/{ticker}`) over a 7-day lookback window shall complete in under **50 milliseconds**.
+* **NFR-1.4 Pre-Trade Firewall Latency**: In-memory risk verification shall execute in under **10 microseconds** ($< 10\mu\text{s}$).
+* **NFR-1.5 Emergency Kill Switch Latency**: Firm-wide mass order cancellation sweep across all gateways shall complete in under **50 milliseconds** ($< 50\text{ms}$).
 
 ### 5.2 Data Integrity & Security Requirements
 * **NFR-2.1 Zero Lookahead Leakage**: No calculation of feature state $\mathbf{S}_{\text{news}}^{(k)}(t)$ shall incorporate information whose public availability timestamp $t_i > t$.
@@ -299,7 +342,7 @@ Combines predictions from elite Alpha models conditional on market regime and en
 
 ### 5.4 Software Quality & Maintainability
 * **NFR-4.1 Test Coverage**: The automated test suite must maintain an absolute minimum of **85% line and branch test coverage** enforced in CI.
-* **NFR-4.2 Static Typing**: The entire codebase must pass **Mypy in strict mode** (`disallow_untyped_defs = true`, `strict = true`) without warnings.
+* **NFR-4.2 Static Typing**: The entire codebase must pass **Mypy in strict mode** (`disallow_untyped_defs = true`, `strict = true`) across all source files without warnings.
 * **NFR-4.3 Code Style**: The codebase must adhere to **Ruff** linting and formatting rules with zero warnings.
 
 ---
@@ -319,7 +362,12 @@ Combines predictions from elite Alpha models conditional on market regime and en
 | **FR-6.4** (Deflated Sharpe) | Automated Unit Test | Increasing trial count $K$ strictly reduces $DSR$. Skewness and kurtosis penalties validated against analytical values. |
 | **FR-6.4.1** (Trial Logging) | Integration Test | All evaluated strategy runs recorded in database. Verify calculated $K$ equals row count. |
 | **FR-7.2** (Entropy Breaker) | Automated Unit Test | Disagreement entropy $> \theta$ automatically halves exposure and flags regime shift alert. |
-| **NFR-4.1** (Test Coverage) | Automated CI Pipeline | Pytest coverage runs in GitHub Actions and fails build if coverage $< 85\%$. |
+| **FR-8.1** (FSM Invariants) | Automated Unit Test | Assert DAG transitions, terminal state immutability, out-of-order reconciliation, and mass conservation. |
+| **FR-8.4** (Risk Firewall) | Automated Unit Test | Pre-trade risk checks execute in $< 1.5\mu\text{s}$; concurrent kill switch mass cancellation $< 50\text{ms}$. |
+| **FR-9.1** (TCA Reporting) | API Integration Test | Assert $\text{Total Shortfall} \equiv \text{Delay} + \text{Impact} + \text{Spread} + \text{Fees} + \text{Opportunity} \pm 10^{-7}$. |
+| **FR-10.1** (Alpaca Gateway) | Automated Unit Test | Authenticated REST client maps orders, handles UUIDv5 idempotency tokens, and reconciles positions. |
+| **FR-10.3** (Autonomous Swarm)| Integration Test | Verify full continuous clock loop execution and zero allocation collapse on emergency kill switch trigger. |
+| **NFR-4.1** (Test Coverage) | Automated CI Pipeline | Pytest coverage runs across 2,003 tests and fails build if coverage $< 85\%$. |
 
 ---
 
@@ -329,3 +377,4 @@ Combines predictions from elite Alpha models conditional on market regime and en
 | :---: | :---: | :--- | :--- |
 | **1.0.0** | 2026-09-08 | Technical Lead & Quant Architect | Initial baseline SRS incorporating Sprint 1 foundation, Sprint 2 econometrics, evolutionary hypergamy, and Hermes AI Agent ingestion interface. |
 | **1.1.0** | 2026-09-08 | Technical Lead & Quant Architect | Hardened specification with 5 architectural safeguards: availability timestamps (`FR-1.1.1`), active SQL horizon cutoff (`FR-1.3.1`), causal DAG junction table (`3.1.1.1`), cumulative trial logging for DSR (`FR-6.4.1`), and execution air-gap boundary (`CON-5`). |
+| **1.2.0** | 2026-09-19 | Technical Lead & Quant Architect | Incorporated Phase 6 Live Execution Gateway, Order State Machine, SOR, and Pre-Trade Risk Firewall; Phase 7 REST, WebSockets, and WebGL Trading Terminal; and Phase 8 Alpaca Broker Gateway, Live Market Data Feed, and Autonomous Trading Swarm Daemon (2,003 tests passing). |
