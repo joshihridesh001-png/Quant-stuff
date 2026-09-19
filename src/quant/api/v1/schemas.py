@@ -166,9 +166,7 @@ class ParentOrderCreateRequest(BaseModel):
     price: float | None = Field(
         None, gt=0.0, description="Limit price ceiling/floor (required for LIMIT orders)"
     )
-    price_limit: float | None = Field(
-        None, gt=0.0, description="Limit price ceiling/floor alias"
-    )
+    price_limit: float | None = Field(None, gt=0.0, description="Limit price ceiling/floor alias")
     algorithm: str = Field(
         "POISSON_TWAP",
         pattern="^(POISSON_TWAP|VOLUME_ADAPTIVE_VWAP|ARRIVAL_PRICE|DIRECT_MARKET)$",

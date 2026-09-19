@@ -3,20 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Quant Alpha // Institutional Execution & 100-Algo Terminal</title>
+  <title>QUANT ALPHA TERMINAL // 4K Cinematic Execution</title>
   
-  <!-- Fonts -->
+  <!-- Google Fonts: Inter & JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   
+  <!-- Three.js for 4K WebGL Background Graphics -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
   <!-- Tailwind CSS -->
   <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
 
   <style>
     :root {
-      --bg-dark: #060911;
-      --panel-bg: rgba(13, 19, 35, 0.75);
+      --bg-dark: #03060f;
+      --panel-bg: rgba(9, 15, 29, 0.72);
       --panel-border: rgba(255, 255, 255, 0.08);
       --neon-green: #00f59b;
       --neon-red: #ff3b69;
@@ -26,149 +29,163 @@
       --neon-amber: #f59e0b;
     }
 
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       background-color: var(--bg-dark);
-      background-image: 
-        radial-gradient(circle at 10% 15%, rgba(59, 130, 246, 0.12) 0%, transparent 45%),
-        radial-gradient(circle at 90% 20%, rgba(168, 85, 247, 0.09) 0%, transparent 40%),
-        radial-gradient(circle at 50% 85%, rgba(0, 245, 155, 0.05) 0%, transparent 50%),
-        linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
-      background-size: 100% 100%, 100% 100%, 100% 100%, 32px 32px, 32px 32px;
       color: #f1f5f9;
-      font-family: 'Inter', -apple-system, sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       min-height: 100vh;
+      overflow-x: hidden;
     }
 
     .font-mono {
       font-family: 'JetBrains Mono', monospace;
+      font-feature-settings: "tnum" 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* WebGL Canvas Overlay */
+    #webglCanvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      pointer-events: none;
+      z-index: 0;
     }
 
     /* Scrollbars */
     ::-webkit-scrollbar { width: 5px; height: 5px; }
-    ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.3); }
-    ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.25); border-radius: 4px; }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.5); }
+    ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.4); }
+    ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.3); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(0, 242, 254, 0.6); }
 
     /* Glass Panels */
     .glass-card {
       background: var(--panel-bg);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
       border: 1px solid var(--panel-border);
-      box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.6), inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
-      border-radius: 12px;
+      box-shadow: 0 12px 35px -10px rgba(0, 0, 0, 0.7), inset 0 1px 0 0 rgba(255, 255, 255, 0.07);
+      border-radius: 14px;
       position: relative;
+      transition: border-color 0.25s ease, box-shadow 0.25s ease;
     }
 
     .glass-card:hover {
-      border-color: rgba(255, 255, 255, 0.14);
+      border-color: rgba(255, 255, 255, 0.16);
+      box-shadow: 0 16px 40px -10px rgba(0, 0, 0, 0.8), inset 0 1px 0 0 rgba(255, 255, 255, 0.12);
     }
 
     /* Accent Top Glowing Lines */
     .glow-top-green::before {
       content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
       background: linear-gradient(90deg, transparent, var(--neon-green), transparent);
-      border-radius: 12px 12px 0 0;
+      border-radius: 14px 14px 0 0;
     }
     .glow-top-cyan::before {
       content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
       background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent);
-      border-radius: 12px 12px 0 0;
+      border-radius: 14px 14px 0 0;
     }
     .glow-top-purple::before {
       content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
       background: linear-gradient(90deg, transparent, var(--neon-purple), transparent);
-      border-radius: 12px 12px 0 0;
+      border-radius: 14px 14px 0 0;
     }
     .glow-top-blue::before {
       content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
       background: linear-gradient(90deg, transparent, var(--neon-blue), transparent);
-      border-radius: 12px 12px 0 0;
+      border-radius: 14px 14px 0 0;
     }
     .glow-top-amber::before {
       content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
       background: linear-gradient(90deg, transparent, var(--neon-amber), transparent);
-      border-radius: 12px 12px 0 0;
-    }
-    .glow-top-red::before {
-      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
-      background: linear-gradient(90deg, transparent, var(--neon-red), transparent);
-      border-radius: 12px 12px 0 0;
+      border-radius: 14px 14px 0 0;
     }
 
     /* Glow Text */
-    .glow-text-green { text-shadow: 0 0 12px rgba(0, 245, 155, 0.4); color: var(--neon-green); }
-    .glow-text-red { text-shadow: 0 0 12px rgba(255, 59, 105, 0.4); color: var(--neon-red); }
-    .glow-text-cyan { text-shadow: 0 0 12px rgba(0, 242, 254, 0.4); color: var(--neon-cyan); }
+    .glow-text-green { text-shadow: 0 0 14px rgba(0, 245, 155, 0.5); color: var(--neon-green); }
+    .glow-text-red { text-shadow: 0 0 14px rgba(255, 59, 105, 0.5); color: var(--neon-red); }
+    .glow-text-cyan { text-shadow: 0 0 14px rgba(0, 242, 254, 0.5); color: var(--neon-cyan); }
 
     /* Panic Pulse */
     .pulsing-red { animation: pulse-red 1.5s infinite; }
     @keyframes pulse-red {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.8), 0 0 20px rgba(239, 68, 68, 0.4); }
-      50% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0), 0 0 35px rgba(239, 68, 68, 0.8); }
+      0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.8), 0 0 25px rgba(239, 68, 68, 0.5); }
+      50% { box-shadow: 0 0 0 14px rgba(239, 68, 68, 0), 0 0 45px rgba(239, 68, 68, 0.9); }
     }
 
-    /* Subtle Ticker Pulse */
-    @keyframes flash-green { 0% { background: rgba(0, 245, 155, 0.25); } 100% { background: transparent; } }
-    @keyframes flash-red { 0% { background: rgba(255, 59, 105, 0.25); } 100% { background: transparent; } }
-    .flash-up { animation: flash-green 0.8s ease-out; }
-    .flash-down { animation: flash-red 0.8s ease-out; }
+    /* Hologram Shimmer */
+    .holo-glow {
+      background: linear-gradient(135deg, rgba(0, 242, 254, 0.15) 0%, rgba(168, 85, 247, 0.15) 100%);
+      border: 1px solid rgba(0, 242, 254, 0.35);
+      box-shadow: 0 0 20px rgba(0, 242, 254, 0.2);
+    }
   </style>
 </head>
-<body class="antialiased p-2 md:p-3 select-none">
+<body class="antialiased p-2 md:p-3.5 select-none relative">
 
-  <div class="max-w-[1680px] mx-auto flex flex-col gap-3">
+  <!-- 3D WEBGL PARTICLE UNIVERSE CANVAS -->
+  <canvas id="webglCanvas"></canvas>
+
+  <!-- FOREGROUND WORKSPACE (Z-INDEX 10) -->
+  <div class="relative z-10 max-w-[1720px] mx-auto flex flex-col gap-3">
     
     <!-- TOP STATUS & NAV BAR -->
     <header class="glass-card px-4 py-2.5 flex flex-wrap items-center justify-between gap-4">
       
-      <!-- LOGO & BRAND -->
+      <!-- LOGO & TITAN ENGINE IDENTITY -->
       <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 via-cyan-400 to-emerald-400 p-0.5 shadow-lg shadow-blue-500/20">
-          <div class="w-full h-full bg-[#070b14] rounded-[10px] flex items-center justify-center font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-emerald-400 text-xl font-mono">
-            Q
+        <div class="relative group cursor-pointer">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-400 via-blue-600 to-purple-600 p-0.5 shadow-lg shadow-cyan-500/25 group-hover:shadow-cyan-500/40 transition">
+            <div class="w-full h-full bg-[#050913] rounded-[10px] flex items-center justify-center font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-300 via-teal-300 to-emerald-400 text-xl font-mono">
+              Q
+            </div>
           </div>
+          <span class="absolute -top-1 -right-1 flex h-3 w-3">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-3 w-3 bg-cyan-500"></span>
+          </span>
         </div>
+
         <div>
           <div class="flex items-center gap-2">
-            <h1 class="font-extrabold text-sm md:text-base tracking-wider text-white">QUANT ALPHA <span class="text-cyan-400 font-mono">TITAN</span></h1>
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-cyan-400 border border-cyan-500/30 font-mono font-bold tracking-wide">
+            <h1 class="font-black text-sm md:text-base tracking-widest text-white">QUANT ALPHA TERMINAL <span class="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-emerald-400 font-mono">TITAN 4K</span></h1>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono font-bold tracking-wide">
               100-ALGO LIVE ENGINE
             </span>
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-mono">
-              RD-DMA ACTIVE
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono font-semibold">
+              WEBGL 60FPS
             </span>
           </div>
-          <p class="text-[11px] text-slate-400">Institutional Algorithmic Execution • Hypergamic Genetic Search • Microstructural SOR</p>
+          <p class="text-[11px] text-slate-400 font-medium">Dynamic Model Averaging (RD-DMA) • Hypergamic Genetic Selection • Perold TCA Execution</p>
         </div>
       </div>
 
       <!-- ASSET SELECTOR & LIVE TICKER -->
-      <div class="flex items-center gap-4 bg-black/40 border border-white/10 px-3.5 py-1.5 rounded-xl font-mono shadow-inner">
+      <div class="flex items-center gap-4 bg-black/50 border border-white/10 px-3.5 py-1.5 rounded-xl font-mono shadow-inner backdrop-blur-md">
         <div class="flex items-center gap-2">
           <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
           <select id="assetSelect" class="bg-transparent font-bold text-sm cursor-pointer outline-none text-cyan-300 hover:text-white transition">
-            <option value="NVDA" class="bg-slate-900 text-white">NVDA (NVIDIA)</option>
-            <option value="AAPL" class="bg-slate-900 text-white">AAPL (Apple)</option>
-            <option value="MSFT" class="bg-slate-900 text-white">MSFT (Microsoft)</option>
-            <option value="TSLA" class="bg-slate-900 text-white">TSLA (Tesla)</option>
-            <option value="BTC-USD" class="bg-slate-900 text-white">BTC-USD (Bitcoin)</option>
+            <option value="NVDA" class="bg-slate-950 text-white">NVDA (NVIDIA Corp.)</option>
+            <option value="AAPL" class="bg-slate-950 text-white">AAPL (Apple Inc.)</option>
+            <option value="MSFT" class="bg-slate-950 text-white">MSFT (Microsoft)</option>
+            <option value="TSLA" class="bg-slate-950 text-white">TSLA (Tesla Inc.)</option>
+            <option value="BTC-USD" class="bg-slate-950 text-white">BTC-USD (Bitcoin)</option>
           </select>
         </div>
-        <div class="h-4 w-px bg-slate-700/60"></div>
+        <div class="h-4 w-px bg-slate-700/70"></div>
         <div class="flex items-center gap-2.5">
-          <span class="text-[11px] text-slate-400 font-sans font-medium">MARKET:</span>
-          <span id="tickerLastPrice" class="font-bold text-base transition-colors duration-200 glow-text-green">$125.00</span>
+          <span class="text-[11px] text-slate-400 font-sans font-medium">NBBO:</span>
+          <span id="tickerLastPrice" class="font-extrabold text-base transition-colors duration-200 glow-text-green">$125.00</span>
           <span id="tickerPriceChange" class="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">+2.45%</span>
         </div>
       </div>
 
-      <!-- SYSTEM STATUS & EMERGENCY KILL SWITCH -->
+      <!-- SYSTEM STATUS & CONTROLS -->
       <div class="flex items-center gap-2.5">
         <!-- WebSocket Badge -->
         <div id="wsStatusBadge" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-medium bg-slate-800/60 border border-slate-700/60 text-slate-400">
@@ -183,13 +200,13 @@
         </button>
 
         <!-- Kill Switch Armed Badge -->
-        <div id="killSwitchBadge" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-emerald-950/40 border border-emerald-500/30 text-emerald-400">
+        <div id="killSwitchBadge" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-emerald-950/50 border border-emerald-500/30 text-emerald-400">
           <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-          <span>FIREWALL ARMED</span>
+          <span>ARMED</span>
         </div>
 
         <!-- Emergency Kill Switch Button -->
-        <button id="emergencyKillBtn" class="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-500 hover:to-rose-600 text-white shadow-lg shadow-red-600/20 border border-red-500/40 transition flex items-center gap-1.5">
+        <button id="emergencyKillBtn" class="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-red-600 via-rose-600 to-red-700 hover:from-red-500 hover:to-rose-500 text-white shadow-lg shadow-red-600/30 border border-red-500/50 transition flex items-center gap-1.5 active:scale-95">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/></svg>
           <span class="tracking-wider font-mono">PANIC KILL</span>
         </button>
@@ -203,7 +220,7 @@
       <div class="glass-card glow-top-green p-3.5 flex flex-col justify-between">
         <div class="flex items-center justify-between text-slate-400 text-[10px] uppercase font-bold tracking-wider">
           <span>TOTAL NET P&L</span>
-          <span class="text-emerald-400">● LIVE</span>
+          <span class="text-emerald-400 font-bold">● LIVE</span>
         </div>
         <div id="hudTotalPnl" class="text-xl font-black glow-text-green mt-1">+$24,850.25</div>
         <div class="text-[11px] text-emerald-400 font-semibold flex items-center justify-between mt-1">
@@ -216,7 +233,7 @@
       <div class="glass-card glow-top-cyan p-3.5 flex flex-col justify-between">
         <div class="flex items-center justify-between text-slate-400 text-[10px] uppercase font-bold tracking-wider">
           <span>UNREALIZED P&L</span>
-          <span class="text-cyan-400">MTM</span>
+          <span class="text-cyan-400 font-bold">MTM</span>
         </div>
         <div id="hudUnrealizedPnl" class="text-xl font-black glow-text-cyan mt-1">+$4,250.00</div>
         <div class="text-[11px] text-slate-300 flex items-center justify-between mt-1">
@@ -229,12 +246,12 @@
       <div class="glass-card glow-top-blue p-3.5 flex flex-col justify-between">
         <div class="flex items-center justify-between text-slate-400 text-[10px] uppercase font-bold tracking-wider">
           <span>REALIZED P&L</span>
-          <span class="text-blue-400">BANKED</span>
+          <span class="text-blue-400 font-bold">BANKED</span>
         </div>
         <div id="hudRealizedPnl" class="text-xl font-black text-blue-400 mt-1">+$20,600.25</div>
         <div class="text-[11px] text-slate-400 flex items-center justify-between mt-1">
-          <span>Fills Settled</span>
-          <span class="text-emerald-400 font-bold">100% Cleared</span>
+          <span>Closed Fills</span>
+          <span class="text-emerald-400 font-bold">100% Settled</span>
         </div>
       </div>
 
@@ -245,8 +262,8 @@
           <span class="text-purple-400 font-bold">PF 2.18</span>
         </div>
         <div id="hudWinRate" class="text-xl font-black text-white mt-1">68.4%</div>
-        <div class="w-full bg-slate-800 rounded-full h-1.5 my-1 overflow-hidden">
-          <div class="bg-gradient-to-r from-blue-500 to-purple-400 h-1.5 rounded-full" style="width: 68.4%"></div>
+        <div class="w-full bg-slate-800/80 rounded-full h-1.5 my-1 overflow-hidden">
+          <div class="bg-gradient-to-r from-cyan-500 via-blue-500 to-purple-400 h-1.5 rounded-full" style="width: 68.4%"></div>
         </div>
         <div class="text-[10px] text-slate-400 flex items-center justify-between">
           <span id="hudWinLoss">26 W / 12 L</span>
@@ -258,7 +275,7 @@
       <div class="glass-card glow-top-amber p-3.5 flex flex-col justify-between">
         <div class="flex items-center justify-between text-slate-400 text-[10px] uppercase font-bold tracking-wider">
           <span>100-ALGO CONSENSUS</span>
-          <span class="text-amber-400">NORMAL</span>
+          <span class="text-amber-400 font-bold">NORMAL</span>
         </div>
         <div id="hudConsensus" class="text-xl font-black text-amber-400 mt-1">74% BUY</div>
         <div class="text-[11px] text-slate-400 flex items-center justify-between mt-1">
@@ -304,11 +321,11 @@
             
             <!-- Indicators & Timeframe Pills -->
             <div class="flex items-center gap-3 text-[11px]">
-              <div class="flex items-center gap-1 bg-black/40 p-0.5 rounded-lg border border-white/5">
-                <button class="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-bold">1m</button>
-                <button class="px-2 py-0.5 rounded text-slate-400 hover:text-white">5m</button>
-                <button class="px-2 py-0.5 rounded text-slate-400 hover:text-white">15m</button>
-                <button class="px-2 py-0.5 rounded text-slate-400 hover:text-white">1h</button>
+              <div class="flex items-center gap-1 bg-black/50 p-0.5 rounded-lg border border-white/5">
+                <button class="px-2.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-bold">1m</button>
+                <button class="px-2 py-0.5 rounded text-slate-400 hover:text-white transition">5m</button>
+                <button class="px-2 py-0.5 rounded text-slate-400 hover:text-white transition">15m</button>
+                <button class="px-2 py-0.5 rounded text-slate-400 hover:text-white transition">1h</button>
               </div>
 
               <div class="h-3 w-px bg-slate-700"></div>
@@ -329,12 +346,12 @@
           </div>
 
           <!-- CANVAS WRAPPER -->
-          <div class="relative w-full h-[380px] cursor-crosshair bg-[#04060d]/90 rounded-xl overflow-hidden border border-white/5 shadow-inner" id="canvasWrapper">
+          <div class="relative w-full h-[400px] cursor-crosshair bg-[#030610]/95 rounded-xl overflow-hidden border border-white/5 shadow-2xl" id="canvasWrapper">
             <canvas id="priceChartCanvas" class="w-full h-full block"></canvas>
             
             <!-- OVERLAY NOTICE ON KILL SWITCH -->
-            <div id="chartHaltOverlay" class="hidden absolute inset-0 bg-red-950/85 backdrop-blur-md flex flex-col items-center justify-center text-red-400 z-20">
-              <div class="text-2xl md:text-3xl font-black tracking-widest pulsing-red bg-red-900/60 px-8 py-3 rounded-2xl border border-red-500 text-center font-mono">
+            <div id="chartHaltOverlay" class="hidden absolute inset-0 bg-red-950/90 backdrop-blur-lg flex flex-col items-center justify-center text-red-400 z-20">
+              <div class="text-2xl md:text-3xl font-black tracking-widest pulsing-red bg-red-900/70 px-8 py-3.5 rounded-2xl border border-red-500 text-center font-mono">
                 EMERGENCY PANIC KILL SWITCH ACTIVATED
               </div>
               <p class="text-xs text-red-200 mt-3 font-mono">ALL OPEN ORDERS CANCELLED • SUBMISSIONS LOCKED OUT (ERR-RSK-008)</p>
@@ -364,9 +381,9 @@
           <!-- TAB HEADERS -->
           <div class="flex items-center justify-between border-b border-white/10 pb-2.5 text-xs font-semibold overflow-x-auto gap-2">
             <div class="flex items-center gap-2 font-mono">
-              <button id="tabAlgosBtn" class="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 text-white font-bold shadow-md shadow-blue-500/20 border border-blue-400/30 transition flex items-center gap-1.5">
+              <button id="tabAlgosBtn" class="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 via-cyan-600 to-teal-500 text-white font-bold shadow-md shadow-cyan-500/20 border border-cyan-400/30 transition flex items-center gap-1.5">
                 <span>⚡ 100-Algo Leaderboard</span>
-                <span id="profitableCountBadge" class="bg-black/30 px-1.5 py-0.2 rounded text-[10px] text-emerald-300">74 Win</span>
+                <span id="profitableCountBadge" class="bg-black/40 px-1.5 py-0.2 rounded text-[10px] text-emerald-300">74 Win</span>
               </button>
               <button id="tabPositionsBtn" class="px-3.5 py-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5">
                 <span>📊 Active Positions</span>
@@ -382,7 +399,7 @@
             </div>
 
             <!-- Evolve Button -->
-            <button id="evolvePopBtn" class="px-3 py-1.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 font-mono text-xs border border-purple-500/40 shadow transition flex items-center gap-1.5">
+            <button id="evolvePopBtn" class="px-3 py-1.5 rounded-xl bg-purple-600/25 hover:bg-purple-600/40 text-purple-300 font-mono text-xs border border-purple-500/40 shadow transition flex items-center gap-1.5 active:scale-95">
               <span>🧬</span>
               <span class="font-bold">Evolve Next Generation</span>
             </button>
@@ -392,22 +409,22 @@
           <div id="tabContentAlgos" class="flex flex-col gap-2.5 text-xs font-mono">
             
             <!-- Search & Filters -->
-            <div class="flex flex-wrap items-center justify-between gap-2.5 bg-black/40 p-2.5 rounded-xl border border-white/5 text-[11px]">
+            <div class="flex flex-wrap items-center justify-between gap-2.5 bg-black/50 p-2.5 rounded-xl border border-white/5 text-[11px]">
               <div class="flex items-center gap-2 flex-grow max-w-sm">
                 <span class="text-slate-400">🔍</span>
-                <input type="text" id="algoSearchInput" placeholder="Search strategy ID or archetype..." class="w-full bg-slate-900/60 border border-slate-700/60 rounded-lg px-2.5 py-1 text-slate-200 outline-none focus:border-cyan-500">
+                <input type="text" id="algoSearchInput" placeholder="Search strategy ID or archetype..." class="w-full bg-slate-900/80 border border-slate-700/60 rounded-lg px-2.5 py-1 text-slate-200 outline-none focus:border-cyan-400 transition">
               </div>
 
               <div class="flex items-center gap-1.5">
-                <button onclick="filterStrategies('ALL')" class="px-2.5 py-1 rounded-lg bg-slate-800 text-white font-bold border border-slate-700 hover:bg-slate-700">All 100</button>
-                <button onclick="filterStrategies('PROFITABLE')" class="px-2.5 py-1 rounded-lg bg-emerald-950/60 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-900/60">Profitable (74)</button>
-                <button onclick="filterStrategies('DRAWDOWN')" class="px-2.5 py-1 rounded-lg bg-rose-950/60 text-rose-300 border border-rose-500/30 hover:bg-rose-900/60">Drawdown (26)</button>
-                <button onclick="filterStrategies('ELITE')" class="px-2.5 py-1 rounded-lg bg-purple-950/60 text-purple-300 border border-purple-500/30 hover:bg-purple-900/60">Top 10 Pareto 👑</button>
+                <button onclick="filterStrategies('ALL')" class="px-2.5 py-1 rounded-lg bg-slate-800 text-white font-bold border border-slate-700 hover:bg-slate-700 transition">All 100</button>
+                <button onclick="filterStrategies('PROFITABLE')" class="px-2.5 py-1 rounded-lg bg-emerald-950/60 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-900/60 transition">Profitable (74)</button>
+                <button onclick="filterStrategies('DRAWDOWN')" class="px-2.5 py-1 rounded-lg bg-rose-950/60 text-rose-300 border border-rose-500/30 hover:bg-rose-900/60 transition">Drawdown (26)</button>
+                <button onclick="filterStrategies('ELITE')" class="px-2.5 py-1 rounded-lg bg-purple-950/60 text-purple-300 border border-purple-500/30 hover:bg-purple-900/60 transition">Top 10 Pareto 👑</button>
               </div>
             </div>
 
             <!-- Table of 100 Strategies -->
-            <div class="overflow-x-auto max-h-60 rounded-lg border border-white/5 bg-black/20">
+            <div class="overflow-x-auto max-h-64 rounded-lg border border-white/5 bg-black/30">
               <table class="w-full text-left border-collapse">
                 <thead class="sticky top-0 bg-[#070b14]/95 backdrop-blur-md z-10">
                   <tr class="text-slate-400 border-b border-white/10 text-[10px] uppercase font-bold tracking-wider">
@@ -430,7 +447,7 @@
 
           <!-- TAB 2: ACTIVE POSITIONS -->
           <div id="tabContentPositions" class="hidden flex flex-col gap-2 text-xs font-mono">
-            <div class="overflow-x-auto max-h-60 rounded-lg border border-white/5 bg-black/20">
+            <div class="overflow-x-auto max-h-64 rounded-lg border border-white/5 bg-black/30">
               <table class="w-full text-left border-collapse">
                 <thead class="sticky top-0 bg-[#070b14]/95 backdrop-blur-md z-10">
                   <tr class="text-slate-400 border-b border-white/10 text-[10px] uppercase font-bold tracking-wider">
@@ -452,7 +469,7 @@
           </div>
 
           <!-- TAB 3: EXECUTED ORDERS -->
-          <div id="tabContentOrders" class="hidden overflow-x-auto max-h-60 text-xs font-mono rounded-lg border border-white/5 bg-black/20">
+          <div id="tabContentOrders" class="hidden overflow-x-auto max-h-64 text-xs font-mono rounded-lg border border-white/5 bg-black/30">
             <table class="w-full text-left border-collapse">
               <thead class="sticky top-0 bg-[#070b14]/95 backdrop-blur-md z-10">
                 <tr class="text-slate-400 border-b border-white/10 text-[10px] uppercase font-bold tracking-wider">
@@ -476,22 +493,22 @@
           <!-- TAB 4: TCA REPORT -->
           <div id="tabContentTca" class="hidden flex flex-col gap-2.5 text-xs font-mono">
             <div class="grid grid-cols-2 md:grid-cols-4 gap-2.5">
-              <div class="bg-black/40 border border-white/10 p-3 rounded-xl glow-top-green">
+              <div class="bg-black/50 border border-white/10 p-3.5 rounded-xl glow-top-green">
                 <div class="text-slate-400 text-[10px] uppercase tracking-wider">TOTAL SHORTFALL</div>
                 <div class="text-lg font-bold text-emerald-400 mt-0.5">+1.82 bps ($16.82)</div>
                 <div class="text-[10px] text-slate-500 mt-1">Perold (1988) Additive Identity</div>
               </div>
-              <div class="bg-black/40 border border-white/10 p-3 rounded-xl glow-top-cyan">
+              <div class="bg-black/50 border border-white/10 p-3.5 rounded-xl glow-top-cyan">
                 <div class="text-slate-400 text-[10px] uppercase tracking-wider">DELAY COST</div>
                 <div class="text-lg font-bold text-white mt-0.5">$4.20 (0.45 bps)</div>
                 <div class="text-[10px] text-slate-500 mt-1">Decision to Router Latency</div>
               </div>
-              <div class="bg-black/40 border border-white/10 p-3 rounded-xl glow-top-amber">
+              <div class="bg-black/50 border border-white/10 p-3.5 rounded-xl glow-top-amber">
                 <div class="text-slate-400 text-[10px] uppercase tracking-wider">PRICE IMPACT</div>
                 <div class="text-lg font-bold text-amber-400 mt-0.5">$8.50 (0.92 bps)</div>
                 <div class="text-[10px] text-slate-500 mt-1">Kyle 3/2-Power Impact</div>
               </div>
-              <div class="bg-black/40 border border-white/10 p-3 rounded-xl glow-top-purple">
+              <div class="bg-black/50 border border-white/10 p-3.5 rounded-xl glow-top-purple">
                 <div class="text-slate-400 text-[10px] uppercase tracking-wider">FEES & SPREAD</div>
                 <div class="text-lg font-bold text-purple-300 mt-0.5">$4.12 (0.45 bps)</div>
                 <div class="text-[10px] text-slate-500 mt-1">Exchange Fees & Rebates</div>
@@ -514,14 +531,14 @@
               <span class="w-2 h-2 rounded-full bg-cyan-400"></span>
               <h3 class="font-extrabold text-sm tracking-wider text-white">ALGORITHMIC ORDER RIG</h3>
             </div>
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
               SOR AUTO-WATERFILLING
             </span>
           </div>
 
           <!-- BUY / SELL SIDE SEGMENTED CONTROL -->
-          <div class="grid grid-cols-2 gap-2 bg-black/40 p-1 rounded-xl border border-white/5">
-            <button id="sideBuyBtn" class="py-2 rounded-lg font-extrabold text-xs tracking-wider transition bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/20 border border-emerald-400/40">
+          <div class="grid grid-cols-2 gap-2 bg-black/50 p-1 rounded-xl border border-white/5">
+            <button id="sideBuyBtn" class="py-2 rounded-lg font-extrabold text-xs tracking-wider transition bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/25 border border-emerald-400/40">
               BUY / LONG
             </button>
             <button id="sideSellBtn" class="py-2 rounded-lg font-bold text-xs tracking-wider transition text-slate-400 hover:text-white">
@@ -533,10 +550,10 @@
           <div class="flex items-center justify-between gap-1 text-[11px]">
             <span class="text-slate-400 text-[10px]">ALLOCATE:</span>
             <div class="flex items-center gap-1">
-              <button onclick="setQuickShares(100)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5">100</button>
-              <button onclick="setQuickShares(250)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5">250</button>
-              <button onclick="setQuickShares(500)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5">500</button>
-              <button onclick="setQuickShares(1000)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5">1,000</button>
+              <button onclick="setQuickShares(100)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5 transition">100</button>
+              <button onclick="setQuickShares(250)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5 transition">250</button>
+              <button onclick="setQuickShares(500)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5 transition">500</button>
+              <button onclick="setQuickShares(1000)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5 transition">1,000</button>
             </div>
           </div>
 
@@ -546,25 +563,25 @@
             <div class="grid grid-cols-2 gap-2">
               <div>
                 <label class="text-slate-400 text-[10px] uppercase font-bold tracking-wider">ORDER TYPE</label>
-                <select id="orderTypeSelect" class="w-full mt-1 bg-black/50 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-cyan-400 transition font-bold text-xs">
+                <select id="orderTypeSelect" class="w-full mt-1 bg-black/60 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-cyan-400 transition font-bold text-xs">
                   <option value="LIMIT">LIMIT (NBBO Pegged)</option>
                   <option value="MARKET">MARKET (Aggressive Sweep)</option>
                 </select>
               </div>
               <div>
                 <label class="text-slate-400 text-[10px] uppercase font-bold tracking-wider">LIMIT PRICE ($)</label>
-                <input type="number" id="orderPriceInput" value="125.00" step="0.05" class="w-full mt-1 bg-black/50 border border-white/10 rounded-xl px-3 py-2 text-white font-black outline-none focus:border-cyan-400 transition text-xs">
+                <input type="number" id="orderPriceInput" value="125.00" step="0.05" class="w-full mt-1 bg-black/60 border border-white/10 rounded-xl px-3 py-2 text-white font-black outline-none focus:border-cyan-400 transition text-xs">
               </div>
             </div>
 
             <div>
               <label class="text-slate-400 text-[10px] uppercase font-bold tracking-wider">ORDER QUANTITY</label>
-              <input type="number" id="orderQtyInput" value="500" min="1" step="50" class="w-full mt-1 bg-black/50 border border-white/10 rounded-xl px-3 py-2 text-cyan-300 font-black text-sm outline-none focus:border-cyan-400 transition">
+              <input type="number" id="orderQtyInput" value="500" min="1" step="50" class="w-full mt-1 bg-black/60 border border-white/10 rounded-xl px-3 py-2 text-cyan-300 font-black text-sm outline-none focus:border-cyan-400 transition">
             </div>
 
             <div>
               <label class="text-slate-400 text-[10px] uppercase font-bold tracking-wider">EXECUTION ALGORITHM</label>
-              <select id="algoSelect" class="w-full mt-1 bg-black/50 border border-white/10 rounded-xl px-3 py-2 text-cyan-300 font-bold outline-none focus:border-cyan-400 transition text-xs">
+              <select id="algoSelect" class="w-full mt-1 bg-black/60 border border-white/10 rounded-xl px-3 py-2 text-cyan-300 font-bold outline-none focus:border-cyan-400 transition text-xs">
                 <option value="POISSON_TWAP">Poisson TWAP (Anti-Gaming Randomized Slices)</option>
                 <option value="VOLUME_ADAPTIVE_VWAP">Volume Adaptive VWAP (Participation &le; 15%)</option>
                 <option value="ARRIVAL_PRICE">Nonlinear Arrival Price (Almgren-Chriss)</option>
@@ -575,18 +592,18 @@
             <div class="grid grid-cols-2 gap-2">
               <div>
                 <label class="text-slate-400 text-[10px] uppercase font-bold tracking-wider">HORIZON (SEC)</label>
-                <input type="number" id="horizonInput" value="30" min="5" step="5" class="w-full mt-1 bg-black/50 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-cyan-400 transition font-bold text-xs">
+                <input type="number" id="horizonInput" value="30" min="5" step="5" class="w-full mt-1 bg-black/60 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-cyan-400 transition font-bold text-xs">
               </div>
               <div>
                 <label class="text-slate-400 text-[10px] uppercase font-bold tracking-wider">EST. NOTIONAL</label>
-                <div id="estNotional" class="mt-1 py-2 px-3 bg-black/40 border border-white/10 rounded-xl text-emerald-400 font-black text-xs glow-text-green">
+                <div id="estNotional" class="mt-1 py-2 px-3 bg-black/50 border border-white/10 rounded-xl text-emerald-400 font-black text-xs glow-text-green">
                   $62,500.00
                 </div>
               </div>
             </div>
 
             <!-- RISK CLEARANCE BADGE -->
-            <div class="p-2.5 rounded-xl bg-black/40 border border-white/5 text-[11px] flex items-center justify-between">
+            <div class="p-2.5 rounded-xl bg-black/50 border border-white/5 text-[11px] flex items-center justify-between">
               <span class="text-slate-400">Pre-Trade Risk Clearance:</span>
               <span class="text-emerald-400 font-bold flex items-center gap-1.5">
                 <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -595,7 +612,7 @@
             </div>
 
             <!-- TRANSMIT BUTTON -->
-            <button id="dispatchOrderBtn" class="mt-1 w-full py-3 rounded-xl bg-gradient-to-r from-blue-600 via-cyan-500 to-emerald-500 hover:from-blue-500 hover:to-emerald-400 text-white font-black text-xs tracking-widest shadow-lg shadow-cyan-500/20 border border-cyan-400/40 transition active:scale-[0.98]">
+            <button id="dispatchOrderBtn" class="mt-1 w-full py-3 rounded-xl bg-gradient-to-r from-blue-600 via-cyan-500 to-emerald-500 hover:from-blue-500 hover:to-emerald-400 text-white font-black text-xs tracking-widest shadow-xl shadow-cyan-500/25 border border-cyan-400/40 transition active:scale-[0.98]">
               TRANSMIT ALGORITHMIC ORDER
             </button>
           </div>
@@ -609,7 +626,7 @@
               <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
               <h3 class="font-extrabold text-sm tracking-wider text-white">L2 ORDER BOOK</h3>
             </div>
-            <span id="obiBadge" class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 font-bold">
+            <span id="obiBadge" class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-bold">
               OBI: +0.28 (BUY PRESSURE)
             </span>
           </div>
@@ -618,7 +635,7 @@
           <div class="flex flex-col gap-1" id="asksBook"></div>
 
           <!-- MIDPOINT SPREAD BAR -->
-          <div class="py-1.5 px-3 my-0.5 bg-black/50 border-y border-white/10 rounded-lg flex items-center justify-between font-black text-[11px]">
+          <div class="py-1.5 px-3 my-0.5 bg-black/60 border-y border-white/10 rounded-lg flex items-center justify-between font-black text-[11px]">
             <span class="text-slate-400">SPREAD:</span>
             <span id="bookMidpoint" class="text-white glow-text-cyan">MID $125.00</span>
             <span class="text-amber-400 font-bold">$0.02 (1.6 bps)</span>
@@ -634,11 +651,193 @@
 
   </div>
 
+  <!-- 3D WEBGL ENGINE & PARTICLE SYSTEM SCRIPT -->
+  <script>
+    // ========================================================================
+    // THREE.JS 4K CINEMATIC PARTICLE UNIVERSE ENGINE
+    // ========================================================================
+    (function initThreeUniverse() {
+      const canvas = document.getElementById('webglCanvas');
+      if (!canvas || !window.THREE) return;
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+      camera.position.set(0, 18, 38);
+      camera.lookAt(0, 0, 0);
+
+      const renderer = new THREE.WebGLRenderer({
+        canvas: canvas,
+        alpha: true,
+        antialias: false,
+        powerPreference: 'high-performance'
+      });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+
+      // 35,000 Particle Field
+      const particleCount = 35000;
+      const geometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(particleCount * 3);
+      const colors = new Float32Array(particleCount * 3);
+      const scales = new Float32Array(particleCount);
+
+      const colorCyan = new THREE.Color(0x00f2fe);
+      const colorPurple = new THREE.Color(0xa855f7);
+      const colorMint = new THREE.Color(0x00f59b);
+      const colorCrimson = new THREE.Color(0xff3b69);
+
+      // Create a wavy grid of particles
+      const cols = 200;
+      const rows = 175;
+      const xSpacing = 0.75;
+      const zSpacing = 0.75;
+      const xOffset = (cols * xSpacing) / 2;
+      const zOffset = (rows * zSpacing) / 2;
+
+      let pIdx = 0;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (pIdx >= particleCount) break;
+          const x = c * xSpacing - xOffset;
+          const z = r * zSpacing - zOffset;
+          const y = 0;
+
+          positions[pIdx * 3] = x;
+          positions[pIdx * 3 + 1] = y;
+          positions[pIdx * 3 + 2] = z;
+
+          // Spatial chromatic gradient
+          const normDist = Math.sqrt(x * x + z * z) / 80;
+          const lerpedColor = colorCyan.clone().lerp(colorPurple, Math.min(1, normDist));
+          colors[pIdx * 3] = lerpedColor.r;
+          colors[pIdx * 3 + 1] = lerpedColor.g;
+          colors[pIdx * 3 + 2] = lerpedColor.b;
+
+          scales[pIdx] = Math.random() * 1.5 + 0.8;
+          pIdx++;
+        }
+      }
+
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+      // Circular anti-aliased particle texture via Offscreen Canvas
+      function createParticleTexture() {
+        const pCanvas = document.createElement('canvas');
+        pCanvas.width = 64;
+        pCanvas.height = 64;
+        const pCtx = pCanvas.getContext('2d');
+        const grad = pCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
+        grad.addColorStop(0, 'rgba(255, 255, 255, 1)');
+        grad.addColorStop(0.35, 'rgba(255, 255, 255, 0.85)');
+        grad.addColorStop(0.7, 'rgba(255, 255, 255, 0.25)');
+        grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        pCtx.fillStyle = grad;
+        pCtx.fillRect(0, 0, 64, 64);
+        return new THREE.CanvasTexture(pCanvas);
+      }
+
+      const material = new THREE.PointsMaterial({
+        size: 1.1,
+        vertexColors: true,
+        map: createParticleTexture(),
+        transparent: true,
+        opacity: 0.75,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+
+      const particleSystem = new THREE.Points(geometry, material);
+      scene.add(particleSystem);
+
+      // Mouse Parallax
+      let targetMouseX = 0;
+      let targetMouseY = 0;
+      window.addEventListener('mousemove', (e) => {
+        targetMouseX = (e.clientX / window.innerWidth - 0.5) * 2;
+        targetMouseY = (e.clientY / window.innerHeight - 0.5) * 2;
+      });
+
+      // Shockwave ring trigger
+      let shockwaveRadius = 0;
+      let isShockwaveActive = false;
+      window.triggerWebGLShockwave = function() {
+        shockwaveRadius = 0.1;
+        isShockwaveActive = true;
+      };
+
+      // Resize listener
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      // Animation Loop (60 FPS Budget)
+      let clock = new THREE.Clock();
+      function animate() {
+        requestAnimationFrame(animate);
+
+        const t = clock.getElapsedTime();
+        const posAttr = geometry.attributes.position;
+        const colAttr = geometry.attributes.color;
+        const posArray = posAttr.array;
+        const colArray = colAttr.array;
+
+        // Smooth camera dampening
+        camera.position.x += (targetMouseX * 6 - camera.position.x) * 0.04;
+        camera.position.y += (18 - targetMouseY * 4 - camera.position.y) * 0.04;
+        camera.lookAt(0, -2, 0);
+
+        // Advance shockwave
+        if (isShockwaveActive) {
+          shockwaveRadius += 0.85;
+          if (shockwaveRadius > 90) isShockwaveActive = false;
+        }
+
+        // Kinetic harmonic waves across particles
+        for (let i = 0; i < particleCount; i++) {
+          const x = posArray[i * 3];
+          const z = posArray[i * 3 + 2];
+
+          // Complex double-sinusoid wave field
+          let y = Math.sin(x * 0.12 + t * 1.1) * Math.cos(z * 0.12 + t * 0.9) * 2.8
+                + Math.sin(Math.sqrt(x * x + z * z) * 0.15 - t * 1.8) * 1.6;
+
+          // Shockwave impulse displacement
+          if (isShockwaveActive) {
+            const dist = Math.sqrt(x * x + z * z);
+            const waveDiff = Math.abs(dist - shockwaveRadius);
+            if (waveDiff < 6.0) {
+              const pulse = Math.cos((waveDiff / 6.0) * Math.PI * 0.5);
+              y += pulse * 4.5;
+            }
+          }
+
+          posArray[i * 3 + 1] = y;
+
+          // Emergency Kill Switch: shift particles to burning red matrix
+          if (window.isKillSwitchActive) {
+            colArray[i * 3] = colorCrimson.r;
+            colArray[i * 3 + 1] = colorCrimson.g;
+            colArray[i * 3 + 2] = colorCrimson.b;
+          }
+        }
+
+        posAttr.needsUpdate = true;
+        if (window.isKillSwitchActive) colAttr.needsUpdate = true;
+
+        renderer.render(scene, camera);
+      }
+      animate();
+    })();
+  </script>
+
   <!-- JAVASCRIPT: SIMULATION, REST API, WEBSOCKETS & LEADERBOARD -->
   <script>
     let currentAsset = 'NVDA';
     let currentSide = 'BUY';
-    let isKillSwitchActive = false;
+    window.isKillSwitchActive = false;
     let isSimRunning = true;
     let basePrice = 125.00;
     
@@ -965,7 +1164,6 @@
             const x = margin.left + m.index * slotW + slotW / 2;
             const y = getY(candles[m.index].low) + 16 * dpr;
             
-            // Neon Green Up Triangle
             ctx.fillStyle = "#00f59b";
             ctx.beginPath();
             ctx.moveTo(x, y - 8 * dpr);
@@ -986,7 +1184,6 @@
             const x = margin.left + m.index * slotW + slotW / 2;
             const y = getY(candles[m.index].high) - 16 * dpr;
 
-            // Neon Red Down Triangle
             ctx.fillStyle = "#ff3b69";
             ctx.beginPath();
             ctx.moveTo(x, y + 8 * dpr);
@@ -1085,7 +1282,6 @@
         const tr = document.createElement('tr');
         tr.className = `hover:bg-slate-800/50 transition duration-150 ${s.isElite ? 'bg-purple-950/20' : ''}`;
         
-        // Rank medal
         let rankBadge = `<span class="text-slate-500 font-mono">#${idx + 1}</span>`;
         if (idx === 0) rankBadge = `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">🥇 #1</span>`;
         else if (idx === 1) rankBadge = `<span class="px-1.5 py-0.5 rounded bg-slate-300/20 text-slate-200 border border-slate-400/40 font-bold">🥈 #2</span>`;
@@ -1114,7 +1310,7 @@
           <td class="py-2.5 px-2.5 whitespace-nowrap text-purple-300 font-bold">${s.sharpe}</td>
           <td class="py-2.5 px-2.5 whitespace-nowrap text-slate-400">${s.maxDd}%</td>
           <td class="py-2.5 px-2.5 whitespace-nowrap text-right">
-            <span class="text-[10px] px-2 py-0.5 rounded-full font-bold ${isProf ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'}">
+            <span class="text-[10px] px-2 py-0.5 rounded-full font-bold ${isProf ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'}">
               ${isProf ? 'PROFIT' : 'DD'}
             </span>
           </td>
@@ -1145,7 +1341,7 @@
           <td class="py-2 px-2.5 font-bold ${isUp ? 'glow-text-green' : 'glow-text-red'}">${isUp ? '+' : ''}$${pnl.toFixed(2)}</td>
           <td class="py-2 px-2.5 font-bold ${isUp ? 'text-emerald-400' : 'text-rose-400'}">${isUp ? '+' : ''}${pnlPct.toFixed(2)}%</td>
           <td class="py-2 px-2.5 text-right">
-            <button onclick="liquidatePosition('${p.symbol}')" class="px-2 py-0.5 rounded bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/40 text-[10px] font-bold transition">
+            <button onclick="liquidatePosition('${p.symbol}')" class="px-2 py-0.5 rounded bg-rose-600/25 hover:bg-rose-600/45 text-rose-300 border border-rose-500/40 text-[10px] font-bold transition">
               CLOSE
             </button>
           </td>
@@ -1184,7 +1380,7 @@
           <td class="py-2 px-2.5 font-bold text-white">${o.filled.toLocaleString()}</td>
           <td class="py-2 px-2.5 text-slate-200 font-bold">$${o.avgPrice.toFixed(2)}</td>
           <td class="py-2 px-2.5">
-            <span class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+            <span class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
               ${o.status}
             </span>
           </td>
@@ -1205,7 +1401,6 @@
       const mid = p;
       bookMidpoint.textContent = `MID $${mid.toFixed(2)}`;
 
-      // Generate 4 ask rows & 4 bid rows
       const asks = [
         { price: p + spread * 4, size: 850, total: 3200 },
         { price: p + spread * 3, size: 1200, total: 2350 },
@@ -1223,8 +1418,8 @@
       const maxTotal = 4650;
 
       asksBook.innerHTML = asks.map(a => `
-        <div class="relative flex items-center justify-between px-2 py-1 rounded bg-black/30 overflow-hidden text-[11px]">
-          <div class="absolute right-0 top-0 bottom-0 bg-rose-500/15 pointer-events-none" style="width: ${(a.total / maxTotal) * 100}%"></div>
+        <div class="relative flex items-center justify-between px-2 py-1 rounded bg-black/40 overflow-hidden text-[11px]">
+          <div class="absolute right-0 top-0 bottom-0 bg-rose-500/20 pointer-events-none transition-all duration-300" style="width: ${(a.total / maxTotal) * 100}%"></div>
           <span class="text-rose-400 font-bold z-10">$${a.price.toFixed(2)}</span>
           <span class="text-slate-300 z-10">${a.size.toLocaleString()}</span>
           <span class="text-slate-500 z-10">${a.total.toLocaleString()}</span>
@@ -1232,8 +1427,8 @@
       `).join('');
 
       bidsBook.innerHTML = bids.map(b => `
-        <div class="relative flex items-center justify-between px-2 py-1 rounded bg-black/30 overflow-hidden text-[11px]">
-          <div class="absolute right-0 top-0 bottom-0 bg-emerald-500/15 pointer-events-none" style="width: ${(b.total / maxTotal) * 100}%"></div>
+        <div class="relative flex items-center justify-between px-2 py-1 rounded bg-black/40 overflow-hidden text-[11px]">
+          <div class="absolute right-0 top-0 bottom-0 bg-emerald-500/20 pointer-events-none transition-all duration-300" style="width: ${(b.total / maxTotal) * 100}%"></div>
           <span class="text-emerald-400 font-bold z-10">$${b.price.toFixed(2)}</span>
           <span class="text-slate-300 z-10">${b.size.toLocaleString()}</span>
           <span class="text-slate-500 z-10">${b.total.toLocaleString()}</span>
@@ -1265,7 +1460,7 @@
 
     // Live Tick Simulation
     setInterval(() => {
-      if (!isSimRunning || isKillSwitchActive || candles.length === 0) return;
+      if (!isSimRunning || window.isKillSwitchActive || candles.length === 0) return;
 
       const last = candles[candles.length - 1];
       const delta = (Math.random() - 0.49) * 0.18;
@@ -1279,7 +1474,7 @@
 
       basePrice = newClose;
       tickerLastPrice.textContent = `$${newClose.toFixed(2)}`;
-      tickerLastPrice.className = `font-bold text-base transition-colors duration-200 ${isUp ? 'glow-text-green' : 'glow-text-red'}`;
+      tickerLastPrice.className = `font-extrabold text-base transition-colors duration-200 ${isUp ? 'glow-text-green' : 'glow-text-red'}`;
 
       // Update positions mark price
       positions.forEach(p => {
@@ -1295,13 +1490,13 @@
     // Side selection toggle
     sideBuyBtn.addEventListener('click', () => {
       currentSide = 'BUY';
-      sideBuyBtn.className = "py-2 rounded-lg font-extrabold text-xs tracking-wider transition bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/20 border border-emerald-400/40";
+      sideBuyBtn.className = "py-2 rounded-lg font-extrabold text-xs tracking-wider transition bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/25 border border-emerald-400/40";
       sideSellBtn.className = "py-2 rounded-lg font-bold text-xs tracking-wider transition text-slate-400 hover:text-white";
     });
 
     sideSellBtn.addEventListener('click', () => {
       currentSide = 'SELL';
-      sideSellBtn.className = "py-2 rounded-lg font-extrabold text-xs tracking-wider transition bg-gradient-to-r from-rose-500 to-rose-600 text-white shadow-lg shadow-rose-500/20 border border-rose-400/40";
+      sideSellBtn.className = "py-2 rounded-lg font-extrabold text-xs tracking-wider transition bg-gradient-to-r from-rose-500 to-rose-600 text-white shadow-lg shadow-rose-500/25 border border-rose-400/40";
       sideBuyBtn.className = "py-2 rounded-lg font-bold text-xs tracking-wider transition text-slate-400 hover:text-white";
     });
 
@@ -1343,7 +1538,7 @@
         wsExec.onopen = () => {
           document.getElementById('wsStatusDot').className = 'w-2 h-2 rounded-full bg-emerald-400 shadow shadow-emerald-400/50';
           document.getElementById('wsStatusText').textContent = 'API Live (WS)';
-          document.getElementById('wsStatusBadge').className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-emerald-950/40 border border-emerald-500/30 text-emerald-400';
+          document.getElementById('wsStatusBadge').className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-emerald-950/50 border border-emerald-500/30 text-emerald-400';
         };
         wsExec.onmessage = (event) => {
           try {
@@ -1399,6 +1594,7 @@
           sellMarkers.push({ index: candleIdx, price: f.price, text: `SELL ${f.quantity.toFixed(0)} @ $${f.price.toFixed(2)}` });
         }
         renderChart();
+        if (window.triggerWebGLShockwave) window.triggerWebGLShockwave();
       }
     }
 
@@ -1415,10 +1611,13 @@
 
     // Dispatch Order
     dispatchOrderBtn.addEventListener('click', async () => {
-      if (isKillSwitchActive) {
+      if (window.isKillSwitchActive) {
         alert('Order Rejected: Emergency Panic Kill Switch is active (ERR-RSK-008).');
         return;
       }
+
+      // Trigger 3D WebGL Shockwave ripple across the universe!
+      if (window.triggerWebGLShockwave) window.triggerWebGLShockwave();
 
       const qty = parseInt(orderQtyInput.value, 10);
       const price = parseFloat(orderPriceInput.value);
@@ -1519,6 +1718,7 @@
     // Evolve Population Button
     evolvePopBtn.addEventListener('click', () => {
       evolvePopBtn.textContent = '🧬 Breeding Gen 1...';
+      if (window.triggerWebGLShockwave) window.triggerWebGLShockwave();
       setTimeout(() => {
         generate100Strategies();
         renderAlgosTable();
@@ -1533,7 +1733,7 @@
       });
       [tabContentAlgos, tabContentPositions, tabContentOrders, tabContentTca].forEach(c => c.classList.add('hidden'));
 
-      btn.className = 'px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 text-white font-bold shadow-md shadow-blue-500/20 border border-blue-400/30 transition flex items-center gap-1.5';
+      btn.className = 'px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 via-cyan-600 to-teal-500 text-white font-bold shadow-md shadow-cyan-500/20 border border-cyan-400/30 transition flex items-center gap-1.5';
       content.classList.remove('hidden');
     }
 
@@ -1544,7 +1744,7 @@
 
     // Emergency Panic Kill Switch
     emergencyKillBtn.addEventListener('click', () => {
-      isKillSwitchActive = true;
+      window.isKillSwitchActive = true;
       killSwitchBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-red-950/80 border border-red-500 text-red-400 pulsing-red';
       killSwitchBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-500"></span><span>PANIC TRIGGERED</span>';
       chartHaltOverlay.classList.remove('hidden');
@@ -1562,9 +1762,9 @@
     });
 
     chartResetBtn.addEventListener('click', () => {
-      isKillSwitchActive = false;
-      killSwitchBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-emerald-950/40 border border-emerald-500/30 text-emerald-400';
-      killSwitchBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>FIREWALL ARMED</span>';
+      window.isKillSwitchActive = false;
+      killSwitchBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-emerald-950/50 border border-emerald-500/30 text-emerald-400';
+      killSwitchBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>ARMED</span>';
       chartHaltOverlay.classList.add('hidden');
 
       if (authToken) {
@@ -1604,6 +1804,7 @@
       initCandles();
       renderChart();
       renderOrderBook();
+      if (window.triggerWebGLShockwave) window.triggerWebGLShockwave();
     });
 
     setTimeout(() => {
