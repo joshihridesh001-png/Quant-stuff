@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from quant.core.config import get_settings
 from quant.core.security import decode_access_token, verify_api_key
 from quant.data.alpaca_feed import AlpacaMarketDataFeed
+from quant.data.external_providers import ExternalProviderManager
 from quant.domain.interfaces import (
     IAssetRepository,
     IEventRepository,
@@ -241,6 +242,17 @@ def get_autonomous_trader(
     return _autonomous_trader
 
 
+_external_provider_manager: ExternalProviderManager | None = None
+
+
+def get_external_provider_manager() -> ExternalProviderManager:
+    """Provide singleton ExternalProviderManager instance."""
+    global _external_provider_manager
+    if _external_provider_manager is None:
+        _external_provider_manager = ExternalProviderManager(settings=settings)
+    return _external_provider_manager
+
+
 _news_prediction_service: NewsPredictionService | None = None
 
 
@@ -249,7 +261,11 @@ def get_news_prediction_service() -> NewsPredictionService:
     global _news_prediction_service
     if _news_prediction_service is None:
         autonomous_engine = get_autonomous_trader()
-        _news_prediction_service = NewsPredictionService(autonomous_engine=autonomous_engine)
+        provider_manager = get_external_provider_manager()
+        _news_prediction_service = NewsPredictionService(
+            autonomous_engine=autonomous_engine,
+            provider_manager=provider_manager,
+        )
     return _news_prediction_service
 
 

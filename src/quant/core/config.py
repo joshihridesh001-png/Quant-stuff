@@ -54,6 +54,20 @@ class Settings(BaseSettings):
     AUTONOMOUS_LOOP_INTERVAL_SEC: float = 60.0
     MIN_TRADE_NOTIONAL: float = 100.0
 
+    # External Quantitative Data Providers (Selected from public-apis)
+    # Purpose: Configure external macroeconomic, news, and market data API credentials
+    # Invariant: Empty strings denote disabled or mock/fallback mode; safe zero-secret defaults
+    FRED_API_KEY: str = ""
+    FINNHUB_API_KEY: str = ""
+    NEWS_API_KEY: str = ""
+    POLYGON_API_KEY: str = ""
+    ALPHA_VANTAGE_API_KEY: str = ""
+    TWELVE_DATA_API_KEY: str = ""
+    FMP_API_KEY: str = ""
+    OPENFIGI_API_KEY: str = ""
+    SEC_EDGAR_USER_AGENT: str = "QuantEngine Research Contact@quantplatform.internal"
+    BINANCE_API_KEY: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

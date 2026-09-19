@@ -22,6 +22,7 @@ from quant.analytics.price_reaction import (
     NewsPriceReactionEngine,
     PriceReactionPrediction,
 )
+from quant.data.external_providers import ExternalProviderManager
 from quant.data.news_harvester import (
     NewsArticle,
     NewsFeedConfig,
@@ -59,7 +60,7 @@ class NewsPredictionService:
     """Master application service coupling news feeds, NLP classification, and causal price reaction modeling.
 
     Purpose: Coordinates background news harvesting, Loughran-McDonald sentiment, and Triple-Barrier prediction.
-    Explicit Dependency Tracking: NewsHarvester, FinancialSentimentClassifier, NewsPriceReactionEngine.
+    Explicit Dependency Tracking: NewsHarvester, FinancialSentimentClassifier, NewsPriceReactionEngine, ExternalProviderManager.
     Structural Relationship: Consumed by REST API endpoints and AutonomousTradingEngine daemon.
     Defensive Invariant: Guaranteed thread-safe ring buffer caching, bounded execution latencies.
     """
@@ -71,6 +72,7 @@ class NewsPredictionService:
         reaction_engine: NewsPriceReactionEngine | None = None,
         event_service: EventService | None = None,
         autonomous_engine: AutonomousTradingEngine | None = None,
+        provider_manager: ExternalProviderManager | None = None,
         feeds: list[NewsFeedConfig] | None = None,
         history_capacity: int = 1000,
     ) -> None:
@@ -79,6 +81,7 @@ class NewsPredictionService:
         self._reaction_engine = reaction_engine or NewsPriceReactionEngine()
         self._event_service = event_service
         self._autonomous_engine = autonomous_engine
+        self._provider_manager = provider_manager
         self._feeds = feeds if feeds is not None else list(DEFAULT_FEEDS)
         self._synthetic_generator = SyntheticNewsGenerator(seed=42)
 
@@ -155,6 +158,36 @@ class NewsPredictionService:
         Invariant: Deduplicated via SHA-256 (INV-NEWS-002), causal point-in-time (INV-NEWS-001).
         """
         articles = await self._harvester.poll_all(self._feeds)
+
+        # Ingest from authenticated public-apis external providers (Finnhub, NewsAPI)
+        if self._provider_manager is not None:
+            try:
+                universe = (
+                    self._autonomous_engine.universe
+                    if self._autonomous_engine
+                    else ["SPY", "QQQ", "AAPL", "NVDA", "MSFT"]
+                )
+                ext_items = await self._provider_manager.harvest_external_news(universe)
+                now_utc = datetime.now(UTC)
+                ext_articles: list[NewsArticle] = []
+                for item in ext_items:
+                    tickers = tuple(item.related_symbols) if item.related_symbols else ()
+                    ext_articles.append(
+                        NewsArticle(
+                            headline=item.headline,
+                            summary=item.summary,
+                            url=item.url or "https://quant-alpha.internal/external-news",
+                            source=item.source,
+                            published_at=now_utc,
+                            available_at=now_utc,
+                            tickers=tickers,
+                        )
+                    )
+                if ext_articles:
+                    unique_ext = self._harvester.filter_and_store_unique(ext_articles)
+                    articles.extend(unique_ext)
+            except Exception as exc:
+                logger.warning("Error querying external provider manager for news: %s", exc)
 
         # In offline/hermetic test environments or if all external feeds fail, generate synthetic batch
         if not articles and fallback_to_synthetic:

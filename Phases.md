@@ -486,3 +486,41 @@ Couples unstructured real-world financial news headlines directly with high-freq
   * 4 integration tests in `tests/api/test_news_api.py` passing 100%.
   * 100% test pass rate across all 2,035 repository tests, 0 mypy strict errors across 81 source files, and 0 ruff deviations across all 172 files.
   * Formally concluded **Phase 9 as 100% COMPLETE**.
+
+---
+
+### Phase 10: External Quantitative Data Providers & Multi-API Swarm Integration [COMPLETE]
+
+Integrates curated high-signal financial and macroeconomic public APIs from `public-apis` (Finance, Cryptocurrency, Currency Exchange, News) into the live quantitative trading stack with zero-secret hermetic offline fallback, live health telemetry, and autonomous swarm coupling:
+
+#### Step 1: External Provider Clients & Diagnostic Invariants [COMPLETE]
+* **Deliverables:**
+  * Created `src/quant/data/external_providers.py`:
+    * Diagnostic fault codes: `ERR_PROVIDER_UNREACHABLE` (`ERR-EXT-001`), `ERR_PROVIDER_RATE_LIMIT` (`ERR-EXT-002`), `ERR_PROVIDER_INVALID_KEY` (`ERR-EXT-003`), `ERR_PROVIDER_MALFORMED_DATA` (`ERR-EXT-004`), `ERR_PROVIDER_NON_FINITE_VALUE` (`ERR-EXT-005`), `ERR_PROVIDER_CIRCUIT_TRIP` (`ERR-EXT-006`).
+    * Strongly typed domain models: `MacroIndicatorRecord` (validating finite values and rejecting non-finite/booleans) and `ExternalNewsItem` (with canonical string stripping and symbol normalization).
+    * `FredClient`: St. Louis Fed observations client with calibrated offline fallback (`T10Y2Y` = 0.18, `DFF` = 5.25%, `CPIAUCSL` = 314.5).
+    * `FinnhubClient`: Real-time ticker news and pricing quotes with graceful offline defaults.
+    * `NewsApiClient`: Curated business headline search with keyword filtering.
+    * `PolygonClient`: US equities previous-day aggregate bar retrieval.
+    * `ExternalProviderManager`: Master facade managing provider telemetry (`is_configured`, `is_healthy`, `calls_made`), health tracking, and circuit-tripping.
+  * Exported all symbols in `src/quant/data/__init__.py`.
+  * 19 unit tests in `tests/unit/test_external_providers.py` passing 100%.
+
+#### Step 2: Ingestion Pipeline & Swarm Prior Synchronization [COMPLETE]
+* **Deliverables:**
+  * Updated `src/quant/services/news_prediction_service.py` to poll authenticated external news providers (Finnhub, NewsAPI) alongside syndicated feeds during harvest sweeps.
+  * Updated `src/quant/api/dependencies.py` to provide singleton `get_external_provider_manager()` and inject it into `NewsPredictionService`.
+  * Synchronized macroeconomic indicators (yield curve slope, Fed funds rate) into Bayesian temperature priors.
+
+#### Step 3: REST API Presentation Layer, Settings & Verification [COMPLETE]
+* **Deliverables:**
+  * Added configuration settings to `src/quant/core/config.py` and documented all 10 providers in `.env.example` with exact registration URLs.
+  * Created `src/quant/api/v1/endpoints/providers.py`:
+    * `GET /api/v1/providers/status`: Check configuration and health telemetry across all external APIs.
+    * `POST /api/v1/providers/macro/sync`: Synchronize macroeconomic yield curve spread (`T10Y2Y`) and effective Fed Funds rate (`DFF`).
+    * `GET /api/v1/providers/company-news/{symbol}`: Ingest real-time institutional company news for a ticker from Finnhub with calibrated offline fallback.
+  * Mounted router in `src/quant/main.py` (`/api/v1/providers`).
+  * 4 API integration tests in `tests/api/test_providers_api.py` passing 100%.
+  * 100% test pass rate across all **2,058 repository tests**, 0 mypy strict errors across 83 source files, and 0 ruff deviations across all 176 files.
+  * Formally concluded **Phase 10 as 100% COMPLETE**.
+
