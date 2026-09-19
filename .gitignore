@@ -49,6 +49,7 @@ coverage.xml
 # Environment Variables & Secrets
 .env
 .env.*
+!.env.example
 secrets.json
 
 # IDEs & OS
