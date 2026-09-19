@@ -39,6 +39,21 @@ class Settings(BaseSettings):
     # Cross-Origin Resource Sharing
     CORS_ORIGINS: list[str] = ["*"]
 
+    # Execution Broker & Gateway Configuration (Paper or Live Alpaca Markets)
+    # Purpose: Configures target broker connectivity, credentials, and endpoints
+    # Invariant: Defaults to "paper" with zero external network requirement
+    BROKER_TYPE: str = "paper"  # "paper" | "alpaca"
+    ALPACA_API_KEY: str = ""
+    ALPACA_SECRET_KEY: str = ""
+    ALPACA_BASE_URL: str = "https://paper-api.alpaca.markets"
+    ALPACA_DATA_URL: str = "https://data.alpaca.markets"
+
+    # Autonomous Swarm Live Trading Loop Configuration
+    # Purpose: Sets monitored universe and clock interval for autonomous rebalancing
+    TRADING_UNIVERSE: list[str] = ["SPY", "QQQ", "AAPL", "NVDA", "MSFT"]
+    AUTONOMOUS_LOOP_INTERVAL_SEC: float = 60.0
+    MIN_TRADE_NOTIONAL: float = 100.0
+
 
 @lru_cache
 def get_settings() -> Settings:
