@@ -147,3 +147,161 @@ class MarketDataBatchSummaryResponse(BaseModel):
     end_time: int | None
     latest_close: float | None
     realized_volatility_latest: float | None
+
+
+# ============================================================================
+# Live Execution & SOR Schemas
+# ============================================================================
+
+
+class ParentOrderCreateRequest(BaseModel):
+    """Request DTO to initiate an algorithmic parent order execution."""
+
+    symbol: str = Field(..., min_length=1, max_length=30, description="Asset ticker symbol")
+    side: str = Field(..., pattern="^(BUY|SELL)$", description="Order execution side (BUY or SELL)")
+    order_type: str = Field(
+        "LIMIT", pattern="^(LIMIT|MARKET)$", description="Order price matching type"
+    )
+    quantity: float = Field(..., gt=0.0, description="Total target share/contract quantity")
+    price: float | None = Field(
+        None, gt=0.0, description="Limit price ceiling/floor (required for LIMIT orders)"
+    )
+    algorithm: str = Field(
+        "POISSON_TWAP",
+        pattern="^(POISSON_TWAP|VOLUME_ADAPTIVE_VWAP|ARRIVAL_PRICE|DIRECT_MARKET)$",
+        description="Algorithmic execution strategy",
+    )
+    horizon_seconds: float = Field(
+        60.0, gt=0.0, le=86400.0, description="Execution horizon duration in seconds"
+    )
+    num_slices: int = Field(5, ge=1, le=100, description="Number of child order slices")
+    algo_params: dict[str, Any] = Field(
+        default_factory=dict, description="Algorithm-specific tuning parameters"
+    )
+
+
+class ChildOrderDTO(BaseModel):
+    """Data transfer object for child order slices."""
+
+    child_id: str
+    quantity: float
+    price: float
+    fee: float
+    timestamp_ns: int
+    spread_slippage: float = 0.0
+
+
+class ParentOrderResponse(BaseModel):
+    """Response DTO representing parent order lifecycle and fill progression."""
+
+    order_id: str
+    symbol: str
+    side: str
+    total_quantity: float
+    filled_quantity: float
+    leaves_quantity: float
+    arrival_price: float
+    decision_price: float
+    vwap_execution_price: float
+    total_fees_paid: float
+    max_duration_seconds: float
+    start_time_ns: int
+    is_closed: bool
+    child_fills: list[ChildOrderDTO] = Field(default_factory=list)
+
+
+class ImplementationShortfallResponse(BaseModel):
+    """Response DTO for Perold (1988) implementation shortfall transaction cost analysis."""
+
+    order_id: str
+    symbol: str
+    side: str
+    total_quantity: float
+    filled_quantity: float
+    decision_price: float
+    arrival_price: float
+    execution_vwap: float
+    terminal_price: float
+    delay_cost: float
+    price_impact: float
+    spread_slippage: float
+    fees_paid: float
+    opportunity_cost: float
+    total_shortfall: float
+    total_shortfall_bps: float
+    is_additive_conserved: bool
+
+
+# ============================================================================
+# Real-Time Risk Monitor & Kill Switch Schemas
+# ============================================================================
+
+
+class RiskStatusResponse(BaseModel):
+    """Response DTO reporting firm-wide real-time risk metrics and firewall state."""
+
+    nav: float
+    peak_nav: float
+    cash: float
+    margin_used: float
+    free_margin: float
+    gross_notional: float
+    net_notional: float
+    gross_leverage: float
+    net_leverage: float
+    intraday_drawdown_pct: float
+    is_kill_switch_active: bool
+    kill_switch_trigger: str | None = None
+    open_leaves_count: int
+
+
+class RiskLimitsDTO(BaseModel):
+    """Data transfer object for pre-trade risk boundaries."""
+
+    max_order_notional: float
+    max_order_qty: float
+    max_gross_leverage: float
+    max_net_leverage: float
+    max_concentration_nav_pct: float
+    max_intraday_drawdown_pct: float
+    min_free_margin: float
+
+
+class RiskLimitsUpdateRequest(BaseModel):
+    """Request DTO to dynamically update pre-trade risk boundaries."""
+
+    max_order_notional: float | None = Field(None, gt=0.0)
+    max_order_qty: float | None = Field(None, gt=0.0)
+    max_gross_leverage: float | None = Field(None, gt=0.0, le=20.0)
+    max_net_leverage: float | None = Field(None, gt=0.0, le=10.0)
+    max_concentration_nav_pct: float | None = Field(None, gt=0.0, le=1.0)
+    max_intraday_drawdown_pct: float | None = Field(None, gt=0.0, le=1.0)
+    min_free_margin: float | None = Field(None, ge=0.0)
+
+
+class PanicTriggerRequest(BaseModel):
+    """Request DTO to manually trigger emergency panic kill switch."""
+
+    reason: str = Field(
+        ..., min_length=3, max_length=200, description="Operator justification for triggering panic"
+    )
+    details: dict[str, Any] = Field(
+        default_factory=dict, description="Diagnostic contextual metadata"
+    )
+
+
+class KillSwitchResetRequest(BaseModel):
+    """Request DTO for authenticated kill switch disarm and reset."""
+
+    admin_token: str = Field(..., min_length=8, description="Cryptographic administrative secret")
+
+
+class GatewayHealthDTO(BaseModel):
+    """Response DTO reporting broker gateway connection and watchdog health."""
+
+    gateway_id: str
+    status: str
+    last_heartbeat_timestamp: int | None = None
+    last_latency_ms: float = 0.0
+    missed_sequence_count: int = 0
+    is_connected: bool
