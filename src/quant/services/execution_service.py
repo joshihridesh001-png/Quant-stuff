@@ -326,6 +326,20 @@ class ExecutionService:
                 else (quote.midpoint if quote is not None else parent_order.arrival_price)
             )
 
+            # Defensive Invariant: Ensure execution gateway is connected and has reference price
+            if (
+                hasattr(self._gateway, "is_connected")
+                and not self._gateway.is_connected
+                and hasattr(self._gateway, "connect")
+            ):
+                await self._gateway.connect()
+            if hasattr(self._gateway, "set_market_price") and hasattr(
+                self._gateway, "_market_prices"
+            ):
+                market_dict = getattr(self._gateway, "_market_prices", {})
+                if child_order.symbol not in market_dict and ref_price > 0.0:
+                    self._gateway.set_market_price(child_order.symbol, ref_price)
+
             try:
                 result = await self._orchestrator.route_order(
                     child_order, current_price=ref_price, quote=quote

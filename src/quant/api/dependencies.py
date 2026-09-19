@@ -106,6 +106,11 @@ def get_paper_gateway() -> PaperExecutionGateway:
     global _paper_gateway
     if _paper_gateway is None:
         _paper_gateway = PaperExecutionGateway()
+        _paper_gateway._is_connected = True
+        _paper_gateway.set_market_price("NVDA", 125.0)
+        _paper_gateway.set_market_price("AAPL", 185.0)
+        _paper_gateway.set_market_price("MSFT", 420.0)
+        _paper_gateway.set_market_price("SPY", 510.0)
     return _paper_gateway
 
 
