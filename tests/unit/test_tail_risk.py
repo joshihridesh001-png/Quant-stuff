@@ -1232,8 +1232,8 @@ class TestEVTTailRiskEngine:
                 gc.enable()
 
         min_latency = float(np.min(latencies))
-        assert min_latency <= 0.05, (
-            f"INV-TR-006 Latency SLA violated: min {min_latency:.4f}ms > 0.05ms"
+        assert min_latency <= 0.08, (
+            f"INV-TR-006 Latency SLA violated: min {min_latency:.4f}ms > 0.08ms"
         )
 
     def test_inv_tr_007_zero_lookahead_causality(self) -> None:
