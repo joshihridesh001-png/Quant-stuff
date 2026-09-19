@@ -177,6 +177,23 @@
 
       <!-- SYSTEM STATUS & CONTROLS -->
       <div class="flex items-center gap-2.5">
+        <!-- Autonomous Swarm Status Badge -->
+        <div id="autonomousBadge" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-medium bg-slate-800/60 border border-slate-700/60 text-slate-400">
+          <span id="autonomousDot" class="w-2 h-2 rounded-full bg-slate-500"></span>
+          <span id="autonomousText">SWARM: IDLE</span>
+        </div>
+
+        <!-- Start/Stop Swarm Button -->
+        <button id="autonomousToggleBtn" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white transition shadow-sm border border-emerald-400/30 active:scale-95">
+          <span id="autonomousToggleIcon">▶</span>
+          <span id="autonomousToggleText">START SWARM</span>
+        </button>
+
+        <!-- Step Swarm Button -->
+        <button id="autonomousStepBtn" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-mono font-semibold bg-slate-800/80 hover:bg-slate-700 border border-slate-600/50 text-cyan-300 hover:text-white transition shadow-sm active:scale-95" title="Execute single rebalance cycle">
+          <span>⚡ STEP</span>
+        </button>
+
         <!-- WebSocket Badge -->
         <div id="wsStatusBadge" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-medium bg-slate-800/60 border border-slate-700/60 text-slate-400">
           <span id="wsStatusDot" class="w-2 h-2 rounded-full bg-slate-500"></span>
@@ -1912,6 +1929,11 @@
           },
           body: JSON.stringify({ admin_token: 'DEFAULT_ADMIN_TOKEN' })
         }).catch(err => console.warn('Reset API call failed', err));
+
+        fetch('/api/v1/autonomous/resume', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${authToken}` }
+        }).catch(() => {});
       }
     });
 
@@ -1940,7 +1962,114 @@
       initCandles();
       renderChart();
       renderOrderBook();
+    });
+
+    // ========================================================================
+    // AUTONOMOUS LIVE TRADING SWARM ENGINE INTERACTION
+    // ========================================================================
+    const autonomousBadge = document.getElementById('autonomousBadge');
+    const autonomousDot = document.getElementById('autonomousDot');
+    const autonomousText = document.getElementById('autonomousText');
+    const autonomousToggleBtn = document.getElementById('autonomousToggleBtn');
+    const autonomousToggleIcon = document.getElementById('autonomousToggleIcon');
+    const autonomousToggleText = document.getElementById('autonomousToggleText');
+    const autonomousStepBtn = document.getElementById('autonomousStepBtn');
+
+    let isAutonomousRunning = false;
+    let autonomousPollTimer = null;
+
+    async function fetchAutonomousStatus() {
+      if (!authToken) return;
+      try {
+        const res = await fetch('/api/v1/autonomous/status', {
+          headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          updateAutonomousUI(data);
+        }
+      } catch (err) {
+        console.warn('Failed to poll autonomous status', err);
+      }
+    }
+
+    function updateAutonomousUI(data) {
+      if (!data) return;
+      if (data.state === 'RUNNING') {
+        isAutonomousRunning = true;
+        if (autonomousBadge) autonomousBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-emerald-950/60 border border-emerald-500/40 text-emerald-400 shadow-sm shadow-emerald-500/20';
+        if (autonomousDot) autonomousDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-ping';
+        if (autonomousText) autonomousText.textContent = `SWARM: LIVE (I:${data.iteration})`;
+        if (autonomousToggleBtn) autonomousToggleBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white transition shadow-sm border border-red-400/30 active:scale-95';
+        if (autonomousToggleIcon) autonomousToggleIcon.textContent = '⏹';
+        if (autonomousToggleText) autonomousToggleText.textContent = 'STOP SWARM';
+      } else if (data.state === 'PAUSED') {
+        isAutonomousRunning = false;
+        if (autonomousBadge) autonomousBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-amber-950/60 border border-amber-500/40 text-amber-400';
+        if (autonomousDot) autonomousDot.className = 'w-2 h-2 rounded-full bg-amber-400';
+        if (autonomousText) autonomousText.textContent = `SWARM: PAUSED (I:${data.iteration})`;
+        if (autonomousToggleBtn) autonomousToggleBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white transition shadow-sm border border-emerald-400/30 active:scale-95';
+        if (autonomousToggleIcon) autonomousToggleIcon.textContent = '▶';
+        if (autonomousToggleText) autonomousToggleText.textContent = 'RESUME SWARM';
+      } else {
+        isAutonomousRunning = false;
+        if (autonomousBadge) autonomousBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-medium bg-slate-800/60 border border-slate-700/60 text-slate-400';
+        if (autonomousDot) autonomousDot.className = 'w-2 h-2 rounded-full bg-slate-500';
+        if (autonomousText) autonomousText.textContent = `SWARM: ${data.state} (I:${data.iteration})`;
+        if (autonomousToggleBtn) autonomousToggleBtn.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white transition shadow-sm border border-emerald-400/30 active:scale-95';
+        if (autonomousToggleIcon) autonomousToggleIcon.textContent = '▶';
+        if (autonomousToggleText) autonomousToggleText.textContent = 'START SWARM';
+      }
+    }
+
+    if (autonomousToggleBtn) {
+      autonomousToggleBtn.addEventListener('click', async () => {
+        if (!authToken) await ensureAuth();
+        try {
+          const endpoint = isAutonomousRunning ? '/api/v1/autonomous/stop' : '/api/v1/autonomous/start';
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${authToken}` }
           });
+          if (res.ok) {
+            const data = await res.json();
+            updateAutonomousUI(data);
+            if (data.state === 'RUNNING') {
+              if (autonomousPollTimer) clearInterval(autonomousPollTimer);
+              autonomousPollTimer = setInterval(fetchAutonomousStatus, 3000);
+            }
+          }
+        } catch (e) {
+          console.error('Failed to toggle autonomous engine', e);
+        }
+      });
+    }
+
+    if (autonomousStepBtn) {
+      autonomousStepBtn.addEventListener('click', async () => {
+        if (!authToken) await ensureAuth();
+        autonomousStepBtn.textContent = '⚡ RUNNING...';
+        try {
+          const res = await fetch('/api/v1/autonomous/step', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${authToken}` }
+          });
+          if (res.ok) {
+            const report = await res.json();
+            const dur = (typeof report.duration_ms === 'number') ? report.duration_ms.toFixed(0) : '0';
+            autonomousStepBtn.textContent = `⚡ I:${report.iteration || 1} (${dur}ms)`;
+            await fetchAutonomousStatus();
+            setTimeout(() => { autonomousStepBtn.textContent = '⚡ STEP'; }, 1500);
+          } else {
+            autonomousStepBtn.textContent = '⚡ STEP (ERR)';
+            setTimeout(() => { autonomousStepBtn.textContent = '⚡ STEP'; }, 1500);
+          }
+        } catch (e) {
+          console.error('Autonomous step failed', e);
+          autonomousStepBtn.textContent = '⚡ STEP';
+        }
+      });
+    }
 
     setTimeout(() => {
       resizeCanvas();
@@ -1950,7 +2079,11 @@
       renderOrdersTable();
       renderOrderBook();
       updateEstimatedNotional();
-      ensureAuth().then(connectWebSockets);
+      ensureAuth().then(() => {
+        connectWebSockets();
+        fetchAutonomousStatus();
+        setInterval(fetchAutonomousStatus, 5000);
+      });
     }, 100);
   </script>
 </body>
