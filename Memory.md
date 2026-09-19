@@ -726,5 +726,20 @@ This register records all major architectural decisions, design patterns, and en
     - Live WebSocket bridge with simulated tick fallback, 1,000-strategy evolutionary population selector, windowed pagination, interactive order book depth, candlestick charts, blotter management, and emergency circuit breaker controls.
   - Added 26 unit and API integration tests in `test_execution_services.py`, `test_orders_and_risk_api.py`, and `test_streaming_api.py`, bringing the test suite to 1,982 passing tests (100% pass rate) with strict Python 3.13 typing (`mypy src --strict` 0 errors across 71 files).
   - Formally concluded **Phase 7 as 100% COMPLETE**.
-
-
+* **[Phase 34: Sprint 8 - Production Live Trading Engine & Autonomous Swarm Daemon] - 2026-09-19**:
+  - Implemented production broker gateway and live market data ingestion:
+    - `src/quant/execution/alpaca_gateway.py`: `AlpacaExecutionGateway` fulfilling `ExecutionGateway` protocol with authenticated async `httpx.AsyncClient` REST transport, connection pooling, order lifecycle state machine mapping, client order ID idempotency, balance and position queries, and comprehensive HTTP exception mapping.
+    - `src/quant/data/alpaca_feed.py`: `AlpacaMarketDataFeed` streaming real-time OHLCV bars and NBBO quotes from Alpaca Markets directly into `DuckDBMarketDataRepository.add_bars_batch` and `StreamingFracDiffBuffer`, with seamless synthetic replay generation for hermetic offline testing when credentials are absent.
+  - Implemented autonomous live trading daemon in `src/quant/services/autonomous_trader.py`:
+    - `AutonomousTradingEngine`: continuous clock loop daemon executing the multi-stage econometric pipeline (Market Data Ingestion $\to$ FracDiff Features $\to$ Bayesian Jump-Regime Filter $\to$ RD-DMA Swarm Ensemble $\to$ EVT Tail Risk & Circuit Breaker Overlays $\to$ Convex Dual Projection Portfolio Sizing $\to$ Delta Position Rebalancing $\to$ Pre-Trade Risk Firewall $\to$ Algorithmic SOR Routing).
+    - Lifecycle state machine: `IDLE`, `RUNNING`, `PAUSED`, `STOPPED`, `ERROR` with thread-safe async task draining.
+    - Churn suppression via `MIN_TRADE_NOTIONAL` threshold; emergency kill switch compliance halting trade generation and enforcing 0.0 allocations immediately.
+  - Implemented REST API routes and dependency injection:
+    - `src/quant/api/dependencies.py`: Pluggable execution gateway provider returning `AlpacaExecutionGateway` when `BROKER_TYPE = "alpaca"` and credentials are set, defaulting to `PaperExecutionGateway` in offline testing. Dynamic re-binding of feeds and daemons across test fixtures.
+    - `src/quant/api/v1/endpoints/autonomous.py`: `GET /status`, `POST /start`, `POST /stop`, `POST /pause`, `POST /resume`, `POST /step`.
+    - `src/quant/main.py`: Mounted `/api/v1/autonomous` router and added graceful shutdown hook stopping daemon on app termination.
+  - Integrated Autonomous Swarm controls into `src/quant/templates/trading_terminal.html` (and brain artifact `trading_terminal.html`):
+    - Added Autonomous Swarm status badge with pulsing emerald indicator, Start/Stop Swarm toggle button, Single Step button, and emergency kill switch pause/resume coupling.
+  - Added 21 new unit and API integration tests in `test_alpaca_gateway.py` (11 tests), `test_alpaca_feed.py` (2 tests), `test_autonomous_trader.py` (4 tests), and `test_autonomous_api.py` (4 tests), bringing the workspace test suite to **2,003 passing tests (100% pass rate)**.
+  - Maintained 100% Python 3.13 strict static typing compliance (`mypy src --strict` 0 errors across 76 source files) and zero ruff lint/formatting deviations.
+  - Formally concluded **Phase 8 as 100% COMPLETE**.

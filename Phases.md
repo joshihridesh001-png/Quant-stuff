@@ -32,6 +32,9 @@ gantt
     Step 1: Services & DTO Contracts        :done, s7_1, 2026-10-22, 2d
     Step 2: Live Execution REST Endpoints   :done, s7_2, 2026-10-24, 2d
     Step 3: WebSockets & Trading Terminal   :done, s7_3, 2026-10-26, 2d
+    section Phase 8: Production Broker & Swarm
+    Alpaca Broker Gateway & Live Data Feed  :done, s8_1, 2026-10-28, 2d
+    Autonomous Live Trading Swarm Daemon    :done, s8_2, 2026-10-30, 2d
 ```
 
 ---
@@ -374,6 +377,62 @@ Decomposed into sequential micro-steps exposing institutional live trading capab
   * Comprehensive WebSocket integration tests in `tests/api/test_streaming_api.py` (4 tests passing 100%).
   * 100% strict Python 3.13 static typing (`mypy src --strict` 0 errors across 71 files), zero ruff lint/formatting deviations, and 1,974 total tests passing across unit and API suites.
   * Formally concluded **Phase 7 as 100% COMPLETE**.
+
+---
+
+### Phase 8: Production Live Trading Engine & Autonomous Swarm Daemon [COMPLETE]
+
+Transitions the quantitative platform from simulated in-memory paper execution to physical live broker integration and an autonomous background trading daemon:
+
+#### Step 1: Alpaca Markets Live/Paper Broker Gateway [COMPLETE]
+* **Deliverables:**
+  * Physical broker integration in `src/quant/execution/alpaca_gateway.py` fulfilling the `ExecutionGateway` protocol:
+    * Asynchronous authenticated REST transport via `httpx.AsyncClient` with connection pooling and lifecycle management (`connect`, `disconnect`).
+    * Full order lifecycle mapping: domain `Order` to Alpaca `POST /v2/orders`, parsing responses into immutable `ExecutionReport` with deterministic state mapping (`new` $\to$ `NEW`, `partially_filled` $\to$ `PARTIALLY_FILLED`, `filled` $\to$ `FILLED`, `canceled` $\to$ `CANCELLED`, `rejected` $\to$ `REJECTED`).
+    * Idempotency token matching with `client_order_id` preventing duplicate execution.
+    * Order cancellation via client order ID (`DELETE /v2/orders:by_client_order_id/{id}`).
+    * Live account balance extraction (`cash`, `portfolio_value`, `buying_power`) and position querying (`GET /v2/positions`).
+    * Comprehensive exception hierarchy mapping HTTP 403/422 to margin errors, HTTP 429 to rate limit errors, and socket errors to disconnected status.
+  * 11 unit tests in `tests/unit/test_alpaca_gateway.py` passing 100%.
+
+#### Step 2: Live Market Data Ingestion Feed [COMPLETE]
+* **Deliverables:**
+  * Real-time market data ingestion client in `src/quant/data/alpaca_feed.py`:
+    * Queries `https://data.alpaca.markets/v2/stocks/bars/latest` and `quotes/latest` for real-time OHLCV bars and consolidated NBBO quotes.
+    * Validates bar boundary invariants ($H \ge \max(O,C), L \le \min(O,C), V \ge 0$).
+    * Directly writes incoming bars into `DuckDBMarketDataRepository.add_bars_batch` for high-throughput columnar analytics.
+    * Streams bars into `StreamingFracDiffBuffer` for causal feature transformations.
+    * Seamless synthetic replay generator for hermetic offline testing when credentials are absent.
+  * 2 unit tests in `tests/unit/test_alpaca_feed.py` passing 100%.
+
+#### Step 3: Autonomous Live Trading Swarm Daemon & Rebalancing Loop [COMPLETE]
+* **Deliverables:**
+  * Continuous clock loop daemon in `src/quant/services/autonomous_trader.py`:
+    * Multi-stage econometric rebalancing pipeline: Market Data Ingestion $\to$ Fractional Differentiation $\to$ Bayesian Jump-Regime Filter $\to$ RD-DMA Strategy Swarm Ensemble $\to$ EVT Tail Risk & Circuit Breaker Overlays $\to$ Convex Execution Sizing $\to$ Delta Position Rebalancing $\to$ Pre-Trade Risk Firewall $\to$ Algorithmic SOR Routing.
+    * State machine lifecycle management: `IDLE`, `RUNNING`, `PAUSED`, `STOPPED`, `ERROR` with thread-safe async task draining.
+    * Delta-rebalancing generator suppressing order churn when position deviations fall below `MIN_TRADE_NOTIONAL`.
+    * Pre-trade risk firewall compliance: halts order generation and applies 0.0 allocations immediately when emergency kill switch is active.
+  * 4 unit tests in `tests/unit/test_autonomous_trader.py` passing 100%.
+
+#### Step 4: REST API Endpoints & Institutional Terminal HUD Controls [COMPLETE]
+* **Deliverables:**
+  * Pluggable execution gateway and singleton autonomous daemon in `src/quant/api/dependencies.py`:
+    * Automatically binds `AlpacaExecutionGateway` when `BROKER_TYPE = "alpaca"` and credentials are set; seamlessly defaults to `PaperExecutionGateway` in offline testing.
+    * Re-binds data feeds and background daemons dynamically when test database managers change.
+  * REST API routes in `src/quant/api/v1/endpoints/autonomous.py`:
+    * `GET /api/v1/autonomous/status`: Returns state, iteration counter, monitored universe, and target allocations.
+    * `POST /api/v1/autonomous/start`: Initiates background autonomous clock loop.
+    * `POST /api/v1/autonomous/stop`: Stops background rebalancing loop cleanly.
+    * `POST /api/v1/autonomous/pause` / `POST /api/v1/autonomous/resume`: Pauses/resumes loop without task cancellation.
+    * `POST /api/v1/autonomous/step`: Executes single discrete rebalance cycle and returns `AutonomousStepReportDTO`.
+  * Mounted autonomous router and graceful shutdown hook in `src/quant/main.py`.
+  * Integrated Autonomous Swarm controls into `src/quant/templates/trading_terminal.html` (and brain artifact `trading_terminal.html`):
+    * Swarm status badge with pulsing emerald indicator when active.
+    * Interactive Start / Stop Swarm toggle button and Single Step button.
+    * Emergency kill switch pause/resume coupling.
+  * 4 integration tests in `tests/api/test_autonomous_api.py` passing 100%.
+  * 100% test pass rate across all 2,003 repository tests, 0 mypy strict errors across 76 source files, and 0 ruff deviations.
+  * Formally concluded **Phase 8 as 100% COMPLETE**.
 
 
 
