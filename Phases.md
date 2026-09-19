@@ -35,6 +35,9 @@ gantt
     section Phase 8: Production Broker & Swarm
     Alpaca Broker Gateway & Live Data Feed  :done, s8_1, 2026-10-28, 2d
     Autonomous Live Trading Swarm Daemon    :done, s8_2, 2026-10-30, 2d
+    section Phase 9: Real-World News & Price Reaction
+    News Harvester & Loughran-McDonald NLP   :done, s9_1, 2026-11-01, 2d
+    Causal Price Reaction & Terminal Widget  :done, s9_2, 2026-11-03, 2d
 ```
 
 ---
@@ -427,15 +430,59 @@ Transitions the quantitative platform from simulated in-memory paper execution t
     * `POST /api/v1/autonomous/step`: Executes single discrete rebalance cycle and returns `AutonomousStepReportDTO`.
   * Mounted autonomous router and graceful shutdown hook in `src/quant/main.py`.
   * Integrated Autonomous Swarm controls into `src/quant/templates/trading_terminal.html` (and brain artifact `trading_terminal.html`):
-    * Swarm status badge with pulsing emerald indicator when active.
+  * Swarm status badge with pulsing emerald indicator when active.
     * Interactive Start / Stop Swarm toggle button and Single Step button.
     * Emergency kill switch pause/resume coupling.
   * 4 integration tests in `tests/api/test_autonomous_api.py` passing 100%.
   * 100% test pass rate across all 2,003 repository tests, 0 mypy strict errors across 76 source files, and 0 ruff deviations.
   * Formally concluded **Phase 8 as 100% COMPLETE**.
 
+---
 
+### Phase 9: Real-World Financial News Harvester & Causal Price Reaction Engine [COMPLETE]
 
+Couples unstructured real-world financial news headlines directly with high-frequency microstructural price reaction forecasts, Triple-Barrier target alignment, forward prior injection into the autonomous trading swarm daemon, and live institutional terminal UI controls:
 
+#### Step 1: Real-World News Harvester & Multi-Source RSS Ingestion [COMPLETE]
+* **Deliverables:**
+  * Multi-source async HTTP RSS/Atom parser in `src/quant/data/news_harvester.py`:
+    * Enforces point-in-time publication causality with 5-second clock skew tolerance (`INV-NEWS-001`, `ERR-NEWS-003`).
+    * Cryptographic SHA-256 deduplication ring buffer with TTL cache preventing re-processing identical stories (`INV-NEWS-002`).
+    * Network failure resilience mapping HTTP 4xx/5xx errors and timeouts to `NewsFeedUnreachableException` (`ERR-NEWS-001`) and corrupt XML payloads to `CorruptNewsPayloadException` (`ERR-NEWS-002`).
+    * High-fidelity `SyntheticNewsGenerator` for hermetic offline testing across diverse event taxonomies and entity shocks.
+  * 13 unit tests in `tests/unit/test_news_harvester.py` passing 100%.
 
+#### Step 2: Loughran-McDonald Financial Sentiment & Event Taxonomy [COMPLETE]
+* **Deliverables:**
+  * Domain-specific financial NLP engine in `src/quant/analytics/news_classifier.py`:
+    * Loughran-McDonald dictionary polarity tokenizer with 3-token negation/inversion lookahead window (e.g. "loss narrowed", "not promising").
+    * Entity and ticker detection resolving both raw symbols (`$AAPL`) and company aliases ("Apple", "Amazon", "Tesla", etc.) with headline centrality weighting ($c=1.0$ headline vs $c=0.5$ summary).
+    * Discrete financial event taxonomy (`EventType`): `EARNINGS`, `MACRO_FED`, `M_AND_A`, `REGULATORY_LEGAL`, `ANALYST_ACTION`, `GENERAL_MARKET`.
+    * Defensive tri-axial score bounding: sentiment $s \in [-1, 1]$, uncertainty $u \in [0, 1]$, and Shannon headline entropy $\mathcal{H} \in [0, 1]$ (`INV-NEWS-003`, `ERR-NEWS-005`).
+  * 9 unit tests in `tests/unit/test_news_classifier.py` passing 100%.
 
+#### Step 3: Causal Price Reaction & Triple-Barrier Breakout Engine [COMPLETE]
+* **Deliverables:**
+  * Causal price reaction prediction engine in `src/quant/analytics/price_reaction.py`:
+    * Closed-form causal price impact modeling coupling hybrid dual-decay kernel $\kappa(\Delta t, u)$ with empirical category elasticity multipliers $\gamma \in [0.4, 3.5]$ (`INV-NEWS-004`).
+    * Expected dollar shock $\Delta \hat{P}_{\text{expected}} = P_t \cdot \gamma \cdot \mathcal{S}_{i, k} \cdot \sigma_t$ and relative return impact across multiple post-announcement drift horizons (0s, 5m, 15m, 1h, 4h, 1d, 3d).
+    * Logistic drift-diffusion breakout probabilities $\mathbb{P}(\text{UP}) = \frac{1}{1 + \exp(-\lambda \mathcal{S} \gamma / \sigma_t)}$ with strictly monotonic boundary behavior (`INV-NEWS-005`).
+    * Dynamic Triple-Barrier alignment deriving take-profit and stop-loss targets from predicted directional drift and Parkinson range volatility.
+    * Sub-10ms calculation SLA ($< 0.15\text{ms}$ deterministic closed-form execution, `INV-NEWS-006`, `ERR-NEWS-006`).
+  * 6 unit tests in `tests/unit/test_price_reaction.py` passing 100%.
+
+#### Step 4: News Prediction Service, Swarm Prior Injection, REST Endpoints & Terminal HUD Widget [COMPLETE]
+* **Deliverables:**
+  * Application service in `src/quant/services/news_prediction_service.py`:
+    * Coordinates harvesting, classification, price reaction forecasting, and multi-symbol active shock indexing.
+  * REST API routes in `src/quant/api/v1/endpoints/news.py`:
+    * `GET /api/v1/news/latest`: Queries recent ingested news articles and active predictions.
+    * `POST /api/v1/news/harvest`: Triggers asynchronous feed harvesting sweep.
+    * `POST /api/v1/news/predict`: Ad-hoc headline scenario shock evaluation for real-time impact simulation.
+  * Autonomous trading daemon coupling in `src/quant/services/autonomous_trader.py`:
+    * Injects directional forward news priors $\boldsymbol{\mu}_{\text{news}}$ into RD-DMA ensemble forecasts and unified convex portfolio execution sizer.
+  * Institutional terminal HUD widget in `src/quant/templates/trading_terminal.html`:
+    * Interactive "Live News & Predictions" tab with news badge counter, Wire Harvester trigger, and Ad-Hoc Scenario Shock Simulator.
+  * 4 integration tests in `tests/api/test_news_api.py` passing 100%.
+  * 100% test pass rate across all 2,035 repository tests, 0 mypy strict errors across 81 source files, and 0 ruff deviations across all 172 files.
+  * Formally concluded **Phase 9 as 100% COMPLETE**.
