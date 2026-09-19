@@ -46,6 +46,7 @@ from quant.execution.algorithms import (
 )
 from quant.execution.audit import OrderAuditLogger
 from quant.execution.fsm import OrderStateMachine
+from quant.execution.alpaca_gateway import AlpacaExecutionGateway
 from quant.execution.gateway import (
     ExecutionGateway,
     PaperExecutionGateway,
@@ -162,6 +163,7 @@ from quant.execution.venues import (
 )
 
 __all__ = [
+    "AlpacaExecutionGateway",
     "ERR_GW_DISCONNECTED",
     "ERR_GW_DUPLICATE_ORDER_ID",
     "ERR_GW_INSUFFICIENT_MARGIN",
