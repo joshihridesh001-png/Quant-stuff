@@ -312,10 +312,10 @@
             <!-- Indicators & Timeframe Pills -->
             <div class="flex items-center gap-3 text-[11px]">
               <div class="flex items-center gap-1 bg-black/50 p-0.5 rounded-lg border border-white/5">
-                <button class="px-2.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-bold">1m</button>
-                <button class="px-2 py-0.5 rounded text-slate-400 hover:text-white transition">5m</button>
-                <button class="px-2 py-0.5 rounded text-slate-400 hover:text-white transition">15m</button>
-                <button class="px-2 py-0.5 rounded text-slate-400 hover:text-white transition">1h</button>
+                                              <button onclick="setTimeframe('1m', this)" class="timeframe-btn px-2.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-bold transition">1m</button>
+                <button onclick="setTimeframe('5m', this)" class="timeframe-btn px-2 py-0.5 rounded text-slate-400 hover:text-white transition">5m</button>
+                <button onclick="setTimeframe('15m', this)" class="timeframe-btn px-2 py-0.5 rounded text-slate-400 hover:text-white transition">15m</button>
+                <button onclick="setTimeframe('1h', this)" class="timeframe-btn px-2 py-0.5 rounded text-slate-400 hover:text-white transition">1h</button>
               </div>
 
               <div class="h-3 w-px bg-slate-700"></div>
@@ -491,20 +491,6 @@
                 </tbody>
               </table>
             </div>
-
-            <!-- Pagination Bar -->
-            <div class="flex items-center justify-between px-3 py-2 bg-black/40 border border-white/5 rounded-lg text-[11px] text-slate-400 font-mono">
-              <div id="paginationInfo" class="flex items-center gap-2">
-                <span>Showing 1–25 of 100 strategies</span>
-              </div>
-              <div class="flex items-center gap-1">
-                <button id="firstPageBtn" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition" title="First Page">«</button>
-                <button id="prevPageBtn" class="px-2.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition">Prev</button>
-                <span id="pageIndicator" class="px-2.5 py-0.5 text-cyan-300 font-bold">Page 1 of 4</span>
-                <button id="nextPageBtn" class="px-2.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition">Next</button>
-                <button id="lastPageBtn" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition" title="Last Page">»</button>
-              </div>
-            </div>
           </div>
 
           <!-- TAB 3: EXECUTED ORDERS -->
@@ -602,7 +588,7 @@
             <div class="grid grid-cols-2 gap-2">
               <div>
                 <label class="text-slate-400 text-[10px] uppercase font-bold tracking-wider">ORDER TYPE</label>
-                <select id="orderTypeSelect" class="w-full mt-1 bg-black/60 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-cyan-400 transition font-bold text-xs">
+                <select id="orderTypeSelect" onchange="handleOrderTypeChange()" class="w-full mt-1 bg-black/60 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-cyan-400 transition font-bold text-xs">
                   <option value="LIMIT">LIMIT (NBBO Pegged)</option>
                   <option value="MARKET">MARKET (Aggressive Sweep)</option>
                 </select>
@@ -695,7 +681,6 @@
     let currentAsset = 'NVDA';
     let currentSide = 'BUY';
     window.isKillSwitchActive = false;
-    window.triggerWebGLShockwave = function() {};
     let isSimRunning = true;
     let basePrice = 125.00;
     
@@ -740,7 +725,7 @@
     const pageSize = 25;
     let strategies = [];
 
-    function generateStrategies(count = 100) {
+    function generateStrategies(count = 100, shouldRender = true) {
       currentPopulationSize = count;
       strategies = [];
       const eliteCount = Math.max(1, Math.min(25, Math.floor(count * 0.1)));
@@ -778,8 +763,10 @@
       }
       strategies.sort((a, b) => b.pnl - a.pnl);
       currentPage = 1;
-      updateLeaderboardBadges();
-      renderAlgosTable();
+      if (shouldRender) {
+        updateLeaderboardBadges();
+        renderAlgosTable();
+      }
     }
 
     function updateLeaderboardBadges() {
@@ -812,7 +799,8 @@
       if (fElite) fElite.textContent = `Top ${eliteCount} 👑`;
     }
 
-    generateStrategies(100);
+    window.generateStrategies = generateStrategies;
+    generateStrategies(100, false);
 
     // DOM Elements
     const canvas = document.getElementById('priceChartCanvas');
@@ -874,6 +862,14 @@
     }
     orderQtyInput.addEventListener('input', updateEstimatedNotional);
     orderPriceInput.addEventListener('input', updateEstimatedNotional);
+
+    // Chart Checkboxes Event Listeners
+    const toggleMA = document.getElementById('toggleMA');
+    const toggleVWAP = document.getElementById('toggleVWAP');
+    const toggleFills = document.getElementById('toggleFills');
+    if (toggleMA) toggleMA.addEventListener('change', () => renderChart());
+    if (toggleVWAP) toggleVWAP.addEventListener('change', () => renderChart());
+    if (toggleFills) toggleFills.addEventListener('change', () => renderChart());
 
     // Initialize historical candles
     function initCandles() {
@@ -1152,6 +1148,88 @@
       }
     }
 
+
+    // Order book click to set price
+    window.setOrderPrice = function(val) {
+      if (orderPriceInput) {
+        orderPriceInput.value = Number(val).toFixed(2);
+        const orderTypeSelect = document.getElementById('orderTypeSelect');
+        if (orderTypeSelect && orderTypeSelect.value === 'MARKET') {
+          orderTypeSelect.value = 'LIMIT';
+          orderPriceInput.disabled = false;
+        }
+        updateEstimatedNotional();
+      }
+    };
+
+    // Timeframe selector
+    let currentTimeframe = '1m';
+    window.setTimeframe = function(tf, btn) {
+      currentTimeframe = tf;
+      document.querySelectorAll('.timeframe-btn').forEach(b => {
+        b.className = 'timeframe-btn px-2 py-0.5 rounded text-slate-400 hover:text-white transition';
+      });
+      if (btn) btn.className = 'timeframe-btn px-2.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-bold transition';
+      const titleElem = document.getElementById('chartSymbolTitle');
+      if (titleElem) titleElem.textContent = `${currentAsset} - ${tf.toUpperCase()} CANDLES`;
+      initCandles();
+      renderChart();
+    };
+
+    // Order type change handler
+    window.handleOrderTypeChange = function() {
+      const typeSelect = document.getElementById('orderTypeSelect');
+      if (!typeSelect || !orderPriceInput) return;
+      if (typeSelect.value === 'MARKET') {
+        orderPriceInput.value = basePrice.toFixed(2);
+        orderPriceInput.disabled = true;
+        orderPriceInput.classList.add('opacity-50');
+      } else {
+        orderPriceInput.disabled = false;
+        orderPriceInput.classList.remove('opacity-50');
+      }
+      updateEstimatedNotional();
+    };
+
+    // Cancel order handler
+    window.cancelOrder = async function(orderId) {
+      const o = ordersList.find(item => item.id === orderId);
+      if (o) {
+        o.status = 'CANCELLED';
+        renderOrdersTable();
+        if (authToken) {
+          try {
+            await fetch(`/api/v1/orders/${orderId}`, {
+              method: 'DELETE',
+              headers: { 'Authorization': 'Bearer ' + authToken }
+            });
+          } catch (e) {
+            console.warn('Cancel order API call error', e);
+          }
+        }
+      }
+    };
+
+    // Dynamic TCA Summary Calculator
+    function updateTcaSummary() {
+      let totalNotional = 0;
+      let totalShortfallDollars = 0;
+      ordersList.forEach(o => {
+        if (o.status === 'FILLED') {
+          const notional = o.filled * o.avgPrice;
+          totalNotional += notional;
+          // Approximate shortfall vs arrival
+          const slippageBps = Math.random() * 2.2 + 0.8;
+          totalShortfallDollars += notional * (slippageBps / 10000);
+        }
+      });
+      const shortfallBps = totalNotional > 0 ? (totalShortfallDollars / totalNotional) * 10000 : 1.82;
+      const tcaShortfallElem = document.querySelector('#tabContentTca .glow-top-green .text-lg');
+      if (tcaShortfallElem) {
+        tcaShortfallElem.textContent = `+${shortfallBps.toFixed(2)} bps ($${totalShortfallDollars.toFixed(2)})`;
+      }
+    }
+
     // Render Paginated Strategies Leaderboard
     let currentFilter = 'ALL';
     window.filterStrategies = function(f) {
@@ -1367,15 +1445,57 @@
       document.getElementById('positionsCountBadge').textContent = positions.length;
     }
 
-    window.liquidatePosition = function(sym) {
+    window.liquidatePosition = async function(sym) {
       const idx = positions.findIndex(p => p.symbol === sym);
       if (idx !== -1) {
         const p = positions[idx];
         const pnl = p.side === 'LONG' ? (p.markPrice - p.entryPrice) * p.shares : (p.entryPrice - p.markPrice) * p.shares;
         realizedPnl += pnl;
+        const closingSide = p.side === 'LONG' ? 'SELL' : 'BUY';
+        const closingQty = p.shares;
+        const exitPrice = p.markPrice;
         positions.splice(idx, 1);
         renderPositionsTable();
         updateHud();
+
+        // Dispatch closing order to blotter & backend
+        const closeId = 'ORD-' + Math.floor(1000 + Math.random() * 9000);
+        ordersList.unshift({
+          id: closeId,
+          time: new Date().toTimeString().split(' ')[0],
+          side: closingSide,
+          symbol: sym,
+          algo: 'Direct Liquidation',
+          target: closingQty,
+          filled: closingQty,
+          avgPrice: exitPrice,
+          status: 'FILLED'
+        });
+        renderOrdersTable();
+        updateTcaSummary();
+
+        if (authToken) {
+          try {
+            await fetch('/api/v1/orders', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + authToken
+              },
+              body: JSON.stringify({
+                symbol: sym,
+                side: closingSide,
+                quantity: closingQty,
+                price: exitPrice,
+                order_type: 'MARKET',
+                algorithm: 'DIRECT_MARKET',
+                horizon_seconds: 10.0
+              })
+            });
+          } catch (e) {
+            console.warn('Liquidation API order dispatch error', e);
+          }
+        }
       }
     };
 
@@ -1396,12 +1516,14 @@
           <td class="py-2 px-2.5 font-bold text-white">${o.filled.toLocaleString()}</td>
           <td class="py-2 px-2.5 text-slate-200 font-bold">$${o.avgPrice.toFixed(2)}</td>
           <td class="py-2 px-2.5">
-            <span class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+            <span class="text-[10px] px-2 py-0.5 rounded-full font-bold ${o.status === 'FILLED' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' : (o.status === 'CANCELLED' ? 'bg-slate-700/50 text-slate-400 border border-slate-600' : 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 animate-pulse')}">
               ${o.status}
             </span>
           </td>
           <td class="py-2 px-2.5 text-right">
-            <span class="text-[10px] text-slate-500 font-mono">TCA PASS</span>
+            ${o.status === 'ACTIVE' || o.status === 'PARTIALLY_FILLED' 
+              ? `<button onclick="cancelOrder('${o.id}')" class="px-2 py-0.5 rounded bg-rose-600/25 hover:bg-rose-600/40 text-rose-300 border border-rose-500/40 text-[10px] font-bold transition">CANCEL</button>`
+              : '<span class="text-[10px] text-slate-500 font-mono">TCA PASS</span>'}
           </td>
         `;
         ordersTableBody.appendChild(tr);
@@ -1434,7 +1556,7 @@
       const maxTotal = 4650;
 
       asksBook.innerHTML = asks.map(a => `
-        <div class="relative flex items-center justify-between px-2 py-1 rounded bg-black/40 overflow-hidden text-[11px]">
+        <div onclick="setOrderPrice(${a.price})" class="relative flex items-center justify-between px-2 py-1 rounded bg-black/40 hover:bg-rose-950/40 cursor-pointer overflow-hidden text-[11px] transition" title="Click to set limit price">
           <div class="absolute right-0 top-0 bottom-0 bg-rose-500/20 pointer-events-none transition-all duration-300" style="width: ${(a.total / maxTotal) * 100}%"></div>
           <span class="text-rose-400 font-bold z-10">$${a.price.toFixed(2)}</span>
           <span class="text-slate-300 z-10">${a.size.toLocaleString()}</span>
@@ -1443,7 +1565,7 @@
       `).join('');
 
       bidsBook.innerHTML = bids.map(b => `
-        <div class="relative flex items-center justify-between px-2 py-1 rounded bg-black/40 overflow-hidden text-[11px]">
+        <div onclick="setOrderPrice(${b.price})" class="relative flex items-center justify-between px-2 py-1 rounded bg-black/40 hover:bg-emerald-950/40 cursor-pointer overflow-hidden text-[11px] transition" title="Click to set limit price">
           <div class="absolute right-0 top-0 bottom-0 bg-emerald-500/20 pointer-events-none transition-all duration-300" style="width: ${(b.total / maxTotal) * 100}%"></div>
           <span class="text-emerald-400 font-bold z-10">$${b.price.toFixed(2)}</span>
           <span class="text-slate-300 z-10">${b.size.toLocaleString()}</span>
@@ -1610,8 +1732,7 @@
           sellMarkers.push({ index: candleIdx, price: f.price, text: `SELL ${f.quantity.toFixed(0)} @ $${f.price.toFixed(2)}` });
         }
         renderChart();
-        if (window.triggerWebGLShockwave) window.triggerWebGLShockwave();
-      }
+              }
     }
 
     function handleRiskWsMessage(msg) {
@@ -1633,20 +1754,19 @@
       }
 
       // Trigger 3D WebGL Shockwave ripple across the universe!
-      if (window.triggerWebGLShockwave) window.triggerWebGLShockwave();
-
-      const qty = parseInt(orderQtyInput.value, 10);
-      const price = parseFloat(orderPriceInput.value);
-      const algoText = document.getElementById('algoSelect').selectedOptions[0].text.split('(')[0].trim();
+      
+      const qty = parseInt(orderQtyInput.value, 10) || 100;
+      const price = parseFloat(orderPriceInput.value) || basePrice;
+      const algoSelectElem = document.getElementById('algoSelect');
+      const mappedAlgo = algoSelectElem ? algoSelectElem.value : 'POISSON_TWAP';
+      const algoText = algoSelectElem ? algoSelectElem.selectedOptions[0].text.split('(')[0].trim() : 'TWAP';
+      const horizonSec = parseFloat(document.getElementById('horizonInput')?.value) || 30.0;
+      const orderTypeVal = document.getElementById('orderTypeSelect')?.value || (price > 0 ? 'LIMIT' : 'MARKET');
       let newId = 'ORD-' + Math.floor(1000 + Math.random() * 9000);
 
       // Attempt live API dispatch if server is available
       if (authToken) {
         try {
-          let mappedAlgo = 'POISSON_TWAP';
-          if (algoText.includes('VWAP')) mappedAlgo = 'VOLUME_ADAPTIVE_VWAP';
-          else if (algoText.includes('Arrival') || algoText.includes('ARRIVAL')) mappedAlgo = 'ARRIVAL_PRICE';
-          else if (algoText.includes('Market') || algoText.includes('MARKET')) mappedAlgo = 'DIRECT_MARKET';
 
           const res = await fetch('/api/v1/orders', {
             method: 'POST',
@@ -1659,9 +1779,9 @@
               side: currentSide,
               quantity: qty,
               price: price > 0 ? price : null,
-              order_type: price > 0 ? 'LIMIT' : 'MARKET',
+              order_type: orderTypeVal,
               algorithm: mappedAlgo,
-              horizon_seconds: 30.0
+              horizon_seconds: horizonSec
             })
           });
           if (res.ok) {
@@ -1722,6 +1842,7 @@
       renderOrdersTable();
       renderPositionsTable();
       renderChart();
+      updateTcaSummary();
 
       dispatchOrderBtn.textContent = 'ORDER EXECUTED VIA SOR!';
       dispatchOrderBtn.classList.replace('from-blue-600', 'from-emerald-600');
@@ -1778,7 +1899,6 @@
 
     chartResetBtn.addEventListener('click', () => {
       window.isKillSwitchActive = false;
-    window.triggerWebGLShockwave = function() {};
       killSwitchBadge.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-emerald-950/50 border border-emerald-500/30 text-emerald-400';
       killSwitchBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>ARMED</span>';
       chartHaltOverlay.classList.add('hidden');
@@ -1820,11 +1940,11 @@
       initCandles();
       renderChart();
       renderOrderBook();
-      if (window.triggerWebGLShockwave) window.triggerWebGLShockwave();
-    });
+          });
 
     setTimeout(() => {
       resizeCanvas();
+      updateLeaderboardBadges();
       renderAlgosTable();
       renderPositionsTable();
       renderOrdersTable();
