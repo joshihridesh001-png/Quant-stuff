@@ -17,6 +17,7 @@ from quant.api.v1.endpoints import (
     gateways,
     genotypes,
     market_data,
+    news,
     orders,
     risk,
     streaming,
@@ -72,6 +73,7 @@ def create_application() -> FastAPI:
     app.include_router(gateways.router, prefix=settings.API_V1_PREFIX)
     app.include_router(streaming.router, prefix=settings.API_V1_PREFIX)
     app.include_router(autonomous.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(news.router, prefix=settings.API_V1_PREFIX)
 
     # 4. System Health Check Endpoint
     @app.get("/healthz", tags=["System Health"], summary="Liveness & Readiness Probe")

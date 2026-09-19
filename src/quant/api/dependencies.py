@@ -39,6 +39,7 @@ from quant.services.event_service import EventService
 from quant.services.execution_service import ExecutionService
 from quant.services.genotype_service import GenotypeService
 from quant.services.market_data_service import MarketDataService
+from quant.services.news_prediction_service import NewsPredictionService
 from quant.services.risk_service import RiskService
 
 settings = get_settings()
@@ -238,6 +239,18 @@ def get_autonomous_trader(
             min_trade_notional=settings.MIN_TRADE_NOTIONAL,
         )
     return _autonomous_trader
+
+
+_news_prediction_service: NewsPredictionService | None = None
+
+
+def get_news_prediction_service() -> NewsPredictionService:
+    """Provide singleton NewsPredictionService instance."""
+    global _news_prediction_service
+    if _news_prediction_service is None:
+        autonomous_engine = get_autonomous_trader()
+        _news_prediction_service = NewsPredictionService(autonomous_engine=autonomous_engine)
+    return _news_prediction_service
 
 
 # Security & Role Dependencies

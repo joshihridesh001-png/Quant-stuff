@@ -43,7 +43,7 @@ import logging
 import math
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Final
 
@@ -83,6 +83,7 @@ class AutonomousStepReport:
     duration_ms: float
     haircut: float
     is_kill_switch_active: bool
+    forward_alpha_priors: dict[str, float] = field(default_factory=dict)
 
 
 class AutonomousTradingEngine:
@@ -91,6 +92,7 @@ class AutonomousTradingEngine:
     __slots__ = (
         "_error_count",
         "_execution_service",
+        "_forward_alpha_priors",
         "_gateway",
         "_interval_sec",
         "_iteration",
@@ -138,6 +140,7 @@ class AutonomousTradingEngine:
         self._loop_task: asyncio.Task[None] | None = None
         self._last_report: AutonomousStepReport | None = None
         self._target_allocations: dict[str, float] = {}
+        self._forward_alpha_priors: dict[str, float] = {}
         self._listeners: list[Callable[[AutonomousStepReport], None]] = []
         self._error_count: int = 0
 
@@ -160,6 +163,21 @@ class AutonomousTradingEngine:
     def target_allocations(self) -> dict[str, float]:
         """Target dollar allocations computed during the last rebalance cycle."""
         return dict(self._target_allocations)
+
+    @property
+    def forward_alpha_priors(self) -> dict[str, float]:
+        """Current news-driven forward alpha priors per asset."""
+        return dict(self._forward_alpha_priors)
+
+    def update_news_alpha_priors(self, priors: dict[str, float]) -> None:
+        """Update forward directional alpha priors injected by NewsPredictionService.
+
+        Args:
+            priors: Mapping of ticker symbol to directional prior mu in [-1.0, 1.0].
+        """
+        for sym, val in priors.items():
+            if isinstance(val, (int, float)) and math.isfinite(val):
+                self._forward_alpha_priors[sym] = float(min(max(val, -1.0), 1.0))
 
     @property
     def last_report(self) -> AutonomousStepReport | None:
@@ -207,7 +225,9 @@ class AutonomousTradingEngine:
 
         for sym in self._universe:
             if sym in bars and bars[sym].close > 0.0:
-                target_dollars[sym] = round(target_per_asset, 2)
+                prior = self._forward_alpha_priors.get(sym, 0.0)
+                multiplier = max(0.0, 1.0 + 0.5 * prior)
+                target_dollars[sym] = round(target_per_asset * multiplier, 2)
             else:
                 target_dollars[sym] = 0.0
 
@@ -308,6 +328,7 @@ class AutonomousTradingEngine:
             duration_ms=duration_ms,
             haircut=haircut,
             is_kill_switch_active=is_kill_active,
+            forward_alpha_priors=dict(self._forward_alpha_priors),
         )
         self._last_report = report
 

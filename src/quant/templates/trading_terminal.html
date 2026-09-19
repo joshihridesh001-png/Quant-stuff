@@ -403,6 +403,10 @@
               <button id="tabTcaBtn" class="px-3.5 py-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/60 transition">
                 <span>📉 Perold TCA</span>
               </button>
+              <button id="tabNewsBtn" class="px-3.5 py-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5">
+                <span>📡 Live News & Predictions</span>
+                <span id="newsCountBadge" class="bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 px-1.5 py-0.2 rounded text-[10px]">Live</span>
+              </button>
             </div>
 
             <!-- Evolve Button -->
@@ -555,6 +559,67 @@
                 <div class="text-lg font-bold text-purple-300 mt-0.5">$4.12 (0.45 bps)</div>
                 <div class="text-[10px] text-slate-500 mt-1">Exchange Fees & Rebates</div>
               </div>
+            </div>
+          </div>
+
+          <!-- TAB 5: LIVE FINANCIAL NEWS & CAUSAL PRICE REACTION ENGINE -->
+          <div id="tabContentNews" class="hidden flex flex-col gap-3 text-xs font-mono">
+            <!-- News Toolbar & Controls -->
+            <div class="flex flex-wrap items-center justify-between gap-2.5 bg-black/50 p-2.5 rounded-xl border border-white/5 text-[11px]">
+              <div class="flex items-center gap-2">
+                <span class="text-cyan-400 font-bold tracking-wide">📡 REAL-WORLD FINANCIAL NEWS WIRE</span>
+                <span class="text-slate-500 text-[10px]">• Multi-Source Live Scraper (Yahoo, SEC 8-K, CNBC)</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <button id="harvestNewsBtn" class="px-3 py-1.5 rounded-lg bg-cyan-600/30 hover:bg-cyan-600/50 text-cyan-300 border border-cyan-500/40 transition flex items-center gap-1 active:scale-95">
+                  <span>⚡</span>
+                  <span class="font-bold">Harvest Wire Feeds</span>
+                </button>
+                <button id="toggleScenarioBtn" class="px-3 py-1.5 rounded-lg bg-purple-600/30 hover:bg-purple-600/50 text-purple-300 border border-purple-500/40 transition flex items-center gap-1 active:scale-95">
+                  <span>🔬</span>
+                  <span class="font-bold">Simulate Shock</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Ad-Hoc Scenario Simulator Drawer -->
+            <div id="manualScenarioDrawer" class="hidden bg-slate-900/90 border border-purple-500/40 rounded-xl p-3 flex flex-col gap-2.5">
+              <div class="text-[11px] font-bold text-purple-300 flex items-center justify-between">
+                <span>Ad-Hoc Financial News Scenario & Causal Impact Simulator</span>
+                <button id="closeScenarioBtn" class="text-slate-400 hover:text-white text-xs">✕</button>
+              </div>
+              <div class="flex flex-wrap items-center gap-2 text-xs">
+                <input id="scenarioHeadlineInput" type="text" placeholder="Enter headline, e.g. NVDA announces $10B AI cluster deal with Microsoft" class="flex-grow bg-black/60 border border-white/10 rounded-lg px-2.5 py-1.5 text-white placeholder-slate-500 outline-none focus:border-purple-400" />
+                <input id="scenarioTickerInput" type="text" placeholder="NVDA" class="w-20 bg-black/60 border border-white/10 rounded-lg px-2.5 py-1.5 text-cyan-300 placeholder-slate-500 uppercase outline-none focus:border-purple-400" />
+                <input id="scenarioPriceInput" type="number" placeholder="Price (120.0)" class="w-28 bg-black/60 border border-white/10 rounded-lg px-2.5 py-1.5 text-white placeholder-slate-500 outline-none focus:border-purple-400" />
+                <button id="runScenarioBtn" class="px-4 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 text-white font-bold shadow hover:brightness-110 transition active:scale-95">Simulate</button>
+              </div>
+              <div id="scenarioResultBox" class="hidden p-2.5 rounded-lg bg-black/60 border border-white/10 text-[11px]"></div>
+            </div>
+
+            <!-- News Feed Table / Stream -->
+            <div class="overflow-x-auto rounded-xl border border-white/5 bg-slate-950/40 max-h-[420px] overflow-y-auto">
+              <table class="w-full text-left border-collapse">
+                <thead>
+                  <tr class="border-b border-white/10 text-[10px] text-slate-400 uppercase tracking-wider bg-white/[0.02] sticky top-0 bg-slate-950/90 backdrop-blur z-10">
+                    <th class="p-2.5">Time</th>
+                    <th class="p-2.5">Category</th>
+                    <th class="p-2.5">Headline</th>
+                    <th class="p-2.5">Asset</th>
+                    <th class="p-2.5 text-right">Target Price</th>
+                    <th class="p-2.5 text-center">Signal / P(UP)</th>
+                    <th class="p-2.5 text-right">Triple-Barriers</th>
+                    <th class="p-2.5 text-right">Latency</th>
+                  </tr>
+                </thead>
+                <tbody id="newsFeedTableBody" class="divide-y divide-white/5">
+                  <tr>
+                    <td colspan="8" class="p-6 text-center text-slate-500">
+                      Connecting to institutional news harvester...
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
 
@@ -861,10 +926,24 @@
     const tabPositionsBtn = document.getElementById('tabPositionsBtn');
     const tabOrdersBtn = document.getElementById('tabOrdersBtn');
     const tabTcaBtn = document.getElementById('tabTcaBtn');
+    const tabNewsBtn = document.getElementById('tabNewsBtn');
     const tabContentAlgos = document.getElementById('tabContentAlgos');
     const tabContentPositions = document.getElementById('tabContentPositions');
     const tabContentOrders = document.getElementById('tabContentOrders');
     const tabContentTca = document.getElementById('tabContentTca');
+    const tabContentNews = document.getElementById('tabContentNews');
+
+    // News & Scenario Simulator elements
+    const harvestNewsBtn = document.getElementById('harvestNewsBtn');
+    const toggleScenarioBtn = document.getElementById('toggleScenarioBtn');
+    const manualScenarioDrawer = document.getElementById('manualScenarioDrawer');
+    const closeScenarioBtn = document.getElementById('closeScenarioBtn');
+    const runScenarioBtn = document.getElementById('runScenarioBtn');
+    const scenarioHeadlineInput = document.getElementById('scenarioHeadlineInput');
+    const scenarioTickerInput = document.getElementById('scenarioTickerInput');
+    const scenarioPriceInput = document.getElementById('scenarioPriceInput');
+    const scenarioResultBox = document.getElementById('scenarioResultBox');
+    const newsFeedTableBody = document.getElementById('newsFeedTableBody');
 
     // Quick shares preset helper
     window.setQuickShares = function(val) {
@@ -1881,19 +1960,189 @@
 
     // Tab Switching
     function setTabActive(btn, content) {
-      [tabAlgosBtn, tabPositionsBtn, tabOrdersBtn, tabTcaBtn].forEach(b => {
-        b.className = 'px-3.5 py-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5';
+      [tabAlgosBtn, tabPositionsBtn, tabOrdersBtn, tabTcaBtn, tabNewsBtn].forEach(b => {
+        if (b) b.className = 'px-3.5 py-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5';
       });
-      [tabContentAlgos, tabContentPositions, tabContentOrders, tabContentTca].forEach(c => c.classList.add('hidden'));
+      [tabContentAlgos, tabContentPositions, tabContentOrders, tabContentTca, tabContentNews].forEach(c => {
+        if (c) c.classList.add('hidden');
+      });
 
       btn.className = 'px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 via-cyan-600 to-teal-500 text-white font-bold shadow-md shadow-cyan-500/20 border border-cyan-400/30 transition flex items-center gap-1.5';
       content.classList.remove('hidden');
+      if (content === tabContentNews) {
+        loadNewsFeed();
+      }
     }
 
     tabAlgosBtn.addEventListener('click', () => setTabActive(tabAlgosBtn, tabContentAlgos));
     tabPositionsBtn.addEventListener('click', () => setTabActive(tabPositionsBtn, tabContentPositions));
     tabOrdersBtn.addEventListener('click', () => setTabActive(tabOrdersBtn, tabContentOrders));
     tabTcaBtn.addEventListener('click', () => setTabActive(tabTcaBtn, tabContentTca));
+    if (tabNewsBtn) tabNewsBtn.addEventListener('click', () => setTabActive(tabNewsBtn, tabContentNews));
+
+    // Live Financial News Engine & Price Prediction Handlers
+    async function loadNewsFeed() {
+      if (!newsFeedTableBody) return;
+      try {
+        const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+        let res = await fetch('/api/v1/news/latest?limit=25', { headers });
+        if (res.status === 401) return;
+        let data = await res.json();
+        
+        if (!Array.isArray(data) || data.length === 0) {
+          const harvestRes = await fetch('/api/v1/news/harvest', { method: 'POST', headers });
+          if (harvestRes.ok) {
+            data = await harvestRes.json();
+          }
+        }
+        renderNewsTable(data);
+      } catch (err) {
+        console.warn('Failed to load news feed', err);
+      }
+    }
+
+    function renderNewsTable(items) {
+      if (!newsFeedTableBody) return;
+      if (!Array.isArray(items) || items.length === 0) {
+        newsFeedTableBody.innerHTML = `<tr><td colspan="8" class="p-6 text-center text-slate-500">No recent financial news events. Click "Harvest Wire Feeds" to poll wires.</td></tr>`;
+        return;
+      }
+
+      newsFeedTableBody.innerHTML = items.map(item => {
+        const timeStr = item.created_at ? new Date(item.created_at).toLocaleTimeString() : '--:--:--';
+        const isBuy = item.signal === 'BUY';
+        const isSell = item.signal === 'SELL';
+        const signalColor = isBuy ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : (isSell ? 'bg-rose-500/20 text-rose-300 border-rose-500/40' : 'bg-slate-800 text-slate-300 border-slate-700');
+        const probPct = Math.round(item.prob_up * 100);
+        const deltaColor = item.expected_delta_price >= 0 ? 'text-emerald-400' : 'text-rose-400';
+        const deltaSign = item.expected_delta_price >= 0 ? '+' : '';
+
+        return `
+          <tr class="hover:bg-white/[0.02] transition">
+            <td class="p-2.5 text-slate-400 text-[10px] whitespace-nowrap">${timeStr}</td>
+            <td class="p-2.5">
+              <span class="px-2 py-0.5 rounded text-[10px] bg-slate-900 border border-slate-700 font-bold text-cyan-300">${item.event_type}</span>
+            </td>
+            <td class="p-2.5 max-w-xs truncate" title="${item.ticker} Catalytic Catalyst">
+              <span class="text-white font-medium">${item.ticker} Catalytic Catalyst</span>
+            </td>
+            <td class="p-2.5">
+              <span class="font-bold text-cyan-300 bg-cyan-950/60 border border-cyan-500/30 px-2 py-0.5 rounded text-[11px]">${item.ticker}</span>
+            </td>
+            <td class="p-2.5 text-right font-mono">
+              <div class="font-bold text-white">$${item.target_price.toFixed(2)}</div>
+              <div class="text-[10px] ${deltaColor}">${deltaSign}$${item.expected_delta_price.toFixed(2)}</div>
+            </td>
+            <td class="p-2.5 text-center">
+              <span class="px-2.5 py-1 rounded-lg border text-[10px] font-bold ${signalColor}">${item.signal} (${probPct}% UP)</span>
+            </td>
+            <td class="p-2.5 text-right font-mono text-[10px] text-slate-400">
+              <div class="text-emerald-400">▲ $${item.barrier_upper.toFixed(2)}</div>
+              <div class="text-rose-400">▼ $${item.barrier_lower.toFixed(2)}</div>
+            </td>
+            <td class="p-2.5 text-right font-mono text-[10px] text-slate-400">
+              <span>${item.calculation_latency_ms.toFixed(2)}ms</span>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    if (harvestNewsBtn) {
+      harvestNewsBtn.addEventListener('click', async () => {
+        harvestNewsBtn.disabled = true;
+        harvestNewsBtn.innerHTML = '<span>⏳</span><span>Harvesting...</span>';
+        try {
+          const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+          const res = await fetch('/api/v1/news/harvest', { method: 'POST', headers });
+          if (res.ok) {
+            const data = await res.json();
+            renderNewsTable(data);
+          }
+        } catch (err) {
+          console.warn('Manual harvest failed', err);
+        } finally {
+          harvestNewsBtn.disabled = false;
+          harvestNewsBtn.innerHTML = '<span>⚡</span><span class="font-bold">Harvest Wire Feeds</span>';
+        }
+      });
+    }
+
+    if (toggleScenarioBtn && manualScenarioDrawer) {
+      toggleScenarioBtn.addEventListener('click', () => {
+        manualScenarioDrawer.classList.toggle('hidden');
+      });
+    }
+
+    if (closeScenarioBtn && manualScenarioDrawer) {
+      closeScenarioBtn.addEventListener('click', () => {
+        manualScenarioDrawer.classList.add('hidden');
+      });
+    }
+
+    if (runScenarioBtn) {
+      runScenarioBtn.addEventListener('click', async () => {
+        const headline = scenarioHeadlineInput ? scenarioHeadlineInput.value.trim() : '';
+        const ticker = scenarioTickerInput ? scenarioTickerInput.value.trim() : 'NVDA';
+        const price = scenarioPriceInput ? (parseFloat(scenarioPriceInput.value) || 120.0) : 120.0;
+
+        if (!headline) {
+          alert('Please enter a scenario headline to simulate.');
+          return;
+        }
+
+        runScenarioBtn.disabled = true;
+        runScenarioBtn.textContent = 'Simulating...';
+
+        try {
+          const headers = { 'Content-Type': 'application/json' };
+          if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+
+          const res = await fetch('/api/v1/news/predict', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              headline,
+              ticker: ticker || 'NVDA',
+              current_price: price,
+              volatility: 0.02
+            })
+          });
+
+          if (res.ok) {
+            const preds = await res.json();
+            if (scenarioResultBox && preds.length > 0) {
+              const p = preds[0];
+              scenarioResultBox.classList.remove('hidden');
+              scenarioResultBox.innerHTML = `
+                <div class="flex items-center justify-between text-xs mb-1">
+                  <span class="font-bold text-cyan-300">${p.ticker} [${p.event_type}]</span>
+                  <span class="px-2 py-0.5 rounded font-bold ${p.signal === 'BUY' ? 'bg-emerald-500/20 text-emerald-300' : (p.signal === 'SELL' ? 'bg-rose-500/20 text-rose-300' : 'bg-slate-800 text-slate-300')}">${p.signal} (${Math.round(p.prob_up * 100)}% UP)</span>
+                </div>
+                <div class="grid grid-cols-4 gap-2 text-slate-300 text-[10px]">
+                  <div>Current: <b class="text-white">$${p.current_price.toFixed(2)}</b></div>
+                  <div>Target: <b class="text-white">$${p.target_price.toFixed(2)}</b></div>
+                  <div>Upper Barrier: <b class="text-emerald-400">$${p.barrier_upper.toFixed(2)}</b></div>
+                  <div>Lower Barrier: <b class="text-rose-400">$${p.barrier_lower.toFixed(2)}</b></div>
+                </div>
+              `;
+            }
+            loadNewsFeed();
+          }
+        } catch (err) {
+          console.warn('Scenario run failed', err);
+        } finally {
+          runScenarioBtn.disabled = false;
+          runScenarioBtn.textContent = 'Simulate';
+        }
+      });
+    }
+
+    setInterval(() => {
+      if (tabContentNews && !tabContentNews.classList.contains('hidden')) {
+        loadNewsFeed();
+      }
+    }, 20000);
 
     // Emergency Panic Kill Switch
     emergencyKillBtn.addEventListener('click', () => {
