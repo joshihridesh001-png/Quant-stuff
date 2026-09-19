@@ -462,22 +462,25 @@ class ExecutionService:
         symbol: str | None = None,
         is_closed: bool | None = None,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[ParentOrder]:
-        """List historical and active parent orders with optional filtering.
+        """List historical and active parent orders with optional filtering and pagination.
 
         Args:
             symbol: Optional symbol filter.
             is_closed: Optional terminal completion status filter.
             limit: Maximum orders to return.
+            offset: Number of initial matching orders to skip.
 
         Returns:
             list[ParentOrder]: Filtered list of matching parent orders.
         """
-        # Functional Purpose: Query parent order collection.
+        # Functional Purpose: Query parent order collection with pagination.
         # Explicit Dependency Tracking: self._orders.
         # Structural Relationship: Consumed by GET /api/v1/orders.
-        # Defensive Invariant: limit bounded to [1, 500].
+        # Defensive Invariant: limit bounded to [1, 500], offset >= 0.
         bounded_limit = max(1, min(500, limit))
+        bounded_offset = max(0, offset)
         results: list[ParentOrder] = []
 
         for order in reversed(list(self._orders.values())):
@@ -487,10 +490,8 @@ class ExecutionService:
                 continue
 
             results.append(order)
-            if len(results) >= bounded_limit:
-                break
 
-        return results
+        return results[bounded_offset : bounded_offset + bounded_limit]
 
     def cancel_order(self, order_id: str) -> bool:
         """Mark parent order cancelled, preventing future child slice dispatches.

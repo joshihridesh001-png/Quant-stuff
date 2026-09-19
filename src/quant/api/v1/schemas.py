@@ -305,3 +305,17 @@ class GatewayHealthDTO(BaseModel):
     last_latency_ms: float = 0.0
     missed_sequence_count: int = 0
     is_connected: bool
+
+
+class HeartbeatPingRequest(BaseModel):
+    """Request DTO for inbound gateway heartbeat pulse."""
+
+    sequence_number: int = Field(
+        ..., ge=1, description="Inbound transport heartbeat sequence number"
+    )
+    latency_ms: float = Field(
+        0.0, ge=0.0, description="Round-trip ping-pong latency in milliseconds"
+    )
+    timestamp_ns: int | None = Field(
+        None, ge=0, description="Optional explicit epoch nanoseconds timestamp"
+    )

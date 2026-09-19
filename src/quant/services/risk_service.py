@@ -29,6 +29,7 @@ Invariants Enforced:
 from __future__ import annotations
 
 import math
+import time
 from typing import Any
 
 from quant.api.v1.schemas import (
@@ -311,3 +312,42 @@ class RiskService:
         # Structural Relationship: Invoked on every market data tick or price bar ingestion.
         # Defensive Invariant: Positive finite price strictly required.
         await self._orchestrator.update_market_price(symbol, price)
+
+    def record_gateway_heartbeat(
+        self,
+        gateway_id: str,
+        sequence_number: int,
+        latency_ms: float = 0.0,
+        timestamp_ns: int | None = None,
+    ) -> GatewayHealthDTO:
+        """Process an inbound heartbeat packet for a registered gateway watchdog.
+
+        Args:
+            gateway_id: Target gateway identifier.
+            sequence_number: Inbound message sequence number.
+            latency_ms: Measured round-trip ping-pong latency (ms).
+            timestamp_ns: Optional epoch nanoseconds timestamp (defaults to time.time_ns()).
+
+        Returns:
+            GatewayHealthDTO: Updated gateway health status snapshot.
+
+        Raises:
+            KeyError: If gateway_id is not registered.
+        """
+        # Functional Purpose: Record heartbeat telemetry and evaluate watchdog connection state.
+        # Explicit Dependency Tracking: HeartbeatWatchdog.record_heartbeat, time.time_ns.
+        # Structural Relationship: Invoked by POST /api/v1/gateways/{gateway_id}/heartbeat.
+        # Defensive Invariant: Positive sequence number, non-negative latency, valid timestamp.
+        wd = self._orchestrator.get_watchdog(gateway_id)
+        if wd is None:
+            raise KeyError(f"Gateway '{gateway_id}' is not registered with a watchdog")
+
+        ts_ns = timestamp_ns if (timestamp_ns is not None and timestamp_ns > 0) else time.time_ns()
+        wd.record_heartbeat(
+            sequence_number=sequence_number,
+            latency_ms=latency_ms,
+            timestamp_ns=ts_ns,
+        )
+
+        health_list = self.get_gateway_health(gateway_id)
+        return health_list[0]

@@ -10,7 +10,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import text
 
 from quant.api.middleware import CorrelationAndTimingMiddleware, register_exception_handlers
-from quant.api.v1.endpoints import auth, events, genotypes, market_data
+from quant.api.v1.endpoints import (
+    auth,
+    events,
+    gateways,
+    genotypes,
+    market_data,
+    orders,
+    risk,
+)
 from quant.core.config import get_settings
 from quant.infrastructure.database.session import engine
 
@@ -53,6 +61,9 @@ def create_application() -> FastAPI:
     app.include_router(genotypes.router, prefix=settings.API_V1_PREFIX)
     app.include_router(auth.router, prefix=settings.API_V1_PREFIX)
     app.include_router(market_data.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(orders.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(risk.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(gateways.router, prefix=settings.API_V1_PREFIX)
 
     # 4. System Health Check Endpoint
     @app.get("/healthz", tags=["System Health"], summary="Liveness & Readiness Probe")
