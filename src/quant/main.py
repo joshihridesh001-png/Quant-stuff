@@ -13,6 +13,7 @@ from quant.api.middleware import CorrelationAndTimingMiddleware, register_except
 from quant.api.v1.endpoints import (
     auth,
     autonomous,
+    econometrics,
     events,
     gateways,
     genotypes,
@@ -81,6 +82,7 @@ def create_application() -> FastAPI:
     app.include_router(providers.router, prefix=settings.API_V1_PREFIX)
     app.include_router(pre_trade.router, prefix=settings.API_V1_PREFIX)
     app.include_router(simulation.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(econometrics.router, prefix=settings.API_V1_PREFIX)
     app.include_router(mcp.router, prefix=settings.API_V1_PREFIX)
 
     # 4. System Health Check Endpoint

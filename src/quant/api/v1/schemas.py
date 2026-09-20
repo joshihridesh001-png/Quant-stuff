@@ -492,3 +492,84 @@ class SimulationRunResponse(BaseModel):
     total_friction_cost: float
     equity_curve: list[float]
     benchmarks: list[SimulationBenchmarkDTO]
+
+
+# ============================================================================
+# Econometric Stationarity & Volatility Rig Schemas
+# ============================================================================
+
+
+class FFDScanPointDTO(BaseModel):
+    """Evaluation point along fractional differentiation spectrum d in [0.0, 1.0]."""
+
+    d: float
+    adf_stat: float
+    adf_pvalue: float
+    correlation: float
+    is_stationary: bool
+
+
+class FFDScanResponse(BaseModel):
+    """Response DTO for memory-preserving fractional differentiation stationarity scan."""
+
+    symbol: str
+    optimal_d: float
+    threshold_pvalue: float
+    points: list[FFDScanPointDTO]
+
+
+class VolatilitySeriesPointDTO(BaseModel):
+    """Realized volatility time-series record."""
+
+    timestamp_ns: int
+    close: float
+    parkinson_vol: float
+    garman_klass_vol: float
+
+
+class VolatilityResponse(BaseModel):
+    """Response DTO for Parkinson and Garman-Klass realized volatility estimators."""
+
+    symbol: str
+    window: int
+    latest_close: float
+    annualized_parkinson_pct: float
+    annualized_garman_klass_pct: float
+    series: list[VolatilitySeriesPointDTO]
+
+
+class TripleBarrierSimulateRequest(BaseModel):
+    """Request parameters to simulate dynamic volatility triple-barrier labeling."""
+
+    symbol: str = Field("NVDA", description="Asset ticker symbol")
+    profit_multiplier: float = Field(2.0, gt=0.0, description="Take-profit barrier multiplier c1")
+    stop_multiplier: float = Field(1.0, gt=0.0, description="Stop-loss barrier multiplier c2")
+    horizon_bars: int = Field(30, ge=5, le=120, description="Vertical holding barrier in bars")
+    volatility_window: int = Field(20, ge=5, le=60, description="Parkinson volatility rolling window")
+    side: int = Field(1, description="Trade direction (+1 Long, -1 Short)")
+
+
+class BarrierTrajectoryPointDTO(BaseModel):
+    """Sample bar point within triple-barrier evaluation window."""
+
+    bar_index: int
+    close_price: float
+    upper_barrier: float
+    lower_barrier: float
+    event_type: str | None = None
+
+
+class TripleBarrierSimulateResponse(BaseModel):
+    """Response DTO for simulated triple-barrier labeling outcome distributions."""
+
+    symbol: str
+    total_events: int
+    take_profit_hits: int
+    stop_loss_hits: int
+    vertical_expiration_hits: int
+    take_profit_pct: float
+    stop_loss_pct: float
+    vertical_expiration_pct: float
+    average_holding_bars: float
+    average_net_return_pct: float
+    sample_trajectory: list[BarrierTrajectoryPointDTO]

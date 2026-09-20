@@ -138,4 +138,24 @@ export const apiClient = {
       method: 'POST',
       body: JSON.stringify({ headline, symbol: ticker }),
     }),
+
+  // Econometrics
+  getFfdSearch: <T>(symbol: string, threshold: number = 0.05) =>
+    apiFetch<T>(`/api/v1/econometrics/ffd/search?symbol=${encodeURIComponent(symbol)}&threshold=${threshold}`),
+  getRealizedVolatility: <T>(symbol: string, window: number = 20) =>
+    apiFetch<T>(`/api/v1/econometrics/volatility/parkinson?symbol=${encodeURIComponent(symbol)}&window=${window}`),
+  simulateTripleBarrier: <T>(params: {
+    symbol: string;
+    profit_multiplier: number;
+    stop_multiplier: number;
+    horizon_bars: number;
+    volatility_window: number;
+    side: number;
+  }) =>
+    apiFetch<T>('/api/v1/econometrics/triple-barrier/simulate', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }),
 };
+
+export const quantApi = apiClient;

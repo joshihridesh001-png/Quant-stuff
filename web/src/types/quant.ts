@@ -221,3 +221,65 @@ export interface PreTradeDecision {
   reason: string;
   timestamp_ns: number;
 }
+
+export interface FFDScanPoint {
+  d: number;
+  adf_stat: number;
+  adf_pvalue: number;
+  correlation: number;
+  is_stationary: boolean;
+}
+
+export interface FFDScanResponse {
+  symbol: string;
+  optimal_d: number;
+  threshold_pvalue: number;
+  points: FFDScanPoint[];
+}
+
+export interface VolatilitySeriesPoint {
+  timestamp_ns: number;
+  close: number;
+  parkinson_vol: number;
+  garman_klass_vol: number;
+}
+
+export interface VolatilityResponse {
+  symbol: string;
+  window: number;
+  latest_close: number;
+  annualized_parkinson_pct: number;
+  annualized_garman_klass_pct: number;
+  series: VolatilitySeriesPoint[];
+}
+
+export interface TripleBarrierSimulateRequest {
+  symbol: string;
+  profit_multiplier: number;
+  stop_multiplier: number;
+  horizon_bars: number;
+  volatility_window: number;
+  side: number;
+}
+
+export interface BarrierTrajectoryPoint {
+  bar_index: number;
+  close_price: number;
+  upper_barrier: number;
+  lower_barrier: number;
+  event_type: 'TAKE_PROFIT' | 'STOP_LOSS' | 'EXPIRATION' | null;
+}
+
+export interface TripleBarrierSimulateResponse {
+  symbol: string;
+  total_events: number;
+  take_profit_hits: number;
+  stop_loss_hits: number;
+  vertical_expiration_hits: number;
+  take_profit_pct: number;
+  stop_loss_pct: number;
+  vertical_expiration_pct: number;
+  average_holding_bars: number;
+  average_net_return_pct: number;
+  sample_trajectory: BarrierTrajectoryPoint[];
+}
