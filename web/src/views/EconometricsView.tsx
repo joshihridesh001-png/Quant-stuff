@@ -97,12 +97,24 @@ export const EconometricsView: React.FC = () => {
     }
   }, [selectedSymbol, profitMult, stopMult, horizonBars, volWindow, tradeSide]);
 
-  // Initial & Symbol change data load
+  // Decoupled data fetch effects:
+  // 1. Stationarity scan only recalibrates when symbol or pValThreshold changes
   useEffect(() => {
     loadFfdData();
+  }, [loadFfdData]);
+
+  // 2. Realized volatility only recalibrates when symbol or window changes
+  useEffect(() => {
     loadVolData();
-    runTripleBarrierSim();
-  }, [loadFfdData, loadVolData, runTripleBarrierSim]);
+  }, [loadVolData]);
+
+  // 3. Dynamic barrier simulator recalibrates with a 200ms debounce to prevent slider spam
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      runTripleBarrierSim();
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [runTripleBarrierSim]);
 
   const optimalPoint = ffdData?.points.find((p) => p.d === ffdData.optimal_d);
 
@@ -183,7 +195,9 @@ export const EconometricsView: React.FC = () => {
             <Percent className="w-4 h-4 text-cyan-400" />
           </div>
           <div className="text-2xl font-mono font-bold text-cyan-400 mt-2">
-            {optimalPoint ? (optimalPoint.correlation * 100).toFixed(1) + '%' : '92.4%'}
+            {optimalPoint && typeof optimalPoint.correlation === 'number'
+              ? (optimalPoint.correlation * 100).toFixed(1) + '%'
+              : '92.4%'}
           </div>
           <p className="text-[11px] text-slate-500 mt-1">
             Pearson correlation preserved vs original series
@@ -196,7 +210,9 @@ export const EconometricsView: React.FC = () => {
             <TrendingUp className="w-4 h-4 text-amber-400" />
           </div>
           <div className="text-2xl font-mono font-bold text-amber-400 mt-2">
-            {volData ? `${volData.annualized_parkinson_pct}%` : '24.8%'}
+            {typeof volData?.annualized_parkinson_pct === 'number'
+              ? `${volData.annualized_parkinson_pct}%`
+              : '24.8%'}
           </div>
           <p className="text-[11px] text-slate-500 mt-1">
             Annualized high-low range variance estimator
@@ -209,7 +225,9 @@ export const EconometricsView: React.FC = () => {
             <Activity className="w-4 h-4 text-purple-400" />
           </div>
           <div className="text-2xl font-mono font-bold text-purple-400 mt-2">
-            {volData ? `${volData.annualized_garman_klass_pct}%` : '26.1%'}
+            {typeof volData?.annualized_garman_klass_pct === 'number'
+              ? `${volData.annualized_garman_klass_pct}%`
+              : '26.1%'}
           </div>
           <p className="text-[11px] text-slate-500 mt-1">
             Opening/closing jump and range variance
@@ -304,7 +322,7 @@ export const EconometricsView: React.FC = () => {
                   label={{ value: `α=${pValThreshold}`, fill: '#f43f5e', fontSize: 10, position: 'insideTopLeft' }}
                 />
                 <ReferenceLine
-                  xAxisId={0}
+                  yAxisId="left"
                   x={ffdData.optimal_d}
                   stroke="#10b981"
                   strokeWidth={2}
@@ -499,7 +517,9 @@ export const EconometricsView: React.FC = () => {
                 (tbData?.average_net_return_pct ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
               }`}
             >
-              {tbData ? `${tbData.average_net_return_pct > 0 ? '+' : ''}${tbData.average_net_return_pct}%` : '0.00%'}
+              {typeof tbData?.average_net_return_pct === 'number'
+                ? `${tbData.average_net_return_pct > 0 ? '+' : ''}${tbData.average_net_return_pct.toFixed(2)}%`
+                : '0.00%'}
             </div>
           </div>
         </div>
@@ -578,7 +598,9 @@ export const EconometricsView: React.FC = () => {
           </div>
           <span className="text-xs font-mono text-slate-400">
             Current {selectedSymbol} Close:{' '}
-            <span className="text-white font-bold">${volData?.latest_close.toFixed(2) ?? '120.00'}</span>
+            <span className="text-white font-bold">
+              ${typeof volData?.latest_close === 'number' ? volData.latest_close.toFixed(2) : '120.00'}
+            </span>
           </span>
         </div>
 

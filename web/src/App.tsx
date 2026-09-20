@@ -9,6 +9,8 @@ import { StrategySwarmView } from './views/StrategySwarmView';
 import { SimulationRiskView } from './views/SimulationRiskView';
 import { Activity, Shield, Terminal, Cpu } from 'lucide-react';
 
+import { ErrorBoundary } from './components/ErrorBoundary';
+
 const WorkbenchContent: React.FC = () => {
   const [activePillar, setActivePillar] = useState<ActivePillar>('news');
 
@@ -43,7 +45,9 @@ const WorkbenchContent: React.FC = () => {
 
       {/* Main Quantitative Pillar View Container */}
       <main className="flex-1 px-4 sm:px-6 py-4 max-w-[1800px] w-full mx-auto">
-        {renderActiveView()}
+        <ErrorBoundary key={activePillar} fallbackTitle={`Pillar: ${activePillar.toUpperCase()} Error`}>
+          {renderActiveView()}
+        </ErrorBoundary>
       </main>
 
       {/* Bottom Quantitative System Status Bar */}
