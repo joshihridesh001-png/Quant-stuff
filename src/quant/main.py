@@ -15,6 +15,7 @@ from quant.api.v1.endpoints import (
     autonomous,
     econometrics,
     events,
+    game_theory,
     gateways,
     genotypes,
     market_data,
@@ -83,6 +84,7 @@ def create_application() -> FastAPI:
     app.include_router(pre_trade.router, prefix=settings.API_V1_PREFIX)
     app.include_router(simulation.router, prefix=settings.API_V1_PREFIX)
     app.include_router(econometrics.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(game_theory.router, prefix=settings.API_V1_PREFIX)
     app.include_router(mcp.router, prefix=settings.API_V1_PREFIX)
 
     # 4. System Health Check Endpoint

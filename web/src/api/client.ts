@@ -104,7 +104,8 @@ export const apiClient = {
   getRiskStatus: <T>() => apiFetch<T>('/api/v1/risk/status'),
 
   // Genotypes
-  getParetoGenotypes: <T>() => apiFetch<T>('/api/v1/genotypes/pareto?generation=0'),
+  getParetoGenotypes: <T>(generation: number = 0) =>
+    apiFetch<T>(`/api/v1/genotypes/pareto?generation=${generation}`),
   seedGenotypes: (count: number) =>
     apiFetch('/api/v1/genotypes/seed', {
       method: 'POST',
@@ -155,6 +156,15 @@ export const apiClient = {
     apiFetch<T>('/api/v1/econometrics/triple-barrier/simulate', {
       method: 'POST',
       body: JSON.stringify(params),
+    }),
+
+  // Game Theory & Regimes
+  getRegimeStatus: <T>(symbol: string, cusumThreshold: number = 3.0, cusumDrift: number = 0.5) =>
+    apiFetch<T>(`/api/v1/game-theory/regimes?symbol=${encodeURIComponent(symbol)}&cusum_threshold=${cusumThreshold}&cusum_drift=${cusumDrift}`),
+  computePayoffMatrix: <T>(ambiguityBeta: number, riskAversion: number = 2.0) =>
+    apiFetch<T>('/api/v1/game-theory/payoff-matrix', {
+      method: 'POST',
+      body: JSON.stringify({ ambiguity_beta: ambiguityBeta, risk_aversion: riskAversion }),
     }),
 };
 

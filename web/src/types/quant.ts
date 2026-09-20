@@ -283,3 +283,47 @@ export interface TripleBarrierSimulateResponse {
   average_net_return_pct: number;
   sample_trajectory: BarrierTrajectoryPoint[];
 }
+
+export interface CUSUMPoint {
+  timestamp_ns: number;
+  bar_index: number;
+  s_pos: number;
+  s_neg: number;
+  return_pct: number;
+  is_shock: boolean;
+}
+
+export interface RegimeHistoryPoint {
+  timestamp_ns: number;
+  bar_index: number;
+  p_absorption: number;
+  p_momentum: number;
+  p_panic: number;
+}
+
+export interface RegimeStatusResponse {
+  symbol: string;
+  current_regime: 'LOW_VOL_ABSORPTION' | 'MOMENTUM_CASCADE' | 'PANIC_LIQUIDITY_TRAP';
+  p_absorption: number;
+  p_momentum: number;
+  p_panic: number;
+  dirichlet_alphas: number[];
+  confidence_pct: number;
+  thermodynamic_beta: number;
+  cusum_alarm: boolean;
+  cusum_threshold_h: number;
+  cusum_s_pos: number;
+  cusum_s_neg: number;
+  cusum_series: CUSUMPoint[];
+  regime_history: RegimeHistoryPoint[];
+}
+
+export interface PayoffMatrixResponse {
+  actions: string[];
+  counterparties: string[];
+  payoff_matrix: number[][];
+  regret_matrix: number[][];
+  worst_case_regrets: number[];
+  optimal_action: string;
+  worst_case_counterparty_probs: number[];
+}

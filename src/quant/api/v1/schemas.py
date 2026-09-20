@@ -573,3 +573,67 @@ class TripleBarrierSimulateResponse(BaseModel):
     average_holding_bars: float
     average_net_return_pct: float
     sample_trajectory: list[BarrierTrajectoryPointDTO]
+
+
+# ============================================================================
+# Bayesian Game Theory & Jump Regimes Schemas
+# ============================================================================
+
+
+class CUSUMPointDTO(BaseModel):
+    """Time-series observation of two-sided CUSUM detector."""
+
+    timestamp_ns: int
+    bar_index: int
+    s_pos: float
+    s_neg: float
+    return_pct: float
+    is_shock: bool
+
+
+class RegimeHistoryPointDTO(BaseModel):
+    """Historical point in 3-simplex regime evolution."""
+
+    timestamp_ns: int
+    bar_index: int
+    p_absorption: float
+    p_momentum: float
+    p_panic: float
+
+
+class RegimeStatusResponse(BaseModel):
+    """Response DTO for Bayesian jump regime estimation."""
+
+    symbol: str
+    current_regime: str
+    p_absorption: float
+    p_momentum: float
+    p_panic: float
+    dirichlet_alphas: list[float]
+    confidence_pct: float
+    thermodynamic_beta: float
+    cusum_alarm: bool
+    cusum_threshold_h: float
+    cusum_s_pos: float
+    cusum_s_neg: float
+    cusum_series: list[CUSUMPointDTO]
+    regime_history: list[RegimeHistoryPointDTO]
+
+
+class PayoffMatrixRequest(BaseModel):
+    """Request DTO to evaluate minimax regret game."""
+
+    ambiguity_beta: float = Field(1.5, ge=0.01, le=20.0, description="Thermodynamic ambiguity temperature")
+    risk_aversion: float = Field(2.0, ge=0.1, le=10.0, description="Arrow-Pratt risk aversion parameter")
+
+
+class PayoffMatrixResponse(BaseModel):
+    """Response DTO for Stackelberg minimax regret matrix."""
+
+    actions: list[str]
+    counterparties: list[str]
+    payoff_matrix: list[list[float]]
+    regret_matrix: list[list[float]]
+    worst_case_regrets: list[float]
+    optimal_action: str
+    worst_case_counterparty_probs: list[float]
