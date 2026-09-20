@@ -210,47 +210,47 @@ export const SimulationRiskView: React.FC = () => {
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3.5">
             <span className="text-[10px] uppercase font-mono text-slate-400 block">Final Equity</span>
             <div className="text-xl font-mono font-bold text-emerald-400 mt-1">
-              ${simResult.final_equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              ${(simResult.final_equity ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
             <span className="text-[11px] font-mono text-slate-500">
-              Return: {simResult.total_return_pct > 0 ? '+' : ''}{simResult.total_return_pct.toFixed(2)}%
+              Return: {(simResult.total_return_pct ?? 0) > 0 ? '+' : ''}{(simResult.total_return_pct ?? 0).toFixed(2)}%
             </span>
           </div>
 
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3.5">
             <span className="text-[10px] uppercase font-mono text-slate-400 block">CAGR & Volatility</span>
             <div className="text-xl font-mono font-bold text-cyan-400 mt-1">
-              {simResult.cagr_pct.toFixed(1)}%
+              {(simResult.cagr_pct ?? 0).toFixed(1)}%
             </div>
             <span className="text-[11px] font-mono text-slate-500">
-              &sigma;_ann: {simResult.annualized_volatility_pct.toFixed(1)}%
+              &sigma;_ann: {(simResult.annualized_volatility_pct ?? 0).toFixed(1)}%
             </span>
           </div>
 
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3.5">
             <span className="text-[10px] uppercase font-mono text-slate-400 block">Sharpe / Sortino</span>
             <div className="text-xl font-mono font-bold text-white mt-1">
-              {simResult.sharpe_ratio.toFixed(2)}
+              {(simResult.sharpe_ratio ?? 0).toFixed(2)}
             </div>
             <span className="text-[11px] font-mono text-slate-500">
-              Sortino: {simResult.sortino_ratio.toFixed(2)}
+              Sortino: {(simResult.sortino_ratio ?? 0).toFixed(2)}
             </span>
           </div>
 
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3.5">
             <span className="text-[10px] uppercase font-mono text-slate-400 block">Max Drawdown</span>
             <div className="text-xl font-mono font-bold text-rose-400 mt-1">
-              {simResult.max_drawdown_pct.toFixed(1)}%
+              {(simResult.max_drawdown_pct ?? 0).toFixed(1)}%
             </div>
             <span className="text-[11px] font-mono text-slate-500">
-              Calmar: {simResult.calmar_ratio.toFixed(2)}
+              Calmar: {(simResult.calmar_ratio ?? 0).toFixed(2)}
             </span>
           </div>
 
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3.5">
             <span className="text-[10px] uppercase font-mono text-slate-400 block">Deflated Sharpe</span>
             <div className="text-xl font-mono font-bold text-amber-400 mt-1">
-              {simResult.deflated_sharpe_ratio.toFixed(2)}
+              {(simResult.deflated_sharpe_ratio ?? 0).toFixed(2)}
             </div>
             <span className="text-[10px] font-mono text-emerald-400 font-semibold">
               {simResult.is_statistically_significant ? '★ p<0.05 Certified' : 'Not Significant'}
@@ -260,10 +260,10 @@ export const SimulationRiskView: React.FC = () => {
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3.5">
             <span className="text-[10px] uppercase font-mono text-slate-400 block">Friction Paid</span>
             <div className="text-xl font-mono font-bold text-slate-300 mt-1">
-              ${simResult.total_friction_cost.toFixed(2)}
+              ${(simResult.total_friction_cost ?? 0).toFixed(2)}
             </div>
             <span className="text-[11px] font-mono text-slate-500">
-              CVaR(95): {simResult.realized_cvar_95_pct.toFixed(1)}%
+              CVaR(95): {(simResult.realized_cvar_95_pct ?? 0).toFixed(1)}%
             </span>
           </div>
         </div>
@@ -366,46 +366,46 @@ export const SimulationRiskView: React.FC = () => {
                     Autonomous Quant Engine
                   </td>
                   <td className="py-2.5 text-right font-bold text-emerald-400">
-                    +{simResult.total_return_pct.toFixed(2)}%
+                    +{(simResult.total_return_pct ?? 0).toFixed(2)}%
                   </td>
                   <td className="py-2.5 text-right text-emerald-400">
-                    +{simResult.cagr_pct.toFixed(2)}%
+                    +{(simResult.cagr_pct ?? 0).toFixed(2)}%
                   </td>
                   <td className="py-2.5 text-right text-slate-300">
-                    {simResult.annualized_volatility_pct.toFixed(1)}%
+                    {(simResult.annualized_volatility_pct ?? 0).toFixed(1)}%
                   </td>
                   <td className="py-2.5 text-right font-bold text-emerald-400">
-                    {simResult.sharpe_ratio.toFixed(2)}
+                    {(simResult.sharpe_ratio ?? 0).toFixed(2)}
                   </td>
                   <td className="py-2.5 text-right text-rose-400">
-                    {simResult.max_drawdown_pct.toFixed(1)}%
+                    {(simResult.max_drawdown_pct ?? 0).toFixed(1)}%
                   </td>
                   <td className="py-2.5 text-right text-emerald-400">+4.2%</td>
                   <td className="py-2.5 text-right text-slate-300">0.85</td>
                   <td className="py-2.5 text-right text-emerald-400">1.82</td>
                 </tr>
 
-                {simResult.benchmarks.map((bm) => (
+                {(simResult.benchmarks ?? []).map((bm) => (
                   <tr key={bm.name} className="text-slate-300 hover:bg-slate-800/30">
                     <td className="py-2.5 text-slate-400">{bm.name}</td>
                     <td className="py-2.5 text-right">
-                      {bm.total_return > 0 ? '+' : ''}{(bm.total_return * 100).toFixed(1)}%
+                      {(bm.total_return ?? 0) > 0 ? '+' : ''}{((bm.total_return ?? 0) * 100).toFixed(1)}%
                     </td>
                     <td className="py-2.5 text-right">
-                      {(bm.annualized_return * 100).toFixed(1)}%
+                      {((bm.annualized_return ?? 0) * 100).toFixed(1)}%
                     </td>
                     <td className="py-2.5 text-right">
-                      {(bm.annualized_volatility * 100).toFixed(1)}%
+                      {((bm.annualized_volatility ?? 0) * 100).toFixed(1)}%
                     </td>
                     <td className="py-2.5 text-right font-bold">
-                      {bm.sharpe_ratio.toFixed(2)}
+                      {(bm.sharpe_ratio ?? 0).toFixed(2)}
                     </td>
                     <td className="py-2.5 text-right text-rose-400">
-                      {(bm.max_drawdown * 100).toFixed(1)}%
+                      {((bm.max_drawdown ?? 0) * 100).toFixed(1)}%
                     </td>
-                    <td className="py-2.5 text-right">{(bm.alpha * 100).toFixed(1)}%</td>
-                    <td className="py-2.5 text-right">{bm.beta.toFixed(2)}</td>
-                    <td className="py-2.5 text-right">{bm.information_ratio.toFixed(2)}</td>
+                    <td className="py-2.5 text-right">{((bm.alpha ?? 0) * 100).toFixed(1)}%</td>
+                    <td className="py-2.5 text-right">{(bm.beta ?? 0).toFixed(2)}</td>
+                    <td className="py-2.5 text-right">{(bm.information_ratio ?? 0).toFixed(2)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -487,13 +487,13 @@ export const SimulationRiskView: React.FC = () => {
                           <span className="text-slate-500 text-[10px] ml-1">({fillPct}%)</span>
                         </td>
                         <td className="py-2.5 text-right text-slate-300">
-                          ${o.arrival_price.toFixed(2)}
+                          ${(o.arrival_price ?? 0).toFixed(2)}
                         </td>
                         <td className="py-2.5 text-right font-bold text-white">
-                          ${o.vwap_execution_price > 0 ? o.vwap_execution_price.toFixed(2) : '-'}
+                          ${(o.vwap_execution_price ?? 0) > 0 ? (o.vwap_execution_price ?? 0).toFixed(2) : '-'}
                         </td>
                         <td className="py-2.5 text-right text-slate-400">
-                          ${o.total_fees_paid.toFixed(2)}
+                          ${(o.total_fees_paid ?? 0).toFixed(2)}
                         </td>
                         <td className="py-2.5 text-center">
                           {o.is_closed ? (
@@ -535,9 +535,9 @@ export const SimulationRiskView: React.FC = () => {
                         <tr key={child.child_id} className="text-slate-300">
                           <td className="py-2 text-slate-400">{child.child_id.substring(0, 8)}...</td>
                           <td className="py-2 text-right">{child.quantity}</td>
-                          <td className="py-2 text-right text-emerald-400 font-bold">${child.price.toFixed(2)}</td>
-                          <td className="py-2 text-right text-amber-400">${child.spread_slippage.toFixed(3)}</td>
-                          <td className="py-2 text-right text-slate-400">${child.fee.toFixed(2)}</td>
+                          <td className="py-2 text-right text-emerald-400 font-bold">${(child.price ?? 0).toFixed(2)}</td>
+                          <td className="py-2 text-right text-amber-400">${(child.spread_slippage ?? 0).toFixed(3)}</td>
+                          <td className="py-2 text-right text-slate-400">${(child.fee ?? 0).toFixed(2)}</td>
                         </tr>
                       ))}
                     </tbody>

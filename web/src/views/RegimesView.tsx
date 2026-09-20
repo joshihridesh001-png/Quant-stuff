@@ -192,12 +192,12 @@ export const RegimesView: React.FC = () => {
           <div className="flex items-center justify-between">
             <span className="text-xs font-mono text-slate-400">Posterior Confidence</span>
             <span className="text-xs font-mono text-purple-400 font-bold">
-              {regimeData?.confidence_pct.toFixed(1) ?? '75.0'}%
+              {typeof regimeData?.confidence_pct === 'number' ? regimeData.confidence_pct.toFixed(1) : '75.0'}%
             </span>
           </div>
           <div className="text-2xl font-mono font-bold text-white mt-2">
             {regimeData
-              ? `${(Math.max(regimeData.p_absorption, regimeData.p_momentum, regimeData.p_panic) * 100).toFixed(1)}%`
+              ? `${(Math.max(regimeData.p_absorption ?? 0, regimeData.p_momentum ?? 0, regimeData.p_panic ?? 0) * 100).toFixed(1)}%`
               : '70.0%'}
           </div>
           <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2 overflow-hidden">
@@ -227,8 +227,8 @@ export const RegimesView: React.FC = () => {
             )}
           </div>
           <p className="text-[11px] text-slate-500 mt-2 font-mono">
-            S+ = {regimeData?.cusum_s_pos.toFixed(2) ?? '0.00'} | S- ={' '}
-            {regimeData?.cusum_s_neg.toFixed(2) ?? '0.00'} (h={cusumThreshold})
+            S+ = {typeof regimeData?.cusum_s_pos === 'number' ? regimeData.cusum_s_pos.toFixed(2) : '0.00'} | S- ={' '}
+            {typeof regimeData?.cusum_s_neg === 'number' ? regimeData.cusum_s_neg.toFixed(2) : '0.00'} (h={cusumThreshold})
           </p>
         </div>
 
@@ -238,7 +238,7 @@ export const RegimesView: React.FC = () => {
             <Thermometer className="w-4 h-4 text-amber-400" />
           </div>
           <div className="text-2xl font-mono font-bold text-amber-400 mt-2">
-            &beta; = {regimeData?.thermodynamic_beta.toFixed(2) ?? '1.50'}
+            &beta; = {typeof regimeData?.thermodynamic_beta === 'number' ? regimeData.thermodynamic_beta.toFixed(2) : '1.50'}
           </div>
           <p className="text-[11px] text-slate-500 mt-1">
             Fournier-Guillin concentration radius temperature
@@ -532,10 +532,10 @@ export const RegimesView: React.FC = () => {
                       <td
                         key={cIdx}
                         className={`py-2.5 text-right font-bold ${
-                          val >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                          (val ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
                         }`}
                       >
-                        {val >= 0 ? `+${val.toFixed(1)}` : val.toFixed(1)}
+                        {(val ?? 0) >= 0 ? `+${(val ?? 0).toFixed(1)}` : (val ?? 0).toFixed(1)}
                       </td>
                     ))}
                   </tr>
@@ -568,7 +568,7 @@ export const RegimesView: React.FC = () => {
               <tbody className="divide-y divide-slate-800/60">
                 {payoffData?.actions.map((act, rIdx) => {
                   const isOptimal = act === payoffData.optimal_action;
-                  const maxRegret = payoffData.worst_case_regrets[rIdx];
+                  const maxRegret = payoffData.worst_case_regrets?.[rIdx] ?? 0;
                   return (
                     <tr
                       key={act}
@@ -584,7 +584,7 @@ export const RegimesView: React.FC = () => {
                       </td>
                       {payoffData.regret_matrix[rIdx].map((val, cIdx) => (
                         <td key={cIdx} className="py-2.5 text-right text-slate-400">
-                          {val.toFixed(1)}
+                          {(val ?? 0).toFixed(1)}
                         </td>
                       ))}
                       <td
@@ -592,7 +592,7 @@ export const RegimesView: React.FC = () => {
                           isOptimal ? 'text-emerald-400 text-sm' : 'text-amber-400'
                         }`}
                       >
-                        {maxRegret.toFixed(1)} bps
+                        {(maxRegret ?? 0).toFixed(1)} bps
                       </td>
                     </tr>
                   );
