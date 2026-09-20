@@ -23,6 +23,7 @@ from quant.api.v1.endpoints import (
     pre_trade,
     providers,
     risk,
+    simulation,
     streaming,
 )
 from quant.core.config import get_settings
@@ -79,6 +80,7 @@ def create_application() -> FastAPI:
     app.include_router(news.router, prefix=settings.API_V1_PREFIX)
     app.include_router(providers.router, prefix=settings.API_V1_PREFIX)
     app.include_router(pre_trade.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(simulation.router, prefix=settings.API_V1_PREFIX)
     app.include_router(mcp.router, prefix=settings.API_V1_PREFIX)
 
     # 4. System Health Check Endpoint
