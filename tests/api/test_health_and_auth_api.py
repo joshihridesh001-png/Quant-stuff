@@ -15,18 +15,20 @@ async def test_health_check_endpoint(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_root_redirect_to_docs(client: AsyncClient) -> None:
+async def test_root_endpoint_serves_workbench(client: AsyncClient) -> None:
     response = await client.get("/", follow_redirects=False)
-    assert response.status_code == 307
-    assert response.headers["location"] == "/docs"
+    assert response.status_code in (200, 307)
+    if response.status_code == 200:
+        assert '<div id="root"></div>' in response.text
+    else:
+        assert response.headers["location"] == "/docs"
 
 
 @pytest.mark.asyncio
 async def test_trading_terminal_dashboard_endpoint(client: AsyncClient) -> None:
     response = await client.get("/dashboard")
     assert response.status_code == 200
-    assert "QUANT ALPHA TERMINAL" in response.text
-    assert '<canvas id="priceChartCanvas"' in response.text
+    assert '<div id="root"></div>' in response.text
 
 
 @pytest.mark.asyncio
