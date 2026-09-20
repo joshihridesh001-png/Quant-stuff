@@ -208,9 +208,27 @@ export interface NewsItem {
   summary?: string;
   source: string;
   url?: string;
-  datetime: number;
+  datetime?: number;
+  published_at?: string;
   sentiment_score?: number;
   sentiment_label?: string;
+}
+
+export interface PriceReactionPredictionDTO {
+  ticker: string;
+  event_type: string;
+  current_price: number;
+  expected_delta_price: number;
+  target_price: number;
+  prob_up: number;
+  prob_down: number;
+  barrier_upper: number;
+  barrier_lower: number;
+  signal: string;
+  confidence: number;
+  predicted_trajectory: [number, number][];
+  calculation_latency_ms: number;
+  created_at: string;
 }
 
 export interface NewsDecayState {

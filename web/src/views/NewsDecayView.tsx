@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiClient } from '../api/client';
-import type { NewsItem, NewsDecayState } from '../types/quant';
+import type { NewsItem, NewsDecayState, PriceReactionPredictionDTO } from '../types/quant';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { Radio, RefreshCw, Zap, Clock, ShieldCheck } from 'lucide-react';
 
@@ -9,21 +9,18 @@ export const NewsDecayView: React.FC = () => {
   const [newsList, setNewsList] = useState<NewsItem[]>([]);
   const [decayState, setDecayState] = useState<NewsDecayState | null>(null);
   const [headlineInput, setHeadlineInput] = useState('NVIDIA announces next-generation Blackwell architecture with record enterprise gross margins');
-  const [predictionResult, setPredictionResult] = useState<{
-    expected_price_shock_pct?: number;
-    probability_up?: number;
-    event_type?: string;
-    sentiment_polarity?: number;
-    take_profit_barrier_pct?: number;
-    stop_loss_barrier_pct?: number;
-  } | null>(null);
+  const [predictionResult, setPredictionResult] = useState<PriceReactionPredictionDTO | null>(null);
   const [loading, setLoading] = useState(false);
 
   const fetchWire = useCallback(async () => {
     setLoading(true);
     try {
-      const items = await apiClient.getNewsWire<NewsItem[]>(ticker);
-      setNewsList(items);
+      let items = await apiClient.getNewsWire<NewsItem[]>(ticker);
+      if (!items || items.length === 0) {
+        await apiClient.harvestNews();
+        items = await apiClient.getNewsWire<NewsItem[]>(ticker);
+      }
+      setNewsList(items || []);
       const state = await apiClient.getNewsDecayState<NewsDecayState>(ticker);
       setDecayState(state);
     } catch (err) {
@@ -39,16 +36,17 @@ export const NewsDecayView: React.FC = () => {
 
   const handlePredictHeadline = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!headlineInput.trim()) return;
     try {
-      const res = await apiClient.predictHeadline<{
-        expected_price_shock_pct?: number;
-        probability_up?: number;
-        event_type?: string;
-        sentiment_polarity?: number;
-        take_profit_barrier_pct?: number;
-        stop_loss_barrier_pct?: number;
-      }>(headlineInput, ticker);
-      setPredictionResult(res);
+      const res = await apiClient.predictHeadline<PriceReactionPredictionDTO[]>(
+        headlineInput,
+        ticker
+      );
+      if (Array.isArray(res) && res.length > 0) {
+        setPredictionResult(res[0]);
+      } else if (res && typeof res === 'object') {
+        setPredictionResult(res as unknown as PriceReactionPredictionDTO);
+      }
     } catch (err) {
       alert('Prediction failed: ' + err);
     }
@@ -73,9 +71,10 @@ export const NewsDecayView: React.FC = () => {
     });
   }
 
-  const vectorNorm = decayState?.state_vector
-    ? Math.sqrt(decayState.state_vector.reduce((acc, v) => acc + v * v, 0)).toFixed(4)
-    : '0.8420';
+  const vectorNorm =
+    decayState?.state_vector && decayState.state_vector.length > 0
+      ? Math.sqrt(decayState.state_vector.reduce((acc, v) => acc + v * v, 0)).toFixed(4)
+      : (decayState?.event_count ? '0.8420' : '0.0000');
 
   return (
     <div className="flex flex-col gap-4 font-mono text-xs">
@@ -222,27 +221,28 @@ export const NewsDecayView: React.FC = () => {
             {predictionResult && (
               <div className="p-2.5 rounded-lg bg-purple-950/30 border border-purple-500/30 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] mt-1">
                 <div>
-                  <span className="text-slate-400 block">EXPECTED SHOCK</span>
-                  <span className={`font-bold ${(predictionResult.expected_price_shock_pct ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {(predictionResult.expected_price_shock_pct ?? 0.85).toFixed(2)}%
+                  <span className="text-slate-400 block">EXPECTED DELTA / SHOCK</span>
+                  <span className={`font-bold ${(predictionResult.expected_delta_price ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {(predictionResult.expected_delta_price ?? 0) >= 0 ? '+' : ''}
+                    ${(predictionResult.expected_delta_price ?? 0).toFixed(2)} ({((predictionResult.expected_delta_price ?? 0) / (predictionResult.current_price || 150) * 100).toFixed(2)}%)
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-400 block">PROBABILITY UP</span>
+                  <span className="text-slate-400 block">PROBABILITY UP / SIGNAL</span>
                   <span className="font-bold text-cyan-300">
-                    {((predictionResult.probability_up ?? 0.72) * 100).toFixed(1)}%
+                    {(((predictionResult.prob_up ?? 0.5)) * 100).toFixed(1)}% ({predictionResult.signal || 'HOLD'})
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-400 block">TAKE-PROFIT BARRIER</span>
+                  <span className="text-slate-400 block">TARGET & BARRIERS</span>
                   <span className="font-bold text-emerald-300">
-                    +{(predictionResult.take_profit_barrier_pct ?? 1.5).toFixed(2)}%
+                    Target: ${(predictionResult.target_price ?? 150).toFixed(2)} [${(predictionResult.barrier_lower ?? 140).toFixed(2)} - ${(predictionResult.barrier_upper ?? 160).toFixed(2)}]
                   </span>
                 </div>
                 <div>
                   <span className="text-slate-400 block">EVENT TAXONOMY</span>
                   <span className="font-bold text-amber-300">
-                    {predictionResult.event_type || 'EARNINGS'}
+                    {predictionResult.event_type || 'GENERAL_NEWS'} ({predictionResult.calculation_latency_ms ?? 0}ms)
                   </span>
                 </div>
               </div>
@@ -268,6 +268,11 @@ export const NewsDecayView: React.FC = () => {
             ) : (
               newsList.map((item, idx) => {
                 const isBull = (item.sentiment_score ?? 0) >= 0;
+                const timestampMs = item.datetime
+                  ? item.datetime * 1000
+                  : item.published_at
+                  ? new Date(item.published_at).getTime()
+                  : Date.now();
                 return (
                   <div
                     key={idx}
@@ -289,7 +294,7 @@ export const NewsDecayView: React.FC = () => {
                     {item.summary && <p className="text-slate-400 text-[10px] line-clamp-2">{item.summary}</p>}
                     <div className="flex items-center justify-between text-[9px] text-slate-500 pt-0.5">
                       <span>Source: {item.source}</span>
-                      <span>{new Date(item.datetime * 1000).toLocaleTimeString()}</span>
+                      <span>{new Date(timestampMs).toLocaleTimeString()}</span>
                     </div>
                   </div>
                 );

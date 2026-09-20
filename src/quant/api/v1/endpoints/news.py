@@ -13,7 +13,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from quant.api.dependencies import get_current_user, get_news_prediction_service
+from quant.api.dependencies import (
+    get_current_user,
+    get_event_service,
+    get_news_prediction_service,
+)
+from quant.services.event_service import EventService
 from quant.services.news_prediction_service import NewsPredictionService
 
 logger = logging.getLogger(__name__)
@@ -93,11 +98,16 @@ async def get_latest_news_predictions(
 )
 async def harvest_news_feed(
     service: NewsPredictionService = Depends(get_news_prediction_service),
+    event_service: EventService = Depends(get_event_service),
     current_user: Any = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
     """Poll all configured financial RSS feeds, classify breaking events, and compute price shocks."""
     try:
+        if service._event_service is None:
+            service._event_service = event_service
         predictions = await service.harvest_and_predict(fallback_to_synthetic=True)
+        if hasattr(event_service.event_repo, "session"):
+            await event_service.event_repo.session.commit()
         return [_serialize_prediction(p) for p in predictions]
     except Exception as e:
         logger.error("Error during news harvest: %s", e)
@@ -115,10 +125,13 @@ async def harvest_news_feed(
 async def predict_custom_headline(
     request: NewsPredictionRequest,
     service: NewsPredictionService = Depends(get_news_prediction_service),
+    event_service: EventService = Depends(get_event_service),
     current_user: Any = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
     """Classify headline sentiment, extract entities, and forecast Triple-Barrier price movement."""
     try:
+        if service._event_service is None:
+            service._event_service = event_service
         predictions = await service.predict_headline(
             headline=request.headline,
             summary=request.summary,

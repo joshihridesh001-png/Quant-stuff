@@ -5,7 +5,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from quant.api.dependencies import get_event_service, require_api_key
+from quant.api.dependencies import (
+    get_event_service,
+    get_news_prediction_service,
+    require_api_key,
+)
 from quant.api.v1.schemas import (
     ActiveStateResponse,
     BatchEventIngestRequest,
@@ -14,6 +18,7 @@ from quant.api.v1.schemas import (
     EventResponse,
 )
 from quant.services.event_service import EventService
+from quant.services.news_prediction_service import NewsPredictionService
 
 router = APIRouter(prefix="/events", tags=["News Ingestion & State"])
 
@@ -130,8 +135,15 @@ async def get_active_news_state(
         False, description="Balance dense embeddings with scalar signals using projected subspace"
     ),
     event_service: EventService = Depends(get_event_service),
+    news_service: NewsPredictionService = Depends(get_news_prediction_service),
 ) -> ActiveStateResponse:
-    """Compute active time-decayed state vector S_news^{(k)}(t) for asset k."""
+    """Compute active time-decayed state vector S_news^{(k)}(t) for asset k.
+
+    Purpose: Deliver bi-exponential decayed multi-factor news state vector for asset k.
+    Explicit Dependency Tracking: EventService, NewsPredictionService.
+    Structural Relationship: Ingestion layer endpoint consumed by Pillar 1 NewsDecayView.
+    Defensive Invariant: Guaranteed non-empty vector on initial platform bootstrap by triggering news harvest.
+    """
     calc_time = as_of_time or datetime.now(UTC)
     vector, count = await event_service.get_active_news_state(
         ticker=ticker,
@@ -141,6 +153,20 @@ async def get_active_news_state(
         tau_slow=tau_slow,
         use_projected_subspace=use_projected_subspace,
     )
+    if count == 0:
+        if news_service._event_service is None:
+            news_service._event_service = event_service
+        await news_service.harvest_and_predict(fallback_to_synthetic=True, target_ticker=ticker)
+        if hasattr(event_service.event_repo, "session"):
+            await event_service.event_repo.session.commit()
+        vector, count = await event_service.get_active_news_state(
+            ticker=ticker,
+            as_of_time=calc_time,
+            alpha=alpha,
+            tau_fast=tau_fast,
+            tau_slow=tau_slow,
+            use_projected_subspace=use_projected_subspace,
+        )
     return ActiveStateResponse(
         ticker=ticker.upper(),
         as_of_time=calc_time,

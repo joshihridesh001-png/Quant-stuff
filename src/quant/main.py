@@ -177,7 +177,14 @@ def create_application() -> FastAPI:
         """Serve the modern React 19 Quantitative Research Workbench SPA."""
         index_path = web_dist_dir / "index.html"
         if index_path.exists():
-            return HTMLResponse(content=index_path.read_text(encoding="utf-8"))
+            return HTMLResponse(
+                content=index_path.read_text(encoding="utf-8"),
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
         return HTMLResponse(
             content="<h1>Quantitative Research Workbench: Run 'npm run build' in web/</h1>",
             status_code=503,
@@ -189,7 +196,14 @@ def create_application() -> FastAPI:
         """Serve the workbench SPA or redirect to interactive Swagger UI documentation."""
         index_path = web_dist_dir / "index.html"
         if index_path.exists():
-            return HTMLResponse(content=index_path.read_text(encoding="utf-8"))
+            return HTMLResponse(
+                content=index_path.read_text(encoding="utf-8"),
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
         return RedirectResponse(url="/docs")
 
     return app

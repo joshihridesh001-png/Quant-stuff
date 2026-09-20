@@ -148,7 +148,7 @@ class NewsPredictionService:
         return predictions
 
     async def harvest_and_predict(
-        self, fallback_to_synthetic: bool = True
+        self, fallback_to_synthetic: bool = True, target_ticker: str | None = None
     ) -> list[PriceReactionPrediction]:
         """Poll all enabled news feeds, classify new stories, and predict causal price reactions.
 
@@ -189,13 +189,25 @@ class NewsPredictionService:
             except Exception as exc:
                 logger.warning("Error querying external provider manager for news: %s", exc)
 
-        # In offline/hermetic test environments or if all external feeds fail, generate synthetic batch
-        if not articles and fallback_to_synthetic:
-            logger.info(
-                "External news feeds returned 0 articles; generating synthetic replay batch."
+        # In offline/hermetic test environments or if target_ticker is not present in harvested articles
+        ticker_covered = (
+            any(
+                any(t.upper() == target_ticker.upper() for t in a.tickers)
+                for a in articles
             )
-            articles = self._synthetic_generator.generate_batch(count=3)
-            articles = self._harvester.filter_and_store_unique(articles)
+            if target_ticker and articles
+            else bool(articles)
+        )
+        if not ticker_covered and fallback_to_synthetic:
+            logger.info(
+                "External news feeds returned 0 articles or missing %s; generating synthetic replay batch.",
+                target_ticker,
+            )
+            syn_articles = self._synthetic_generator.generate_batch(
+                count=6, target_ticker=target_ticker
+            )
+            syn_unique = self._harvester.filter_and_store_unique(syn_articles)
+            articles.extend(syn_unique)
 
         all_predictions: list[PriceReactionPrediction] = []
 

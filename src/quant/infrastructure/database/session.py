@@ -1,7 +1,9 @@
 """Asynchronous database engine and session management."""
 
 from collections.abc import AsyncGenerator
+from typing import Any
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -22,9 +24,9 @@ class Base(DeclarativeBase):
 
 
 # Connect args for SQLite to handle multi-threaded async properly if needed
-connect_args = {}
+connect_args: dict[str, Any] = {}
 if settings.DATABASE_URL.startswith("sqlite"):
-    connect_args = {"check_same_thread": False}
+    connect_args = {"check_same_thread": False, "timeout": 30.0}
 
 engine: AsyncEngine = create_async_engine(
     settings.DATABASE_URL,
@@ -32,6 +34,15 @@ engine: AsyncEngine = create_async_engine(
     future=True,
     connect_args=connect_args,
 )
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _set_sqlite_pragma(dbapi_connection: Any, connection_record: Any) -> None:
+    if settings.DATABASE_URL.startswith("sqlite"):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.close()
 
 async_session_factory = async_sessionmaker(
     bind=engine,

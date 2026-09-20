@@ -38,6 +38,8 @@ weights/
 models/
 quant.db
 *.db
+*.db-wal
+*.db-shm
 *.duckdb
 /data/
 .coverage

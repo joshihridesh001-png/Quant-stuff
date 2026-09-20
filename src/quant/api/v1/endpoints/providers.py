@@ -13,8 +13,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
-from quant.api.dependencies import get_current_user, get_external_provider_manager
+from quant.api.dependencies import (
+    get_current_user,
+    get_external_provider_manager,
+    get_news_prediction_service,
+)
 from quant.data.external_providers import ExternalProviderManager
+from quant.services.news_prediction_service import NewsPredictionService
 
 logger = logging.getLogger(__name__)
 
@@ -99,18 +104,52 @@ async def get_company_news(
     symbol: str,
     lookback_days: int = Query(default=2, ge=1, le=14),
     provider_mgr: ExternalProviderManager = Depends(get_external_provider_manager),
+    news_service: NewsPredictionService = Depends(get_news_prediction_service),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> list[ExternalNewsItemDTO]:
-    """Query company-specific financial news from Finnhub if configured."""
+    """Query company-specific financial news from Finnhub or fall back to harvested wire headlines.
+
+    Purpose: Deliver real-time company news feed with deterministic fallback.
+    Explicit Dependency Tracking: ExternalProviderManager, NewsPredictionService.
+    Structural Relationship: Ingestion layer endpoint consumed by Pillar 1 NewsDecayView.
+    Defensive Invariant: Guaranteed non-empty response by falling back to harvested RSS and synthetic news.
+    """
     items = await provider_mgr.finnhub.fetch_company_news(symbol, lookback_days=lookback_days)
+    if items:
+        return [
+            ExternalNewsItemDTO(
+                headline=it.headline,
+                summary=it.summary,
+                url=it.url,
+                source=it.source,
+                published_at=it.published_at,
+                related_symbols=it.related_symbols,
+            )
+            for it in items
+        ]
+
+    # Fallback to news_service cached/harvested articles
+    articles = news_service.get_latest_articles(limit=50)
+    if not articles:
+        await news_service.harvest_and_predict(fallback_to_synthetic=True)
+        articles = news_service.get_latest_articles(limit=50)
+
+    matched = [
+        art
+        for art in articles
+        if not art.tickers or symbol.upper() in [t.upper() for t in art.tickers]
+    ]
+    if not matched and articles:
+        matched = articles[:10]
+
     return [
         ExternalNewsItemDTO(
-            headline=it.headline,
-            summary=it.summary,
-            url=it.url,
-            source=it.source,
-            published_at=it.published_at,
-            related_symbols=it.related_symbols,
+            headline=art.headline,
+            summary=art.summary,
+            url=art.url,
+            source=art.source,
+            published_at=art.published_at.isoformat(),
+            related_symbols=list(art.tickers) if art.tickers else [symbol.upper()],
         )
-        for it in items
+        for art in matched
     ]

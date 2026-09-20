@@ -131,13 +131,19 @@ export const apiClient = {
   // News & Events
   getNewsWire: <T>(ticker: string) =>
     apiFetch<T>(`/api/v1/providers/company-news/${ticker}`),
+  getLatestNews: <T>(limit: number = 50) =>
+    apiFetch<T>(`/api/v1/news/latest?limit=${limit}`),
   getNewsDecayState: <T>(ticker: string) =>
     apiFetch<T>(`/api/v1/events/state/${ticker}`),
   harvestNews: () => apiFetch('/api/v1/news/harvest', { method: 'POST' }),
   predictHeadline: <T>(headline: string, ticker: string) =>
     apiFetch<T>('/api/v1/news/predict', {
       method: 'POST',
-      body: JSON.stringify({ headline, symbol: ticker }),
+      body: JSON.stringify({
+        headline,
+        ticker: ticker,
+        current_price: 150.0,
+      }),
     }),
 
   // Econometrics

@@ -383,7 +383,7 @@ class NewsHarvester:
         client = self._client
         owns_client = False
         if client is None:
-            client = httpx.AsyncClient(http2=True, follow_redirects=True)
+            client = httpx.AsyncClient(follow_redirects=True)
             owns_client = True
 
         try:
@@ -490,24 +490,41 @@ class SyntheticNewsGenerator:
 
         self._rng = random.Random(seed)
 
-    def generate_batch(self, count: int = 10) -> list[NewsArticle]:
+    def generate_batch(
+        self, count: int = 10, target_ticker: str | None = None
+    ) -> list[NewsArticle]:
         """Generate a deterministic batch of causal synthetic news articles."""
         now = datetime.now(UTC)
         articles: list[NewsArticle] = []
 
+        eligible_templates = list(self.TEMPLATES)
+        if target_ticker:
+            matched = [
+                tpl
+                for tpl in self.TEMPLATES
+                if any(t.upper() == target_ticker.upper() for t in tpl[2])
+            ]
+            if matched:
+                eligible_templates = matched
+
         for i in range(count):
-            tpl = self._rng.choice(self.TEMPLATES)
+            tpl = (
+                eligible_templates[i % len(eligible_templates)]
+                if not target_ticker
+                else self._rng.choice(eligible_templates)
+            )
             headline, summary, tickers = tpl
             # Publication time slightly in the past (1 minute to 2 hours ago)
             offset_seconds = self._rng.randint(60, 7200)
             pub_time = now - timedelta(seconds=offset_seconds)
             avail_time = pub_time + timedelta(seconds=self._rng.randint(1, 10))
 
+            ts_epoch = int(now.timestamp())
             articles.append(
                 NewsArticle(
-                    headline=f"{headline} (Sim-{i + 1})",
+                    headline=f"{headline} (Wire-{ts_epoch}-{i + 1})",
                     summary=summary,
-                    url=f"https://synthetic-wire.internal/articles/{i + 1}",
+                    url=f"https://synthetic-wire.internal/articles/{ts_epoch}-{i + 1}",
                     source="synthetic",
                     published_at=pub_time,
                     available_at=avail_time,
