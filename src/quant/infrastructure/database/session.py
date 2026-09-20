@@ -44,6 +44,7 @@ def _set_sqlite_pragma(dbapi_connection: Any, connection_record: Any) -> None:
         cursor.execute("PRAGMA busy_timeout=30000")
         cursor.close()
 
+
 async_session_factory = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,

@@ -66,11 +66,13 @@ def _generate_synthetic_returns(symbol: str, n_bars: int = 200) -> tuple[np.ndar
     states = np.zeros(n_bars, dtype=int)
     returns = np.zeros(n_bars, dtype=np.float64)
 
-    p_trans = np.array([
-        [0.92, 0.06, 0.02],
-        [0.10, 0.85, 0.05],
-        [0.15, 0.05, 0.80],
-    ])
+    p_trans = np.array(
+        [
+            [0.92, 0.06, 0.02],
+            [0.10, 0.85, 0.05],
+            [0.15, 0.05, 0.80],
+        ]
+    )
 
     current_state = 0
     for t in range(n_bars):
@@ -129,7 +131,9 @@ async def _get_returns(
 )
 async def get_regime_status(
     symbol: str = Query("NVDA", description="Asset ticker symbol"),
-    cusum_threshold: float = Query(3.0, ge=1.0, le=10.0, description="CUSUM standardized threshold h"),
+    cusum_threshold: float = Query(
+        3.0, ge=1.0, le=10.0, description="CUSUM standardized threshold h"
+    ),
     cusum_drift: float = Query(0.5, ge=0.1, le=2.0, description="CUSUM allowance parameter k"),
     bar_count: int = Query(180, ge=60, le=500, description="Historical evaluation bars"),
     user: dict[str, Any] = Depends(get_current_user),
@@ -263,11 +267,14 @@ def compute_payoff_matrix(
     # Row: Action, Column: Counterparty
     # Higher utility is better for the executing firm.
     risk_adj = (request.risk_aversion - 2.0) * 1.5
-    raw_payoffs = np.array([
-        [14.2 - risk_adj * 0.5, -22.5 - risk_adj * 2.0, -18.0 - risk_adj * 1.5],
-        [18.5 - risk_adj * 0.2, -31.0 - risk_adj * 2.5, -25.0 - risk_adj * 2.0],
-        [9.5,                   3.2,                    1.8],
-    ], dtype=np.float64)
+    raw_payoffs = np.array(
+        [
+            [14.2 - risk_adj * 0.5, -22.5 - risk_adj * 2.0, -18.0 - risk_adj * 1.5],
+            [18.5 - risk_adj * 0.2, -31.0 - risk_adj * 2.5, -25.0 - risk_adj * 2.0],
+            [9.5, 3.2, 1.8],
+        ],
+        dtype=np.float64,
+    )
 
     # 1. Benchmark maximum utility obtainable for each counterparty state theta:
     # M(theta) = max_a U(a, theta)

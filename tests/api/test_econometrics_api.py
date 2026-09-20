@@ -85,7 +85,9 @@ async def test_triple_barrier_simulate_success(
     assert data["take_profit_hits"] >= 0
     assert data["stop_loss_hits"] >= 0
     assert data["vertical_expiration_hits"] >= 0
-    assert round(data["take_profit_pct"] + data["stop_loss_pct"] + data["vertical_expiration_pct"]) in (99, 100, 101)
+    assert round(
+        data["take_profit_pct"] + data["stop_loss_pct"] + data["vertical_expiration_pct"]
+    ) in (99, 100, 101)
     assert len(data["sample_trajectory"]) > 0
     point = data["sample_trajectory"][0]
     assert "bar_index" in point

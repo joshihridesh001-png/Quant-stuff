@@ -105,10 +105,11 @@ export const HUD: React.FC = () => {
             <button
               onClick={startSwarm}
               disabled={swarmState === 'RUNNING'}
-              className="p-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 font-bold border border-emerald-500/30 transition disabled:opacity-30"
-              title="Start Autonomous Loop"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 font-bold border border-emerald-500/30 transition disabled:opacity-30 text-[11px]"
+              title="Start Continuous Autonomous Rebalancing Swarm"
             >
-              <Play className="w-3.5 h-3.5" />
+              <Play className="w-3 h-3 fill-current" />
+              <span>START</span>
             </button>
             <button
               onClick={pauseSwarm}
@@ -128,10 +129,11 @@ export const HUD: React.FC = () => {
             <button
               onClick={stopSwarm}
               disabled={swarmState === 'STOPPED' || swarmState === 'IDLE'}
-              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold border border-white/10 transition disabled:opacity-30"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold border border-white/10 transition disabled:opacity-30 text-[11px]"
               title="Stop Swarm"
             >
-              <Square className="w-3.5 h-3.5" />
+              <Square className="w-3 h-3" />
+              <span>STOP</span>
             </button>
           </div>
 

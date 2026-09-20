@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     # Autonomous Swarm Live Trading Loop Configuration
     # Purpose: Sets monitored universe and clock interval for autonomous rebalancing
     TRADING_UNIVERSE: list[str] = ["SPY", "QQQ", "AAPL", "NVDA", "MSFT"]
-    AUTONOMOUS_LOOP_INTERVAL_SEC: float = 60.0
+    AUTONOMOUS_LOOP_INTERVAL_SEC: float = 4.0
     MIN_TRADE_NOTIONAL: float = 100.0
 
     # External Quantitative Data Providers (Selected from public-apis)

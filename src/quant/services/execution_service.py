@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 import uuid
 from collections.abc import Callable
@@ -71,6 +72,8 @@ from quant.execution.venues import (
     InvalidSORInputException,
     NonFiniteInputException,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionService:
@@ -381,8 +384,13 @@ class ExecutionService:
                     if self._audit_logger is not None:
                         self._audit_logger.log_report(report)
 
-            except Exception:
-                # Execution slice failure or rejection; continue remaining slices
+            except Exception as exc:
+                # Execution slice failure or rejection; log diagnostics and continue remaining slices
+                logger.warning(
+                    "Execution slice for child order %s rejected or failed: %s",
+                    child_order.cl_ord_id,
+                    exc,
+                )
                 continue
 
         status_str = "COMPLETED" if parent_order.is_completed else "UPDATED"

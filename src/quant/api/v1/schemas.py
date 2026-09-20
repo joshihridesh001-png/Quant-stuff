@@ -545,7 +545,9 @@ class TripleBarrierSimulateRequest(BaseModel):
     profit_multiplier: float = Field(2.0, gt=0.0, description="Take-profit barrier multiplier c1")
     stop_multiplier: float = Field(1.0, gt=0.0, description="Stop-loss barrier multiplier c2")
     horizon_bars: int = Field(30, ge=5, le=120, description="Vertical holding barrier in bars")
-    volatility_window: int = Field(20, ge=5, le=60, description="Parkinson volatility rolling window")
+    volatility_window: int = Field(
+        20, ge=5, le=60, description="Parkinson volatility rolling window"
+    )
     side: int = Field(1, description="Trade direction (+1 Long, -1 Short)")
 
 
@@ -623,8 +625,12 @@ class RegimeStatusResponse(BaseModel):
 class PayoffMatrixRequest(BaseModel):
     """Request DTO to evaluate minimax regret game."""
 
-    ambiguity_beta: float = Field(1.5, ge=0.01, le=20.0, description="Thermodynamic ambiguity temperature")
-    risk_aversion: float = Field(2.0, ge=0.1, le=10.0, description="Arrow-Pratt risk aversion parameter")
+    ambiguity_beta: float = Field(
+        1.5, ge=0.01, le=20.0, description="Thermodynamic ambiguity temperature"
+    )
+    risk_aversion: float = Field(
+        2.0, ge=0.1, le=10.0, description="Arrow-Pratt risk aversion parameter"
+    )
 
 
 class PayoffMatrixResponse(BaseModel):

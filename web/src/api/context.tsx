@@ -69,10 +69,11 @@ export const QuantProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     try {
       await apiClient.startSwarm();
       await refreshSwarm();
+      await refreshOrders();
     } catch (err) {
       alert('Start swarm error: ' + err);
     }
-  }, [refreshSwarm]);
+  }, [refreshSwarm, refreshOrders]);
 
   const pauseSwarm = useCallback(async () => {
     try {

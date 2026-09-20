@@ -59,7 +59,7 @@ from quant.services.execution_service import ExecutionService
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_INTERVAL_SEC: Final[float] = 60.0
+_DEFAULT_INTERVAL_SEC: Final[float] = 4.0
 _DEFAULT_MIN_NOTIONAL: Final[float] = 100.0
 
 
@@ -235,12 +235,15 @@ class AutonomousTradingEngine:
 
         # Equal weight baseline budget across universe with conservative 60% gross leverage
         target_per_asset = (equity * 0.60 / n_assets) * haircut
+        # Pre-trade concentration ceiling guard (max 20% of equity per asset against 25% firewall limit)
+        max_safe_allocation = equity * 0.20
 
         for sym in self._universe:
             if sym in bars and bars[sym].close > 0.0:
                 prior = self._forward_alpha_priors.get(sym, 0.0)
                 multiplier = max(0.0, 1.0 + 0.5 * prior)
-                target_dollars[sym] = round(target_per_asset * multiplier, 2)
+                raw_target = round(target_per_asset * multiplier, 2)
+                target_dollars[sym] = min(raw_target, max_safe_allocation)
             else:
                 target_dollars[sym] = 0.0
 
@@ -266,10 +269,15 @@ class AutonomousTradingEngine:
         is_kill_active = self._execution_service._orchestrator.is_kill_switch_active
 
         # 3. Retrieve account balance and current positions
-        balance = await self._gateway.get_account_balance()
-        equity = float(balance.get("equity", 100_000.0))
+        try:
+            equity = self._execution_service.orchestrator.state.current_equity
+        except Exception:
+            equity = 10_000.0
         if not math.isfinite(equity) or equity <= 0:
-            equity = 100_000.0
+            balance = await self._gateway.get_account_balance()
+            equity = float(balance.get("equity", 10_000.0))
+        if not math.isfinite(equity) or equity <= 0:
+            equity = 10_000.0
 
         positions = await self._gateway.get_positions()
 
@@ -388,6 +396,9 @@ class AutonomousTradingEngine:
         logger.info("Autonomous trading swarm loop started (interval: %.1fs)", self._interval_sec)
         while self._state == AutonomousState.RUNNING:
             try:
+                await asyncio.sleep(self._interval_sec)
+                if self._state != AutonomousState.RUNNING:
+                    break
                 await self.step_once()
                 self._error_count = 0
             except asyncio.CancelledError:
@@ -399,11 +410,6 @@ class AutonomousTradingEngine:
                     self._state = AutonomousState.ERROR
                     break
 
-            try:
-                await asyncio.sleep(self._interval_sec)
-            except asyncio.CancelledError:
-                break
-
         logger.info("Autonomous trading swarm loop terminated.")
 
     async def start(self) -> None:
@@ -411,6 +417,10 @@ class AutonomousTradingEngine:
         if self._state == AutonomousState.RUNNING:
             return
         self._state = AutonomousState.RUNNING
+        try:
+            await self.step_once()
+        except Exception as exc:
+            logger.error("Initial autonomous step error: %s", exc)
         self._loop_task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:

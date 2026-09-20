@@ -114,12 +114,13 @@ def get_paper_gateway() -> PaperExecutionGateway:
     """Provide singleton PaperExecutionGateway instance."""
     global _paper_gateway
     if _paper_gateway is None:
-        _paper_gateway = PaperExecutionGateway()
+        _paper_gateway = PaperExecutionGateway(initial_balance=10_000.0)
         _paper_gateway._is_connected = True
         _paper_gateway.set_market_price("NVDA", 125.0)
         _paper_gateway.set_market_price("AAPL", 185.0)
         _paper_gateway.set_market_price("MSFT", 420.0)
         _paper_gateway.set_market_price("SPY", 510.0)
+        _paper_gateway.set_market_price("QQQ", 440.0)
     return _paper_gateway
 
 
@@ -155,7 +156,12 @@ def get_risk_orchestrator() -> RiskOrchestrator:
             max_intraday_drawdown_pct=0.05,
             min_free_margin=1_000.0,
         )
-        state = PortfolioRiskState(cash=10_000.0, initial_equity=10_000.0)
+        base_prices = {"NVDA": 125.0, "AAPL": 185.0, "MSFT": 420.0, "SPY": 510.0, "QQQ": 440.0}
+        state = PortfolioRiskState(
+            cash=10_000.0,
+            initial_equity=10_000.0,
+            current_prices=base_prices,
+        )
         firewall = PreTradeRiskFirewall(limits=limits)
         kill_switch = EmergencyKillSwitch(admin_token="DEFAULT_ADMIN_TOKEN")
         _risk_orchestrator = RiskOrchestrator(

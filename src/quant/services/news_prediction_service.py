@@ -191,10 +191,7 @@ class NewsPredictionService:
 
         # In offline/hermetic test environments or if target_ticker is not present in harvested articles
         ticker_covered = (
-            any(
-                any(t.upper() == target_ticker.upper() for t in a.tickers)
-                for a in articles
-            )
+            any(any(t.upper() == target_ticker.upper() for t in a.tickers) for a in articles)
             if target_ticker and articles
             else bool(articles)
         )

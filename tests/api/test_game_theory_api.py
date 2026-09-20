@@ -14,9 +14,7 @@ async def test_regimes_unauthorized(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_regimes_success(
-    client: AsyncClient, researcher_jwt_headers: dict[str, str]
-) -> None:
+async def test_regimes_success(client: AsyncClient, researcher_jwt_headers: dict[str, str]) -> None:
     """Test successful 3-simplex regime estimation and CUSUM jump detection."""
     response = await client.get(
         "/api/v1/game-theory/regimes?symbol=NVDA&cusum_threshold=3.0&cusum_drift=0.5&bar_count=100",

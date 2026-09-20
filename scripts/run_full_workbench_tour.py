@@ -86,7 +86,9 @@ def main() -> None:
     print("  ✓ High-Frequency Microstructure Volatility (NVDA):")
     print(f"       - Latest Close: ${vol_res.get('latest_close', 0.0):.2f}")
     print(f"       - Annualized Parkinson σ: {vol_res.get('annualized_parkinson_pct', 0.0):.1f}%")
-    print(f"       - Annualized Garman-Klass σ: {vol_res.get('annualized_garman_klass_pct', 0.0):.1f}%")
+    print(
+        f"       - Annualized Garman-Klass σ: {vol_res.get('annualized_garman_klass_pct', 0.0):.1f}%"
+    )
 
     tb_res = http_post(
         "/api/v1/econometrics/triple-barrier/simulate",
@@ -110,12 +112,18 @@ def main() -> None:
 
     # 4. Bayesian Game Theory & Jump Regimes (Pillar 3)
     print("\n[4/6] Solving Bayesian Game Theory & Jump Regimes (Pillar 3)...")
-    regime_res = http_get("/api/v1/game-theory/regimes?symbol=NVDA&cusum_threshold=3.0&cusum_drift=0.5", token)
+    regime_res = http_get(
+        "/api/v1/game-theory/regimes?symbol=NVDA&cusum_threshold=3.0&cusum_drift=0.5", token
+    )
     print("  ✓ 3-Simplex Posterior Regime Classification (NVDA):")
     print(f"       - Current Regime: {regime_res.get('current_regime')}")
-    print(f"       - Posterior Probabilities: Absorption={regime_res.get('p_absorption', 0):.2f}, "
-          f"Cascade={regime_res.get('p_momentum', 0):.2f}, Panic Trap={regime_res.get('p_panic', 0):.2f}")
-    print(f"       - CUSUM Structural Break Alarm: {'🚨 TRIPPED' if regime_res.get('cusum_alarm') else '🟢 Normal (No Shock)'}")
+    print(
+        f"       - Posterior Probabilities: Absorption={regime_res.get('p_absorption', 0):.2f}, "
+        f"Cascade={regime_res.get('p_momentum', 0):.2f}, Panic Trap={regime_res.get('p_panic', 0):.2f}"
+    )
+    print(
+        f"       - CUSUM Structural Break Alarm: {'🚨 TRIPPED' if regime_res.get('cusum_alarm') else '🟢 Normal (No Shock)'}"
+    )
 
     matrix_res = http_post(
         "/api/v1/game-theory/payoff-matrix",
@@ -128,18 +136,28 @@ def main() -> None:
 
     # 5. Causal News Decay Engine (Pillar 1)
     print("\n[5/6] Injecting Breaking News Headline Shock (Pillar 1)...")
-    test_headline = "NVIDIA unveils next-generation Blackwell Ultra architecture with record enterprise orders"
+    test_headline = (
+        "NVIDIA unveils next-generation Blackwell Ultra architecture with record enterprise orders"
+    )
     shock_raw = http_post(
         "/api/v1/news/predict",
         {"headline": test_headline, "ticker": "NVDA", "current_price": 124.70},
         token,
     )
     shock = shock_raw[0] if isinstance(shock_raw, list) and shock_raw else {}
-    print(f"  ✓ Ingested Headline: \"{test_headline}\"")
-    print(f"       - Signal & Sentiment: {shock.get('signal')} (Confidence: {shock.get('confidence', 0.0)*100:.1f}%)")
-    print(f"       - Expected Price Delta: ${shock.get('expected_delta_price', 0.0):+.2f} (Target: ${shock.get('target_price', 0.0):.2f})")
-    print(f"       - Up / Down Directional Probability: Up={shock.get('prob_up', 0.0)*100:.1f}% / Down={shock.get('prob_down', 0.0)*100:.1f}%")
-    print(f"       - Causal Barrier Bounds: Upper=${shock.get('barrier_upper', 0.0):.2f} / Lower=${shock.get('barrier_lower', 0.0):.2f}")
+    print(f'  ✓ Ingested Headline: "{test_headline}"')
+    print(
+        f"       - Signal & Sentiment: {shock.get('signal')} (Confidence: {shock.get('confidence', 0.0) * 100:.1f}%)"
+    )
+    print(
+        f"       - Expected Price Delta: ${shock.get('expected_delta_price', 0.0):+.2f} (Target: ${shock.get('target_price', 0.0):.2f})"
+    )
+    print(
+        f"       - Up / Down Directional Probability: Up={shock.get('prob_up', 0.0) * 100:.1f}% / Down={shock.get('prob_down', 0.0) * 100:.1f}%"
+    )
+    print(
+        f"       - Causal Barrier Bounds: Upper=${shock.get('barrier_upper', 0.0):.2f} / Lower=${shock.get('barrier_lower', 0.0):.2f}"
+    )
 
     # 6. Simulation Replay & Institutional Risk Tear Sheet (Pillar 5)
     print("\n[6/6] Running Institutional Replay Backtest (Pillar 5)...")
@@ -170,12 +188,16 @@ def main() -> None:
     print(f"       Max Drawdown:             {sim_res.get('max_drawdown_pct', 0.0):.2f}%")
     print(f"       Realized CVaR (95%):      {sim_res.get('realized_cvar_95_pct', 0.0):.2f}%")
     print(f"       Deflated Sharpe (DSR):    {sim_res.get('deflated_sharpe_ratio', 0.0):.3f}")
-    print(f"       DSR Statistically Sig:    {'✓ YES (Alpha Verified)' if sim_res.get('is_statistically_significant') else 'No'}")
+    print(
+        f"       DSR Statistically Sig:    {'✓ YES (Alpha Verified)' if sim_res.get('is_statistically_significant') else 'No'}"
+    )
     print(f"       Friction & Slippage Cost: ${sim_res.get('total_friction_cost', 0.0):,.2f}")
     print(f"       Equity Curve Points:      {len(sim_res.get('equity_curve', []))} bars recorded")
     if bms:
         for bm in bms:
-            print(f"       Benchmark [{bm.get('name')}]: Total Ret={bm.get('total_return', 0)*100:+.2f}%, Sharpe={bm.get('sharpe_ratio', 0):.2f}, Alpha={bm.get('alpha', 0)*100:+.2f}%")
+            print(
+                f"       Benchmark [{bm.get('name')}]: Total Ret={bm.get('total_return', 0) * 100:+.2f}%, Sharpe={bm.get('sharpe_ratio', 0):.2f}, Alpha={bm.get('alpha', 0) * 100:+.2f}%"
+            )
     print("       --------------------------------------------------------")
 
     print("\n✅ INSTITUTIONAL WORKBENCH TOUR COMPLETE: ALL 5 PILLARS VERIFIED & LIVE!")

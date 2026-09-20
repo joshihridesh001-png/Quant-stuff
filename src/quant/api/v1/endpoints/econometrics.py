@@ -138,7 +138,9 @@ async def _get_or_generate_ohlcv(
                 batch.closes,
             )
     except Exception as exc:
-        logger.debug("Live market data query fell back to synthetic generator for %s: %s", symbol, exc)
+        logger.debug(
+            "Live market data query fell back to synthetic generator for %s: %s", symbol, exc
+        )
 
     return _generate_synthetic_bars(symbol, n_bars=n_bars)
 
@@ -254,7 +256,9 @@ async def get_realized_volatility(
     Structural Relationship: Feeds volatility gauge and rolling trend charts in Pillar 2.
     Defensive Invariant: Zero/negative price bounds rejected; volatility strictly non-negative.
     """
-    timestamps, opens, highs, lows, closes = await _get_or_generate_ohlcv(symbol, bar_count, service)
+    timestamps, opens, highs, lows, closes = await _get_or_generate_ohlcv(
+        symbol, bar_count, service
+    )
     n = len(closes)
 
     # 1. Causal rolling Parkinson volatility
@@ -383,7 +387,11 @@ async def simulate_triple_barrier(
     sample_points: list[BarrierTrajectoryPointDTO] = []
     target_label = labels[-1]
     event_idx = np.where(timestamps == target_label.event_timestamp)[0]
-    start_idx = int(event_idx[0]) if len(event_idx) > 0 else (len(closes) - target_label.holding_period_bars - 1)
+    start_idx = (
+        int(event_idx[0])
+        if len(event_idx) > 0
+        else (len(closes) - target_label.holding_period_bars - 1)
+    )
     end_idx = min(len(closes), start_idx + target_label.holding_period_bars + 1)
 
     for i in range(start_idx, end_idx):
@@ -392,7 +400,10 @@ async def simulate_triple_barrier(
         if i == end_idx - 1:
             if target_label.touch_reason == BarrierTouchReason.UPPER:
                 event_tag = "TAKE_PROFIT"
-            elif target_label.touch_reason in (BarrierTouchReason.LOWER, BarrierTouchReason.COLLISION_STOP):
+            elif target_label.touch_reason in (
+                BarrierTouchReason.LOWER,
+                BarrierTouchReason.COLLISION_STOP,
+            ):
                 event_tag = "STOP_LOSS"
             else:
                 event_tag = "EXPIRATION"
