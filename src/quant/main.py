@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from sqlalchemy import text
 
 from quant.api.middleware import CorrelationAndTimingMiddleware, register_exception_handlers
@@ -17,8 +17,10 @@ from quant.api.v1.endpoints import (
     gateways,
     genotypes,
     market_data,
+    mcp,
     news,
     orders,
+    pre_trade,
     providers,
     risk,
     streaming,
@@ -76,6 +78,8 @@ def create_application() -> FastAPI:
     app.include_router(autonomous.router, prefix=settings.API_V1_PREFIX)
     app.include_router(news.router, prefix=settings.API_V1_PREFIX)
     app.include_router(providers.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(pre_trade.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(mcp.router, prefix=settings.API_V1_PREFIX)
 
     # 4. System Health Check Endpoint
     @app.get("/healthz", tags=["System Health"], summary="Liveness & Readiness Probe")
@@ -94,7 +98,60 @@ def create_application() -> FastAPI:
             "environment": settings.ENVIRONMENT,
         }
 
-    # 5. Interactive Trading Terminal Dashboard
+    # 5. OpenMetrics / Prometheus Telemetry Endpoint
+    @app.get(
+        "/metrics",
+        response_class=PlainTextResponse,
+        tags=["System Health"],
+        summary="Prometheus & OpenMetrics Telemetry",
+    )
+    def prometheus_metrics() -> PlainTextResponse:
+        """Expose institutional quantitative telemetry in standard OpenMetrics format."""
+        from quant.api.dependencies import (
+            _autonomous_trader,
+            _risk_orchestrator,
+            get_pre_trade_gate,
+        )
+
+        gate = get_pre_trade_gate()
+        history = gate.history
+        evaluations_total = len(history)
+        allowed_count = sum(1 for d in history if d.allowed)
+        blocked_count = sum(1 for d in history if not d.allowed)
+
+        kill_switch_val = (
+            1 if (_risk_orchestrator and _risk_orchestrator.kill_switch.is_active) else 0
+        )
+        swarm_val = 1 if (_autonomous_trader and _autonomous_trader.state.value == "RUNNING") else 0
+        nav_val = _risk_orchestrator.state.current_equity if _risk_orchestrator else 1_000_000.0
+        cash_val = _risk_orchestrator.state.cash if _risk_orchestrator else 1_000_000.0
+
+        lines = [
+            "# HELP quant_up Heartbeat gauge of the quantitative engine application",
+            "# TYPE quant_up gauge",
+            f'quant_up{{environment="{settings.ENVIRONMENT}"}} 1',
+            "# HELP quant_kill_switch_active Status of emergency panic kill switch lockout (1=locked, 0=armed)",
+            "# TYPE quant_kill_switch_active gauge",
+            f"quant_kill_switch_active {kill_switch_val}",
+            "# HELP quant_autonomous_swarm_active Status of autonomous swarm multi-algorithmic trader (1=active, 0=idle)",
+            "# TYPE quant_autonomous_swarm_active gauge",
+            f"quant_autonomous_swarm_active {swarm_val}",
+            "# HELP quant_portfolio_nav Current portfolio net asset value in base currency",
+            "# TYPE quant_portfolio_nav gauge",
+            f"quant_portfolio_nav {nav_val:.2f}",
+            "# HELP quant_portfolio_cash Current portfolio unencumbered cash balance in base currency",
+            "# TYPE quant_portfolio_cash gauge",
+            f"quant_portfolio_cash {cash_val:.2f}",
+            "# HELP quant_pre_trade_evaluations_total Total orders processed through Bayesian Pre-Trade Gate",
+            "# TYPE quant_pre_trade_evaluations_total counter",
+            f'quant_pre_trade_evaluations_total{{verdict="allowed"}} {allowed_count}',
+            f'quant_pre_trade_evaluations_total{{verdict="blocked"}} {blocked_count}',
+            f"quant_pre_trade_evaluations_total_count {evaluations_total}",
+            "",
+        ]
+        return PlainTextResponse(content="\n".join(lines), media_type="text/plain; version=0.0.4")
+
+    # 6. Interactive Trading Terminal Dashboard
     @app.get(
         "/dashboard",
         response_class=HTMLResponse,

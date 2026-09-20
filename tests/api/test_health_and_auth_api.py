@@ -47,3 +47,16 @@ async def test_auth_token_issuance(client: AsyncClient) -> None:
     token_data = good_login.json()
     assert "access_token" in token_data
     assert token_data["token_type"] == "bearer"
+
+
+@pytest.mark.asyncio
+async def test_prometheus_metrics_endpoint(client: AsyncClient) -> None:
+    response = await client.get("/metrics")
+    assert response.status_code == 200
+    assert "text/plain" in response.headers["content-type"]
+    text = response.text
+    assert "quant_up" in text
+    assert "quant_kill_switch_active" in text
+    assert "quant_autonomous_swarm_active" in text
+    assert "quant_pre_trade_evaluations_total" in text
+    assert "quant_portfolio_nav" in text

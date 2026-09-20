@@ -200,3 +200,28 @@ class TestAutonomousTradingEngine:
         # When kill switch is active, target allocations are wiped to 0.0
         for alloc in report.target_allocations.values():
             assert alloc == 0.0
+
+    @pytest.mark.asyncio
+    async def test_pre_trade_gate_records_evaluations(
+        self,
+        execution_service: ExecutionService,
+        paper_gateway: PaperExecutionGateway,
+        market_feed: AlpacaMarketDataFeed,
+    ) -> None:
+        """Verify that AutonomousTradingEngine passes orders through PreTradeDecisionGate."""
+        trader = AutonomousTradingEngine(
+            execution_service=execution_service,
+            gateway=paper_gateway,
+            market_feed=market_feed,
+            universe=["AAPL"],
+            interval_sec=1.0,
+        )
+        assert trader.pre_trade_gate is not None
+        assert len(trader.pre_trade_gate.history) == 0
+
+        report = await trader.step_once()
+        assert report is not None
+        # Evaluated candidates are stored in pre_trade_gate history
+        if len(report.orders_dispatched) > 0:
+            assert len(trader.pre_trade_gate.history) >= 1
+            assert trader.pre_trade_gate.history[-1].allowed is True

@@ -51,6 +51,10 @@ from quant.api.v1.schemas import ParentOrderCreateRequest
 from quant.data.alpaca_feed import AlpacaMarketDataFeed
 from quant.domain.models import PriceBar
 from quant.execution.gateway import ExecutionGateway
+from quant.execution.pre_trade_gate import (
+    PreTradeDecisionGate,
+    PreTradeDecisionRequest,
+)
 from quant.services.execution_service import ExecutionService
 
 logger = logging.getLogger(__name__)
@@ -101,6 +105,7 @@ class AutonomousTradingEngine:
         "_loop_task",
         "_market_feed",
         "_min_trade_notional",
+        "_pre_trade_gate",
         "_state",
         "_target_allocations",
         "_universe",
@@ -114,8 +119,9 @@ class AutonomousTradingEngine:
         universe: list[str] | None = None,
         interval_sec: float = _DEFAULT_INTERVAL_SEC,
         min_trade_notional: float = _DEFAULT_MIN_NOTIONAL,
+        pre_trade_gate: PreTradeDecisionGate | None = None,
     ) -> None:
-        """Initialize the autonomous trading engine with injected execution and data services.
+        """Initialize the autonomous trading engine with injected execution, data, and risk safety services.
 
         Args:
             execution_service: Application service managing parent orders and risk firewall.
@@ -124,9 +130,10 @@ class AutonomousTradingEngine:
             universe: Monitored asset ticker symbols.
             interval_sec: Rebalancing clock cycle interval in seconds.
             min_trade_notional: Minimum dollar order value threshold to trigger rebalancing trades.
+            pre_trade_gate: Optional institutional PreTradeDecisionGate for Bayesian order evaluation.
         """
-        # Functional Purpose: Configure autonomous loop parameters and dependencies.
-        # Explicit Dependency Tracking: ExecutionService, ExecutionGateway, AlpacaMarketDataFeed.
+        # Functional Purpose: Configure autonomous loop parameters, pre-trade gates, and dependencies.
+        # Explicit Dependency Tracking: ExecutionService, ExecutionGateway, AlpacaMarketDataFeed, PreTradeDecisionGate.
         # Structural Relationship: Root autonomous daemon created in dependencies.py.
         # Defensive Invariant: State initialized to IDLE; iteration begins at 0.
         self._execution_service: ExecutionService = execution_service
@@ -135,6 +142,7 @@ class AutonomousTradingEngine:
         self._universe: list[str] = universe or ["SPY", "QQQ", "AAPL", "NVDA", "MSFT"]
         self._interval_sec: float = max(0.01, interval_sec)
         self._min_trade_notional: float = max(1.0, min_trade_notional)
+        self._pre_trade_gate: PreTradeDecisionGate = pre_trade_gate or PreTradeDecisionGate()
         self._state: AutonomousState = AutonomousState.IDLE
         self._iteration: int = 0
         self._loop_task: asyncio.Task[None] | None = None
@@ -143,6 +151,11 @@ class AutonomousTradingEngine:
         self._forward_alpha_priors: dict[str, float] = {}
         self._listeners: list[Callable[[AutonomousStepReport], None]] = []
         self._error_count: int = 0
+
+    @property
+    def pre_trade_gate(self) -> PreTradeDecisionGate:
+        """Underlying PreTradeDecisionGate instance."""
+        return self._pre_trade_gate
 
     @property
     def state(self) -> AutonomousState:
@@ -286,6 +299,35 @@ class AutonomousTradingEngine:
                 if trade_notional >= self._min_trade_notional:
                     side_str = "BUY" if delta_shares > 0 else "SELL"
                     qty = max(0.001, round(abs(delta_shares), 4))
+
+                    # Evaluate candidate order through PreTradeDecisionGate (INV-GATE-001 & INV-GATE-002)
+                    is_reducing = (side_str == "SELL" and current_shares > 0) or (
+                        side_str == "BUY" and current_shares < 0
+                    )
+                    gate_req = PreTradeDecisionRequest(
+                        order_id=f"SWARM-{self._iteration}-{sym}",
+                        symbol=sym,
+                        action=side_str,
+                        quantity=qty,
+                        reference_price=current_price,
+                        timestamp_ns=start_ns,
+                        is_position_exit=is_reducing,
+                        market_spread_bps=5.0,
+                        order_book_imbalance=0.0,
+                        macro_yield_spread=0.18,
+                        data_age_seconds=1.0,
+                    )
+                    gate_res = self._pre_trade_gate.evaluate(gate_req)
+                    if not gate_res.allowed:
+                        logger.warning(
+                            "Autonomous order for %s %s blocked by PreTradeDecisionGate: %s (code: %s, toxicity: %.1f%%)",
+                            side_str,
+                            sym,
+                            gate_res.reason,
+                            gate_res.primary_code,
+                            gate_res.toxicity_probability * 100.0,
+                        )
+                        continue
 
                     request = ParentOrderCreateRequest(
                         symbol=sym,

@@ -1,0 +1,47 @@
+# Git and VCS
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# Python byte-code and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Local database and WAL stores (persisted via Docker volumes)
+data/
+scratch/
+*.duckdb
+*.duckdb.wal
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Environment and Secret Files
+.env
+.env.local
+.env.*.local
+
+# IDE & Editor configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Agentic / Superpowers workspace caches
+.superpowers/
+.gemini/

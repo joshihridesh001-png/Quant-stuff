@@ -395,6 +395,34 @@ This register records all major architectural decisions, design patterns, and en
 * **Alternatives Evaluated:** Generic BERT/LLM tokenizers (rejected: high inference latency $>200\text{ms}$ and hallucinated financial polarity); Uncalibrated linear sentiment trading (rejected: ignores asset volatility and category elasticity, causing massive whipsaws).
 * **Trade-Offs:** Closed-form logistic reaction formulation achieves sub-millisecond deterministic calculation ($\approx 0.12\text{ms}$) with zero runtime solver risk, trading complex deep learning parameterizations for speed, explainability, and mathematical safety.
 
+### ADR-027: Closed-Form Bayesian Log-Odds Pre-Trade Decision Gate, Scoped MCP Server & Hardened Multi-Stage Containerization
+* **Date:** 2026-09-20 | **Status:** Implemented (Sprint 11)
+* **Context:** Architectural analysis of `QuantDinger` revealed strong concepts (JEV pre-trade evaluation, Model Context Protocol integration, multi-worker lifecycle) coupled with naive anti-patterns: Flask, synchronous Gunicorn, blocking synchronous HTTP LLM calls in hot execution paths, and dual-Redis overhead. To integrate these capabilities into our high-frequency asynchronous engine without compromising our sub-millisecond execution guarantees, we required:
+  1. A deterministic, non-blocking in-memory Bayesian pre-trade filter with sub-$50\mu\text{s}$ SLA.
+  2. A Model Context Protocol (MCP) server conforming to JSON-RPC 2.0 with scoped permissions and dry-run safety.
+  3. Seamless integration of the pre-trade gate and panic kill-switch into the autonomous swarm trader and terminal HUD.
+  4. Production containerization with an unprivileged non-root user (UID 10001), POSIX WAL volume handling, PID 1 signal trapping (`exec uvicorn`), and native Prometheus `/metrics` telemetry.
+* **Decision:**
+  1. Implement `PreTradeDecisionGate` in `src/quant/execution/pre_trade_gate.py`:
+     - `INV-GATE-001` (Fail-Open on Exits): Position closes, stop-losses, and profit-taking exits are NEVER blocked, passing immediately with `decision="bypass_exit"` and `allowed=True`.
+     - `INV-GATE-002` (5-Dimension Bayesian Log-Odds Formulation): Evaluates Data Freshness ($\Delta t \le 120\text{s}$), Macro Yield Curve Spread ($T10Y2Y$ inversion), Order Book Imbalance (OBI toxic adverse selection), Technical Momentum Trend Alignment, and Coherent CVaR Drawdown Budget.
+     - Hard tripwire coupling: severe single-dimension violations trip immediate rejection with diagnostic codes `ERR-GATE-001` through `ERR-GATE-006`.
+     - `INV-GATE-003` (Hot-Path SLA): In-memory execution completing in $< 50\mu\text{s}$ (clocked at $\approx 6.8\mu\text{s}$).
+     - `INV-GATE-004` (Non-Finite Input Protection): Complete rejection of NaN/Inf/bool scalars with `NonFiniteGateInputException(ERR-GATE-005)`.
+  2. Implement Model Context Protocol (MCP) Server in `src/quant/mcp/`:
+     - Standard JSON-RPC 2.0 interface supporting both stdio transport (`MCPServer.run_stdio()`) and authenticated REST endpoint (`POST /api/v1/mcp/rpc`).
+     - Exposes 7 institutional tools (`quant_portfolio_telemetry`, `quant_market_orderbook`, `quant_macro_regimes`, `quant_evaluate_pre_trade`, `quant_swarm_status`, `quant_emergency_panic`, `quant_kill_switch_reset`).
+  3. Autonomous Swarm & Presentation Integration:
+     - Injected `PreTradeDecisionGate` into `AutonomousTradingEngine` slots and wired candidate orders in `step_once()` through the gate.
+     - Mounted `/api/v1/pre-trade` REST endpoints (`/evaluate`, `/decisions`, `/status`).
+     - Added interactive Pre-Trade Gate telemetry panel and candidate order simulator in `trading_terminal.html`.
+  4. Hardened Multi-Stage Containerization & Observability:
+     - Multi-stage `Dockerfile` based on `python:3.13-slim` with non-root UID `10001:10001`, volume mount `/app/data` for persistent DuckDB and SQLite WAL, and direct `exec uvicorn` PID 1 signal trapping.
+     - Standard OpenMetrics Prometheus `/metrics` endpoint in `src/quant/main.py`.
+     - Updated `docker-compose.yml` with `quant_app` service and created `.env.production.example`.
+* **Alternatives Evaluated:** Blocking external LLM calls during pre-trade filtering (rejected: adds 500-2000ms latency, completely unacceptable in execution hot paths); Redis-based state coordination (rejected: unneeded network hops and operational complexity when in-memory async message queues suffice).
+* **Trade-Offs:** The Bayesian log-odds threshold operates on cached market and macro state rather than making live external HTTP queries during the evaluation call, achieving microsecond execution speed while requiring background providers to periodically refresh the cached state.
+
 ---
 
 ## 2. Deterministic Diagnostic Failure Matrix (Zero-Execution Triage)
@@ -520,6 +548,12 @@ This register records all major architectural decisions, design patterns, and en
 | **`ERR-EXT-004`** | `src/quant/data/external_providers.py`<br>`ExternalProviderManager`<br>Lines 68–74 | Deserializes provider JSON responses into strongly-typed domain records. | `ProviderMalformedDataException: ERR-EXT-004: External provider returned unexpected schema or missing fields`. | Upstream vendor modified JSON payload schema, omitted required fields, or returned HTML error page. | Validate JSON schema against `MacroIndicatorRecord` or `ExternalNewsItem` specifications. | Log raw payload sample; patch parser adapter to accommodate schema variation. | Deserialization failure; dropped news or macro observation data. |
 | **`ERR-EXT-005`** | `src/quant/data/external_providers.py`<br>`MacroIndicatorRecord.__post_init__`<br>Lines 75–81 | Enforces numerical finiteness on macroeconomic observations and prices. | `ProviderNonFiniteValueException: ERR-EXT-005: External provider emitted NaN, Inf, or non-finite numeric scalars`. | Upstream feed transmitted corrupt `NaN`, `inf`, or non-numeric scalar for economic metrics. | Validate numeric float fields with `math.isfinite()` and reject booleans. | Filter corrupted observation; preserve previous valid observation in historical buffer. | NaN contamination in Bayesian temperature prior or regime covariance matrix. |
 | **`ERR-EXT-006`** | `src/quant/data/external_providers.py`<br>`ExternalProviderManager`<br>Lines 82–88 | Quarantines failing external providers to prevent cascading latency spikes. | `ProviderCircuitTrippedException: ERR-EXT-006: External provider quarantined due to consecutive failures`. | Repeated network timeouts, consecutive 5xx errors, or persistent 429 rate limit trips. | Inspect provider error telemetry via `GET /api/v1/providers/status`. | Wait for quarantine cooldown or reset provider state after resolving upstream network issue. | Disables failing provider; system continues uninterrupted using synthetic baselines. |
+| **`ERR-GATE-001`** | `src/quant/execution/pre_trade_gate.py`<br>`PreTradeDecisionGate.evaluate`<br>Lines 265–278 | Validates market data age does not exceed maximum allowable stale threshold ($\Delta t \le 120\text{s}$). | Rejection: `"Market data stale (...s > 120.0s)"`; Gate logs `primary_code="ERR-GATE-001"`. | Upstream WebSocket or polling market feed disconnected, delayed, or stopped sending bar updates. | Check `request.data_age_seconds` in payload or inspect feed health via `/api/v1/providers/status`. | Verify market data feed connectivity and NTP time synchronization on host. | Stale order entries rejected; protects portfolio against execution on obsolete quotes. |
+| **`ERR-GATE-002`** | `src/quant/execution/pre_trade_gate.py`<br>`PreTradeDecisionGate.evaluate`<br>Lines 280–315 | Evaluates order book imbalance (OBI) and bid-ask spread to detect toxic institutional adverse selection. | Rejection: `"Adverse order book imbalance (OBI=...)"` or `"Excessive bid-ask spread width"`. | Thick queue of toxic resting orders on the opposite side (e.g. heavy institutional dumping into bids) or severe illiquidity. | Check `order_book_imbalance` in $[-1.0, 1.0]$ and `market_spread_bps`. | Wait for queue equilibrium or split parent order into smaller dark midpoint slices via SOR. | Order blocked; prevents toxic adverse selection and execution slippage. |
+| **`ERR-GATE-003`** | `src/quant/execution/pre_trade_gate.py`<br>`PreTradeDecisionGate.evaluate`<br>Lines 318–335 | Evaluates macroeconomic yield curve slope ($T10Y2Y$) and interest rate environment. | Rejection: `"Macro regime conflict: Yield curve inverted (T10Y2Y=...%)"`. | Inverted US Treasury yield curve signaling recessionary credit stress while attempting long equity entry. | Query `/api/v1/providers/status` for `yield_spread_10y_2y` value. | Adjust macro risk tolerance or prioritize market-neutral/short hedge allocations. | Aggressive long equity expansion throttled during macroeconomic stress. |
+| **`ERR-GATE-004`** | `src/quant/execution/pre_trade_gate.py`<br>`PreTradeDecisionGate.evaluate`<br>Lines 360–380 | Checks rolling consecutive loss streak and intraday portfolio drawdown against risk budgets. | Rejection: `"Drawdown budget exceeded (...% > 15.0%)"` or `"Consecutive losing trades count (... >= 5)"`. | Systematic strategy underperformance or rapid intraday market drawdown breaching risk budget. | Inspect `consecutive_losses` and `current_drawdown_pct` in risk state. | Reset loss counter upon strategy re-calibration; reduce position sizing or wait for regime shift. | New risk-increasing entries frozen; position exits fail-open to allow de-risking. |
+| **`ERR-GATE-005`** | `src/quant/execution/pre_trade_gate.py`<br>`PreTradeDecisionRequest.__post_init__`<br>Lines 130–155 | Enforces finite positive scalar invariants on order quantities and reference prices. | `NonFiniteGateInputException: ERR-GATE-005: ... must be finite positive float`. | Corrupted upstream pricing feed, NaN calculation, or non-numeric payload passed to pre-trade gate. | Inspect order parameters: verify `quantity > 0`, `reference_price > 0`, and `math.isfinite()`. | Sanitize input payload; filter corrupt ticks before constructing `PreTradeDecisionRequest`. | 422 Unprocessable Content returned on REST/MCP; corrupt order rejected before gateway. |
+| **`ERR-GATE-006`** | `src/quant/execution/pre_trade_gate.py`<br>`PreTradeDecisionGate.evaluate`<br>Lines 385–405 | Evaluates composite Bayesian log-odds toxicity probability against safety threshold ($P_{\text{toxic}} < 0.65$). | Rejection: `"Bayesian log-odds composite toxicity probability (... > 0.65)"`. | Multiple subtle risk dimensions simultaneously elevating toxicity probability above prior threshold. | Inspect `res.toxicity_probability`, log-odds score delta, and individual dimension breakdown in audit log. | Review market microstructural and momentum conditions; defer entry until multi-factor alignment improves. | Unfavorable multi-factor risk profile blocked; prevents death by a thousand cuts. |
 
 ---
 
@@ -822,5 +856,28 @@ This register records all major architectural decisions, design patterns, and en
   - Added 23 new unit and API integration tests in `tests/unit/test_external_providers.py` (19 tests) and `tests/api/test_providers_api.py` (4 tests), expanding test suite to **2,058 passing tests (100% pass rate)**.
   - Maintained 100% Python 3.13 strict static typing compliance (`mypy src --strict` 0 errors across 83 source files) and zero ruff lint/formatting deviations across all 176 files.
   - Formally concluded **External Providers Integration as 100% COMPLETE**.
+* **[Phase 37: Sprint 11 - Closed-Form Bayesian Pre-Trade Gate, MCP Server, Hardened Docker & OpenMetrics] - 2026-09-20**:
+  - Analyzed `QuantDinger` architecture, isolating core concepts while rejecting naive anti-patterns (blocking HTTP LLM calls in hot paths, Flask/synchronous Gunicorn, dual-Redis overhead).
+  - Built Closed-Form Bayesian Log-Odds Pre-Trade Decision Gate (`src/quant/execution/pre_trade_gate.py`):
+    - `INV-GATE-001` (Fail-Open on Exits): Position closes, stop-losses, and profit-taking exits are never blocked (`decision="bypass_exit"`, `allowed=True`).
+    - `INV-GATE-002` (5-Dimension Bayesian Filter): Evaluates data freshness ($\le 120\text{s}$), macro yield spread inversion ($T10Y2Y < -0.50\%$), order book imbalance toxicity (adverse selection), momentum alignment, and coherent CVaR drawdown budget.
+    - Coupled hard tripwires with diagnostic fault codes `ERR-GATE-001` through `ERR-GATE-006`.
+    - `INV-GATE-003` ($< 50\mu\text{s}$ SLA clocked at $\approx 6.8\mu\text{s}$) and `INV-GATE-004` (strict non-finite scalar protection).
+  - Built Model Context Protocol (MCP) Server (`src/quant/mcp/`):
+    - JSON-RPC 2.0 protocol router supporting both stdio CLI transport (`MCPServer.run_stdio()`) and authenticated REST endpoint (`POST /api/v1/mcp/rpc`).
+    - Exposes 7 institutional tools (`quant_portfolio_telemetry`, `quant_market_orderbook`, `quant_macro_regimes`, `quant_evaluate_pre_trade`, `quant_swarm_status`, `quant_emergency_panic`, `quant_kill_switch_reset`).
+  - Swarm, Presentation & Terminal HUD Integration:
+    - Injected `PreTradeDecisionGate` into `AutonomousTradingEngine` slots and wired candidate orders in `step_once()` through the gate.
+    - Mounted `/api/v1/pre-trade` REST endpoints (`/evaluate`, `/decisions`, `/status`).
+    - Implemented interactive Pre-Trade Gate telemetry panel, test candidate order simulator, and live decisions audit stream in `trading_terminal.html`.
+  - Production Containerization & Observability:
+    - Created multi-stage `Dockerfile` (Python 3.13-slim runtime, non-root user `quant:quant` `10001:10001`, volume mount `/app/data` for DuckDB/SQLite WAL, PID 1 `exec uvicorn` signal trapping, and curl `/healthz` healthcheck).
+    - Created `.dockerignore` and `.env.production.example`.
+    - Updated `docker-compose.yml` with `quant_app` service alongside `postgres`.
+    - Implemented OpenMetrics Prometheus `/metrics` endpoint in `src/quant/main.py`.
+  - Added 27 new unit and API integration tests in `test_pre_trade_gate.py` (11 tests), `test_mcp_server.py` (7 tests), `test_pre_trade_api.py` (4 tests), `test_mcp_api.py` (3 tests), and `test_health_and_auth_api.py` (2 tests), bringing total passing tests to **2,085 tests passing 100% green**.
+  - Verified 100% Python 3.13 strict static typing compliance (`mypy src --strict` 0 errors across 89 source files) and zero ruff lint/formatting deviations across all 186 files.
+  - Formally concluded **Sprint 11 (Pre-Trade Gate, MCP, Hardened Docker & OpenMetrics) as 100% COMPLETE**.
+
 
 

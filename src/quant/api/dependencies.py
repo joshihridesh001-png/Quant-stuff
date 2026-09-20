@@ -21,6 +21,7 @@ from quant.execution.alpaca_gateway import AlpacaExecutionGateway
 from quant.execution.gateway import ExecutionGateway, PaperExecutionGateway
 from quant.execution.heartbeat import HeartbeatWatchdog
 from quant.execution.kill_switch import EmergencyKillSwitch
+from quant.execution.pre_trade_gate import PreTradeDecisionGate
 from quant.execution.risk import (
     PortfolioRiskState,
     PreTradeRiskFirewall,
@@ -196,7 +197,10 @@ def get_risk_service(
     """Provide live RiskService application coordinator."""
     global _risk_service
     if _risk_service is None:
-        _risk_service = RiskService(orchestrator=orchestrator)
+        orch = (
+            orchestrator if isinstance(orchestrator, RiskOrchestrator) else get_risk_orchestrator()
+        )
+        _risk_service = RiskService(orchestrator=orch)
     return _risk_service
 
 
@@ -240,6 +244,16 @@ def get_autonomous_trader(
             min_trade_notional=settings.MIN_TRADE_NOTIONAL,
         )
     return _autonomous_trader
+
+
+def get_pre_trade_gate(
+    trader: AutonomousTradingEngine = Depends(get_autonomous_trader),
+) -> PreTradeDecisionGate:
+    """Provide PreTradeDecisionGate instance from autonomous trader daemon."""
+    active_trader = (
+        trader if isinstance(trader, AutonomousTradingEngine) else get_autonomous_trader()
+    )
+    return active_trader.pre_trade_gate
 
 
 _external_provider_manager: ExternalProviderManager | None = None

@@ -750,6 +750,60 @@
                 <div class="text-slate-500 text-center py-4">Click "Fetch News" or select a ticker to query live Finnhub news.</div>
               </div>
             </div>
+
+            <!-- PRE-TRADE BAYESIAN DECISION GATE TELEMETRY -->
+            <div class="bg-slate-900/80 border border-white/10 rounded-xl p-3 flex flex-col gap-2.5">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <span class="w-2 h-2 rounded-full bg-cyan-400"></span>
+                  <span class="font-bold text-white tracking-wide">INSTITUTIONAL PRE-TRADE DECISION GATE (BAYESIAN LOG-ODDS)</span>
+                  <span class="text-[10px] px-2 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-500/30 font-mono">Max Toxicity: 65% • &lt;50µs SLA</span>
+                </div>
+                <button id="refreshPreTradeBtn" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] border border-white/10 transition">Refresh Gate</button>
+              </div>
+
+              <!-- Simulator & Recent Evaluations Split -->
+              <div class="grid grid-cols-1 lg:grid-cols-3 gap-2.5">
+                <!-- Mini Order Gate Simulator -->
+                <div class="bg-black/40 border border-white/5 p-2.5 rounded-lg flex flex-col gap-2 text-[11px]">
+                  <span class="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Test Candidate Order</span>
+                  <div class="grid grid-cols-2 gap-1.5">
+                    <input id="gateSimSymbol" type="text" value="SPY" placeholder="Symbol" class="bg-slate-900 border border-white/10 rounded px-2 py-1 text-cyan-300 uppercase font-bold" />
+                    <select id="gateSimAction" class="bg-slate-900 border border-white/10 rounded px-2 py-1 text-white font-bold">
+                      <option value="BUY">BUY</option>
+                      <option value="SELL">SELL</option>
+                      <option value="CLOSE">CLOSE (Bypass)</option>
+                    </select>
+                  </div>
+                  <div class="grid grid-cols-2 gap-1.5">
+                    <input id="gateSimQty" type="number" value="100" placeholder="Quantity" class="bg-slate-900 border border-white/10 rounded px-2 py-1 text-white font-bold" />
+                    <input id="gateSimPrice" type="number" value="500.0" step="0.5" placeholder="Price" class="bg-slate-900 border border-white/10 rounded px-2 py-1 text-white font-bold" />
+                  </div>
+                  <button id="runGateSimBtn" class="mt-1 w-full py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold text-xs tracking-wider transition active:scale-95">Evaluate Pre-Trade</button>
+                  <div id="gateSimResultBox" class="hidden p-2 rounded bg-slate-950 border border-white/10 text-[10px]"></div>
+                </div>
+
+                <!-- Recent Gate Decisions Stream -->
+                <div class="lg:col-span-2 overflow-x-auto max-h-48 overflow-y-auto rounded-lg border border-white/5 bg-black/40">
+                  <table class="w-full text-left border-collapse text-[10px]">
+                    <thead class="sticky top-0 bg-slate-950/90 backdrop-blur z-10 border-b border-white/10 text-slate-400 uppercase">
+                      <tr>
+                        <th class="p-1.5">Decision ID</th>
+                        <th class="p-1.5">Symbol</th>
+                        <th class="p-1.5">Side</th>
+                        <th class="p-1.5 text-center">Verdict</th>
+                        <th class="p-1.5 text-right">Toxicity</th>
+                        <th class="p-1.5 text-right">Latency</th>
+                        <th class="p-1.5">Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody id="preTradeTableBody" class="divide-y divide-white/5">
+                      <tr><td colspan="7" class="p-4 text-center text-slate-500">Awaiting pre-trade gate evaluations...</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
           </div>
 
         </div>
@@ -2104,6 +2158,7 @@
         loadNewsFeed();
       } else if (content === tabContentProviders) {
         loadProvidersStatus();
+        loadPreTradeDecisions();
       }
     }
 
@@ -2277,6 +2332,7 @@
         loadNewsFeed();
       } else if (tabContentProviders && !tabContentProviders.classList.contains('hidden')) {
         loadProvidersStatus();
+        loadPreTradeDecisions();
       }
     }, 20000);
 
@@ -2418,6 +2474,153 @@
     if (syncMacroBtn) syncMacroBtn.addEventListener('click', syncMacroState);
     if (refreshProvidersBtn) refreshProvidersBtn.addEventListener('click', loadProvidersStatus);
     if (fetchCompanyNewsBtn) fetchCompanyNewsBtn.addEventListener('click', () => fetchCompanyNews());
+
+    // ========================================================================
+    // INSTITUTIONAL PRE-TRADE DECISION GATE TELEMETRY & SIMULATOR
+    // ========================================================================
+    const refreshPreTradeBtn = document.getElementById('refreshPreTradeBtn');
+    const runGateSimBtn = document.getElementById('runGateSimBtn');
+    const gateSimSymbol = document.getElementById('gateSimSymbol');
+    const gateSimAction = document.getElementById('gateSimAction');
+    const gateSimQty = document.getElementById('gateSimQty');
+    const gateSimPrice = document.getElementById('gateSimPrice');
+    const gateSimResultBox = document.getElementById('gateSimResultBox');
+    const preTradeTableBody = document.getElementById('preTradeTableBody');
+
+    async function loadPreTradeDecisions() {
+      if (!preTradeTableBody) return;
+      try {
+        const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+        const res = await fetch('/api/v1/pre-trade/decisions?limit=30', { headers });
+        if (!res.ok) return;
+        const decisions = await res.json();
+        if (!Array.isArray(decisions) || decisions.length === 0) {
+          preTradeTableBody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-slate-500">No pre-trade evaluations recorded yet. Run a test candidate order or start swarm.</td></tr>';
+          return;
+        }
+
+        preTradeTableBody.innerHTML = decisions.map(d => {
+          const isAllowed = d.allowed;
+          const isBypass = d.decision === 'bypass_exit';
+          const verdictClass = isBypass
+            ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+            : isAllowed
+              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+              : 'bg-rose-500/20 text-rose-300 border border-rose-500/30';
+          const verdictText = isBypass ? 'BYPASS (EXIT)' : isAllowed ? 'ALLOWED' : 'BLOCKED';
+          const sideColor = d.action === 'BUY' ? 'text-emerald-400' : 'text-rose-400';
+          const toxPct = (d.toxicity_probability * 100).toFixed(1);
+          const toxColor = d.toxicity_probability >= 0.65 ? 'text-rose-400 font-bold' : d.toxicity_probability >= 0.45 ? 'text-amber-400' : 'text-emerald-400';
+
+          return `
+            <tr class="hover:bg-white/[0.02] transition">
+              <td class="p-1.5 font-mono text-slate-400">${d.decision_id.slice(0, 12)}...</td>
+              <td class="p-1.5 font-bold text-white">${d.symbol}</td>
+              <td class="p-1.5 font-bold ${sideColor}">${d.action}</td>
+              <td class="p-1.5 text-center">
+                <span class="px-1.5 py-0.5 rounded text-[9px] font-bold ${verdictClass}">${verdictText}</span>
+              </td>
+              <td class="p-1.5 text-right font-mono ${toxColor}">${toxPct}%</td>
+              <td class="p-1.5 text-right font-mono text-slate-300">${d.latency_us.toFixed(1)} µs</td>
+              <td class="p-1.5 text-slate-400 max-w-[180px] truncate" title="${d.reason} (${d.primary_code})">${d.reason}</td>
+            </tr>
+          `;
+        }).join('');
+      } catch (err) {
+        console.warn('Failed to load pre-trade decisions', err);
+      }
+    }
+
+    async function runGateSimulation() {
+      if (!runGateSimBtn || !gateSimResultBox) return;
+      const symbol = (gateSimSymbol ? gateSimSymbol.value.trim().toUpperCase() : '') || 'SPY';
+      const action = (gateSimAction ? gateSimAction.value : 'BUY');
+      const qty = parseFloat(gateSimQty ? gateSimQty.value : '100') || 100;
+      const price = parseFloat(gateSimPrice ? gateSimPrice.value : '500') || 500;
+      const isExit = action === 'CLOSE';
+
+      runGateSimBtn.disabled = true;
+      runGateSimBtn.textContent = 'Evaluating...';
+
+      try {
+        const headers = {
+          'Content-Type': 'application/json',
+          ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {})
+        };
+        const payload = {
+          symbol: symbol,
+          action: isExit ? 'CLOSE' : action,
+          quantity: qty,
+          reference_price: price,
+          is_position_exit: isExit,
+          market_spread_bps: 5.0,
+          order_book_imbalance: 0.0,
+          macro_yield_spread: 0.18,
+          trailing_volatility_pct: 1.2,
+          current_bar_return_pct: 0.05,
+          consecutive_losses: 0,
+          current_drawdown_pct: 0.0,
+          cvar_95_pct: 2.5,
+          data_age_seconds: 1.0
+        };
+
+        const res = await fetch('/api/v1/pre-trade/evaluate', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          gateSimResultBox.classList.remove('hidden');
+          gateSimResultBox.innerHTML = `<span class="text-rose-400 font-bold">Error: ${errData.detail?.message || res.statusText}</span>`;
+          return;
+        }
+
+        const decision = await res.json();
+        gateSimResultBox.classList.remove('hidden');
+
+        const isAllowed = decision.allowed;
+        const isBypass = decision.decision === 'bypass_exit';
+        const badgeClass = isBypass
+          ? 'bg-cyan-950/80 text-cyan-300 border-cyan-500/40'
+          : isAllowed
+            ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40'
+            : 'bg-rose-950/80 text-rose-300 border-rose-500/40';
+        const verdictLabel = isBypass ? 'BYPASS (EXIT IMMUNITY)' : isAllowed ? 'PASSED (LOW TOXICITY)' : 'REJECTED (HIGH TOXICITY)';
+
+        gateSimResultBox.innerHTML = `
+          <div class="flex items-center justify-between border-b border-white/10 pb-1 mb-1">
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold border ${badgeClass}">${verdictLabel}</span>
+            <span class="font-mono text-cyan-300">${decision.latency_us.toFixed(1)} µs</span>
+          </div>
+          <div class="grid grid-cols-2 gap-1 text-[9px] mb-1 font-mono">
+            <span class="text-slate-400">Toxicity Prob: <b class="${decision.toxicity_probability >= 0.65 ? 'text-rose-400' : 'text-emerald-400'}">${(decision.toxicity_probability * 100).toFixed(1)}%</b></span>
+            <span class="text-slate-400">Confidence: <b class="text-white">${(decision.confidence * 100).toFixed(1)}%</b></span>
+          </div>
+          <div class="text-[9px] text-slate-300 mb-1 leading-tight">${decision.reason} (${decision.primary_code})</div>
+          <div class="flex flex-wrap gap-1 mt-1">
+            ${decision.checks.map(c => `
+              <span class="px-1 py-0.5 rounded text-[8px] font-mono border ${c.passed ? 'bg-emerald-950/40 text-emerald-400 border-emerald-500/20' : 'bg-rose-950/40 text-rose-400 border-rose-500/20'}">
+                ${c.name.split('_')[0]}: ${c.passed ? 'OK' : 'TRIP'}
+              </span>
+            `).join('')}
+          </div>
+        `;
+
+        loadPreTradeDecisions();
+      } catch (err) {
+        gateSimResultBox.classList.remove('hidden');
+        gateSimResultBox.innerHTML = `<span class="text-rose-400 font-bold">Simulation error: ${err.message}</span>`;
+      } finally {
+        runGateSimBtn.disabled = false;
+        runGateSimBtn.textContent = 'Evaluate Pre-Trade';
+      }
+    }
+
+    if (refreshPreTradeBtn) refreshPreTradeBtn.addEventListener('click', loadPreTradeDecisions);
+    if (runGateSimBtn) runGateSimBtn.addEventListener('click', runGateSimulation);
+
 
     // Emergency Panic Kill Switch
     emergencyKillBtn.addEventListener('click', () => {
@@ -2606,6 +2809,7 @@
       ensureAuth().then(() => {
         connectWebSockets();
         fetchAutonomousStatus();
+        loadPreTradeDecisions();
         setInterval(fetchAutonomousStatus, 5000);
       });
     }, 100);
