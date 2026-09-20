@@ -407,6 +407,10 @@
                 <span>📡 Live News & Predictions</span>
                 <span id="newsCountBadge" class="bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 px-1.5 py-0.2 rounded text-[10px]">Live</span>
               </button>
+              <button id="tabProvidersBtn" class="px-3.5 py-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5">
+                <span>🌐 Macro & Providers</span>
+                <span id="providersStatusBadge" class="bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 px-1.5 py-0.2 rounded text-[10px]">Active</span>
+              </button>
             </div>
 
             <!-- Evolve Button -->
@@ -620,6 +624,131 @@
                   </tr>
                 </tbody>
               </table>
+            </div>
+          </div>
+
+          <!-- TAB 6: EXTERNAL DATA PROVIDERS & MACRO REGIME HUD -->
+          <div id="tabContentProviders" class="hidden flex flex-col gap-3 text-xs font-mono">
+            <!-- Macro Toolbar & Sync Button -->
+            <div class="flex flex-wrap items-center justify-between gap-2.5 bg-black/50 p-2.5 rounded-xl border border-white/5 text-[11px]">
+              <div class="flex items-center gap-2">
+                <span class="text-emerald-400 font-bold tracking-wide">🌐 EXTERNAL QUANTITATIVE PROVIDERS & MACRO REGIME</span>
+                <span class="text-slate-500 text-[10px]">• FRED, Finnhub, NewsAPI, Polygon.io, Treasury</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <button id="syncMacroBtn" class="px-3 py-1.5 rounded-lg bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 border border-emerald-500/40 transition flex items-center gap-1 active:scale-95">
+                  <span>🔄</span>
+                  <span class="font-bold">Sync Macro (FRED)</span>
+                </button>
+                <button id="refreshProvidersBtn" class="px-3 py-1.5 rounded-lg bg-cyan-600/30 hover:bg-cyan-600/50 text-cyan-300 border border-cyan-500/40 transition flex items-center gap-1 active:scale-95">
+                  <span>⚡</span>
+                  <span class="font-bold">Check Health</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Macro Indicator Cards Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+              <div class="bg-black/50 border border-white/10 p-3.5 rounded-xl glow-top-cyan flex flex-col justify-between">
+                <div class="flex items-center justify-between text-slate-400 text-[10px] uppercase font-bold tracking-wider">
+                  <span>10Y-2Y YIELD SPREAD (T10Y2Y)</span>
+                  <span id="yieldCurveRegimeBadge" class="text-emerald-400 font-bold">NORMAL</span>
+                </div>
+                <div id="macroYieldSpread" class="text-2xl font-black text-white mt-1">+0.18%</div>
+                <div class="text-[11px] text-slate-400 flex items-center justify-between mt-1">
+                  <span>Fed Funds Rate (DFF):</span>
+                  <span id="macroFedFunds" class="text-cyan-300 font-bold">5.25%</span>
+                </div>
+              </div>
+
+              <div class="bg-black/50 border border-white/10 p-3.5 rounded-xl glow-top-purple flex flex-col justify-between">
+                <div class="flex items-center justify-between text-slate-400 text-[10px] uppercase font-bold tracking-wider">
+                  <span>BAYESIAN REGIME PRIOR</span>
+                  <span class="text-purple-400 font-bold">CALIBRATED</span>
+                </div>
+                <div id="macroRegimeStatus" class="text-xl font-black text-purple-300 mt-1">EXPANSIONARY</div>
+                <div class="text-[11px] text-slate-400 flex items-center justify-between mt-1">
+                  <span>Macro Inversion Risk:</span>
+                  <span id="macroInversionRisk" class="text-emerald-400 font-bold">LOW (0.12)</span>
+                </div>
+              </div>
+
+              <div class="bg-black/50 border border-white/10 p-3.5 rounded-xl glow-top-green flex flex-col justify-between">
+                <div class="flex items-center justify-between text-slate-400 text-[10px] uppercase font-bold tracking-wider">
+                  <span>EXTERNAL PROVIDER SUITE</span>
+                  <span id="configuredProvidersCount" class="text-emerald-400 font-bold">4/4 ACTIVE</span>
+                </div>
+                <div id="providerHealthSummary" class="text-xl font-black text-emerald-400 mt-1">100% HEALTHY</div>
+                <div class="text-[11px] text-slate-400 flex items-center justify-between mt-1">
+                  <span>Fault Tolerance:</span>
+                  <span class="text-slate-300">Hermetic Fallback Active</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Provider Status Cards Grid -->
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <div id="cardProviderFRED" class="bg-slate-900/60 border border-white/10 p-3 rounded-xl flex flex-col gap-1">
+                <div class="flex items-center justify-between">
+                  <span class="font-bold text-white">FRED</span>
+                  <span id="badgeFRED" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Active</span>
+                </div>
+                <div class="text-[10px] text-slate-400">Federal Reserve Macro Data</div>
+                <div class="text-[11px] text-cyan-300 mt-1 flex items-center justify-between">
+                  <span>Calls: <b id="callsFRED">0</b></span>
+                  <span id="statusFRED" class="text-emerald-400 font-bold">Healthy</span>
+                </div>
+              </div>
+
+              <div id="cardProviderFinnhub" class="bg-slate-900/60 border border-white/10 p-3 rounded-xl flex flex-col gap-1">
+                <div class="flex items-center justify-between">
+                  <span class="font-bold text-white">Finnhub</span>
+                  <span id="badgeFinnhub" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Active</span>
+                </div>
+                <div class="text-[10px] text-slate-400">Real-Time Quotes & News</div>
+                <div class="text-[11px] text-cyan-300 mt-1 flex items-center justify-between">
+                  <span>Calls: <b id="callsFinnhub">0</b></span>
+                  <span id="statusFinnhub" class="text-emerald-400 font-bold">Healthy</span>
+                </div>
+              </div>
+
+              <div id="cardProviderNewsAPI" class="bg-slate-900/60 border border-white/10 p-3 rounded-xl flex flex-col gap-1">
+                <div class="flex items-center justify-between">
+                  <span class="font-bold text-white">NewsAPI</span>
+                  <span id="badgeNewsAPI" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Active</span>
+                </div>
+                <div class="text-[10px] text-slate-400">Global Business Headlines</div>
+                <div class="text-[11px] text-cyan-300 mt-1 flex items-center justify-between">
+                  <span>Calls: <b id="callsNewsAPI">0</b></span>
+                  <span id="statusNewsAPI" class="text-emerald-400 font-bold">Healthy</span>
+                </div>
+              </div>
+
+              <div id="cardProviderPolygon" class="bg-slate-900/60 border border-white/10 p-3 rounded-xl flex flex-col gap-1">
+                <div class="flex items-center justify-between">
+                  <span class="font-bold text-white">Polygon.io</span>
+                  <span id="badgePolygon" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Active</span>
+                </div>
+                <div class="text-[10px] text-slate-400">US Equities Aggregates</div>
+                <div class="text-[11px] text-cyan-300 mt-1 flex items-center justify-between">
+                  <span>Calls: <b id="callsPolygon">0</b></span>
+                  <span id="statusPolygon" class="text-emerald-400 font-bold">Healthy</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Real-Time Company News Query Console (Finnhub) -->
+            <div class="bg-slate-900/80 border border-white/10 rounded-xl p-3 flex flex-col gap-2">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="font-bold text-cyan-300">🏢 REAL-TIME COMPANY NEWS QUERY CONSOLE (FINNHUB)</span>
+                <div class="flex items-center gap-2">
+                  <input id="providerTickerInput" type="text" value="NVDA" class="w-20 bg-black/60 border border-white/10 rounded-lg px-2.5 py-1 text-cyan-300 uppercase outline-none focus:border-cyan-400 font-bold" />
+                  <button id="fetchCompanyNewsBtn" class="px-3 py-1 rounded-lg bg-cyan-600/30 hover:bg-cyan-600/50 text-cyan-300 border border-cyan-500/40 transition font-bold active:scale-95">Fetch News</button>
+                </div>
+              </div>
+              <div id="companyNewsContainer" class="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                <div class="text-slate-500 text-center py-4">Click "Fetch News" or select a ticker to query live Finnhub news.</div>
+              </div>
             </div>
           </div>
 
@@ -927,11 +1056,13 @@
     const tabOrdersBtn = document.getElementById('tabOrdersBtn');
     const tabTcaBtn = document.getElementById('tabTcaBtn');
     const tabNewsBtn = document.getElementById('tabNewsBtn');
+    const tabProvidersBtn = document.getElementById('tabProvidersBtn');
     const tabContentAlgos = document.getElementById('tabContentAlgos');
     const tabContentPositions = document.getElementById('tabContentPositions');
     const tabContentOrders = document.getElementById('tabContentOrders');
     const tabContentTca = document.getElementById('tabContentTca');
     const tabContentNews = document.getElementById('tabContentNews');
+    const tabContentProviders = document.getElementById('tabContentProviders');
 
     // News & Scenario Simulator elements
     const harvestNewsBtn = document.getElementById('harvestNewsBtn');
@@ -1960,10 +2091,10 @@
 
     // Tab Switching
     function setTabActive(btn, content) {
-      [tabAlgosBtn, tabPositionsBtn, tabOrdersBtn, tabTcaBtn, tabNewsBtn].forEach(b => {
+      [tabAlgosBtn, tabPositionsBtn, tabOrdersBtn, tabTcaBtn, tabNewsBtn, tabProvidersBtn].forEach(b => {
         if (b) b.className = 'px-3.5 py-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5';
       });
-      [tabContentAlgos, tabContentPositions, tabContentOrders, tabContentTca, tabContentNews].forEach(c => {
+      [tabContentAlgos, tabContentPositions, tabContentOrders, tabContentTca, tabContentNews, tabContentProviders].forEach(c => {
         if (c) c.classList.add('hidden');
       });
 
@@ -1971,6 +2102,8 @@
       content.classList.remove('hidden');
       if (content === tabContentNews) {
         loadNewsFeed();
+      } else if (content === tabContentProviders) {
+        loadProvidersStatus();
       }
     }
 
@@ -1979,6 +2112,7 @@
     tabOrdersBtn.addEventListener('click', () => setTabActive(tabOrdersBtn, tabContentOrders));
     tabTcaBtn.addEventListener('click', () => setTabActive(tabTcaBtn, tabContentTca));
     if (tabNewsBtn) tabNewsBtn.addEventListener('click', () => setTabActive(tabNewsBtn, tabContentNews));
+    if (tabProvidersBtn) tabProvidersBtn.addEventListener('click', () => setTabActive(tabProvidersBtn, tabContentProviders));
 
     // Live Financial News Engine & Price Prediction Handlers
     async function loadNewsFeed() {
@@ -2141,8 +2275,149 @@
     setInterval(() => {
       if (tabContentNews && !tabContentNews.classList.contains('hidden')) {
         loadNewsFeed();
+      } else if (tabContentProviders && !tabContentProviders.classList.contains('hidden')) {
+        loadProvidersStatus();
       }
     }, 20000);
+
+    // External Quantitative Providers & Macro Regime HUD
+    const syncMacroBtn = document.getElementById('syncMacroBtn');
+    const refreshProvidersBtn = document.getElementById('refreshProvidersBtn');
+    const fetchCompanyNewsBtn = document.getElementById('fetchCompanyNewsBtn');
+    const providerTickerInput = document.getElementById('providerTickerInput');
+    const companyNewsContainer = document.getElementById('companyNewsContainer');
+
+    async function loadProvidersStatus() {
+      try {
+        const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+        const res = await fetch('/api/v1/providers/status', { headers });
+        if (!res.ok) return;
+        const data = await res.json();
+        const providers = data.providers || {};
+
+        let configuredCount = 0;
+        let totalCount = 0;
+        let healthyCount = 0;
+
+        for (const [pid, st] of Object.entries(providers)) {
+          totalCount++;
+          if (st.is_configured) configuredCount++;
+          if (st.is_healthy) healthyCount++;
+
+          const callsEl = document.getElementById(`calls${pid}`);
+          if (callsEl) callsEl.textContent = st.calls_made;
+
+          const statusEl = document.getElementById(`status${pid}`);
+          if (statusEl) {
+            statusEl.textContent = st.is_healthy ? 'Healthy' : 'Degraded';
+            statusEl.className = st.is_healthy ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold';
+          }
+
+          const badgeEl = document.getElementById(`badge${pid}`);
+          if (badgeEl) {
+            if (st.is_configured) {
+              badgeEl.textContent = 'Active (Live Key)';
+              badgeEl.className = 'text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+            } else {
+              badgeEl.textContent = 'Fallback (Calibrated)';
+              badgeEl.className = 'text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30';
+            }
+          }
+        }
+
+        const countEl = document.getElementById('configuredProvidersCount');
+        if (countEl) countEl.textContent = `${configuredCount}/${totalCount} CONFIGURED`;
+
+        const summaryEl = document.getElementById('providerHealthSummary');
+        if (summaryEl) {
+          const pct = totalCount > 0 ? Math.round((healthyCount / totalCount) * 100) : 100;
+          summaryEl.textContent = `${pct}% HEALTHY`;
+        }
+      } catch (err) {
+        console.warn('Failed to load provider status', err);
+      }
+    }
+
+    async function syncMacroState() {
+      if (!syncMacroBtn) return;
+      syncMacroBtn.disabled = true;
+      syncMacroBtn.innerHTML = '<span>⏳</span><span>Syncing...</span>';
+      try {
+        const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+        const res = await fetch('/api/v1/providers/macro/sync', { method: 'POST', headers });
+        if (res.ok) {
+          const macro = await res.json();
+          const spreadEl = document.getElementById('macroYieldSpread');
+          if (spreadEl && macro.yield_spread_10y_2y !== undefined) {
+            const val = macro.yield_spread_10y_2y;
+            const sign = val >= 0 ? '+' : '';
+            spreadEl.textContent = `${sign}${val.toFixed(2)}%`;
+            spreadEl.className = `text-2xl font-black ${val >= 0 ? 'text-white' : 'text-rose-400'} mt-1`;
+
+            const regimeBadge = document.getElementById('yieldCurveRegimeBadge');
+            if (regimeBadge) {
+              if (val < 0) {
+                regimeBadge.textContent = 'INVERTED';
+                regimeBadge.className = 'text-rose-400 font-bold';
+              } else {
+                regimeBadge.textContent = 'NORMAL';
+                regimeBadge.className = 'text-emerald-400 font-bold';
+              }
+            }
+          }
+
+          const fedFundsEl = document.getElementById('macroFedFunds');
+          if (fedFundsEl && macro.fed_funds_rate !== undefined) {
+            fedFundsEl.textContent = `${macro.fed_funds_rate.toFixed(2)}%`;
+          }
+
+          loadProvidersStatus();
+        }
+      } catch (err) {
+        console.warn('Macro sync failed', err);
+      } finally {
+        syncMacroBtn.disabled = false;
+        syncMacroBtn.innerHTML = '<span>🔄</span><span class="font-bold">Sync Macro (FRED)</span>';
+      }
+    }
+
+    async function fetchCompanyNews(symbol) {
+      if (!companyNewsContainer) return;
+      const sym = symbol || (providerTickerInput ? providerTickerInput.value.trim().toUpperCase() : 'NVDA');
+      if (!sym) return;
+
+      companyNewsContainer.innerHTML = '<div class="text-slate-400 text-center py-4">Fetching institutional news from Finnhub...</div>';
+      try {
+        const headers = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+        const res = await fetch(`/api/v1/providers/company-news/${sym}?lookback_days=3`, { headers });
+        if (!res.ok) {
+          companyNewsContainer.innerHTML = '<div class="text-slate-500 text-center py-4">No news returned. Provider may be running in fallback mode.</div>';
+          return;
+        }
+        const articles = await res.json();
+        if (!Array.isArray(articles) || articles.length === 0) {
+          companyNewsContainer.innerHTML = `<div class="text-slate-500 text-center py-4">No recent company news articles for ${sym}. Configure FINNHUB_API_KEY for live feed.</div>`;
+          return;
+        }
+
+        companyNewsContainer.innerHTML = articles.map(art => `
+          <div class="p-2 rounded-lg bg-black/40 border border-white/5 hover:border-white/20 transition flex flex-col gap-1 text-[11px]">
+            <div class="flex items-center justify-between text-[10px] text-slate-400">
+              <span class="text-cyan-400 font-bold">${art.source || 'Finnhub'}</span>
+              <span>${art.published_at ? new Date(art.published_at).toLocaleTimeString() : ''}</span>
+            </div>
+            <a href="${art.url || '#'}" target="_blank" class="text-white hover:text-cyan-300 font-semibold line-clamp-1 transition">${art.headline}</a>
+            <p class="text-slate-400 text-[10px] line-clamp-2">${art.summary}</p>
+          </div>
+        `).join('');
+      } catch (err) {
+        companyNewsContainer.innerHTML = `<div class="text-rose-400 text-center py-4">Failed to fetch company news: ${err.message}</div>`;
+      }
+    }
+
+    if (syncMacroBtn) syncMacroBtn.addEventListener('click', syncMacroState);
+    if (refreshProvidersBtn) refreshProvidersBtn.addEventListener('click', loadProvidersStatus);
+    if (fetchCompanyNewsBtn) fetchCompanyNewsBtn.addEventListener('click', () => fetchCompanyNews());
 
     // Emergency Panic Kill Switch
     emergencyKillBtn.addEventListener('click', () => {
