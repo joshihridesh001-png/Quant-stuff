@@ -142,3 +142,5 @@ export function useQuantContext(): QuantContextValue {
   }
   return ctx;
 }
+
+export const useQuant = useQuantContext;

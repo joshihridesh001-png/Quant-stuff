@@ -171,11 +171,23 @@ export interface SimulationRunRequest {
   impact_coefficient: number;
 }
 
+export interface SimulationBenchmarkDTO {
+  name: string;
+  total_return: number;
+  annualized_return: number;
+  annualized_volatility: number;
+  sharpe_ratio: number;
+  max_drawdown: number;
+  alpha: number;
+  beta: number;
+  information_ratio: number;
+}
+
 export interface SimulationRunResponse {
   asset_id: string;
   bar_count: number;
   initial_capital: number;
-  terminal_equity: number;
+  final_equity: number;
   total_return_pct: number;
   cagr_pct: number;
   annualized_volatility_pct: number;
@@ -183,13 +195,12 @@ export interface SimulationRunResponse {
   sortino_ratio: number;
   calmar_ratio: number;
   max_drawdown_pct: number;
-  realized_var_95_pct: number;
   realized_cvar_95_pct: number;
   deflated_sharpe_ratio: number;
   is_statistically_significant: boolean;
   total_friction_cost: number;
   equity_curve: number[];
-  benchmark_equity_curve?: number[];
+  benchmarks: SimulationBenchmarkDTO[];
 }
 
 export interface NewsItem {
