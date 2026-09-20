@@ -9,7 +9,7 @@ interface DisarmModalProps {
 
 export const DisarmModal: React.FC<DisarmModalProps> = ({ isOpen, onClose }) => {
   const { resetKillSwitch } = useQuantContext();
-  const [token, setToken] = useState('QUANT_SECRET_2026_PROD_RECOVERY_KEY');
+  const [token, setToken] = useState('DEFAULT_ADMIN_TOKEN');
   const [loading, setLoading] = useState(false);
 
   if (!isOpen) return null;

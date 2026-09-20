@@ -97,9 +97,9 @@ export const apiClient = {
       body: JSON.stringify({ reason: 'Operator Emergency Lockdown' }),
     }),
   resetKillSwitch: (secret: string) =>
-    apiFetch('/api/v1/risk/kill-switch/reset', {
+    apiFetch('/api/v1/risk/reset', {
       method: 'POST',
-      body: JSON.stringify({ reset_token: secret }),
+      body: JSON.stringify({ admin_token: secret }),
     }),
   getRiskStatus: <T>() => apiFetch<T>('/api/v1/risk/status'),
 
