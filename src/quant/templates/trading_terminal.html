@@ -229,7 +229,7 @@
           <span>TOTAL NET P&L</span>
           <span class="text-emerald-400 font-bold">● LIVE</span>
         </div>
-        <div id="hudTotalPnl" class="text-xl font-black glow-text-green mt-1">+$24,850.25</div>
+        <div id="hudTotalPnl" class="text-xl font-black glow-text-green mt-1">+$248.50</div>
         <div class="text-[11px] text-emerald-400 font-semibold flex items-center justify-between mt-1">
           <span id="hudReturnPct" class="bg-emerald-500/10 px-1 rounded border border-emerald-500/20">+2.48%</span>
           <span class="text-slate-500 text-[10px]">Since Inception</span>
@@ -242,7 +242,7 @@
           <span>UNREALIZED P&L</span>
           <span class="text-cyan-400 font-bold">MTM</span>
         </div>
-        <div id="hudUnrealizedPnl" class="text-xl font-black glow-text-cyan mt-1">+$4,250.00</div>
+        <div id="hudUnrealizedPnl" class="text-xl font-black glow-text-cyan mt-1">+$42.50</div>
         <div class="text-[11px] text-slate-300 flex items-center justify-between mt-1">
           <span class="text-slate-400">Open Risk</span>
           <span class="text-cyan-400 font-bold bg-cyan-500/10 px-1 rounded border border-cyan-500/20" id="hudOpenCount">2 Active</span>
@@ -255,7 +255,7 @@
           <span>REALIZED P&L</span>
           <span class="text-blue-400 font-bold">BANKED</span>
         </div>
-        <div id="hudRealizedPnl" class="text-xl font-black text-blue-400 mt-1">+$20,600.25</div>
+        <div id="hudRealizedPnl" class="text-xl font-black text-blue-400 mt-1">+$206.00</div>
         <div class="text-[11px] text-slate-400 flex items-center justify-between mt-1">
           <span>Closed Fills</span>
           <span class="text-emerald-400 font-bold">100% Settled</span>
@@ -297,10 +297,10 @@
           <span>PORTFOLIO NAV</span>
           <span class="text-emerald-400 font-bold">1.25x LEV</span>
         </div>
-        <div id="hudNav" class="text-xl font-black text-white mt-1">$1,024,850.25</div>
+        <div id="hudNav" class="text-xl font-black text-white mt-1">$10,248.50</div>
         <div class="text-[11px] text-slate-400 flex items-center justify-between mt-1">
           <span>MaxDD 0.33%</span>
-          <span class="text-cyan-400 font-bold">$987.5k Cash</span>
+          <span class="text-cyan-400 font-bold">$9,850.00 Cash</span>
         </div>
       </div>
 
@@ -776,7 +776,7 @@
                     </select>
                   </div>
                   <div class="grid grid-cols-2 gap-1.5">
-                    <input id="gateSimQty" type="number" value="100" placeholder="Quantity" class="bg-slate-900 border border-white/10 rounded px-2 py-1 text-white font-bold" />
+                    <input id="gateSimQty" type="number" value="10" placeholder="Quantity" class="bg-slate-900 border border-white/10 rounded px-2 py-1 text-white font-bold" />
                     <input id="gateSimPrice" type="number" value="500.0" step="0.5" placeholder="Price" class="bg-slate-900 border border-white/10 rounded px-2 py-1 text-white font-bold" />
                   </div>
                   <button id="runGateSimBtn" class="mt-1 w-full py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold text-xs tracking-wider transition active:scale-95">Evaluate Pre-Trade</button>
@@ -840,10 +840,10 @@
           <div class="flex items-center justify-between gap-1 text-[11px]">
             <span class="text-slate-400 text-[10px]">ALLOCATE:</span>
             <div class="flex items-center gap-1">
+              <button onclick="setQuickShares(10)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5 transition">10</button>
+              <button onclick="setQuickShares(20)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5 transition">20</button>
+              <button onclick="setQuickShares(50)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5 transition">50</button>
               <button onclick="setQuickShares(100)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5 transition">100</button>
-              <button onclick="setQuickShares(250)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5 transition">250</button>
-              <button onclick="setQuickShares(500)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5 transition">500</button>
-              <button onclick="setQuickShares(1000)" class="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-white/5 transition">1,000</button>
             </div>
           </div>
 
@@ -866,7 +866,7 @@
 
             <div>
               <label class="text-slate-400 text-[10px] uppercase font-bold tracking-wider">ORDER QUANTITY</label>
-              <input type="number" id="orderQtyInput" value="500" min="1" step="50" class="w-full mt-1 bg-black/60 border border-white/10 rounded-xl px-3 py-2 text-cyan-300 font-black text-sm outline-none focus:border-cyan-400 transition">
+              <input type="number" id="orderQtyInput" value="20" min="1" step="5" class="w-full mt-1 bg-black/60 border border-white/10 rounded-xl px-3 py-2 text-cyan-300 font-black text-sm outline-none focus:border-cyan-400 transition">
             </div>
 
             <div>
@@ -887,7 +887,7 @@
               <div>
                 <label class="text-slate-400 text-[10px] uppercase font-bold tracking-wider">EST. NOTIONAL</label>
                 <div id="estNotional" class="mt-1 py-2 px-3 bg-black/50 border border-white/10 rounded-xl text-emerald-400 font-black text-xs glow-text-green">
-                  $62,500.00
+                  $2,500.00
                 </div>
               </div>
             </div>
@@ -955,18 +955,18 @@
     let buyMarkers = [];
     let sellMarkers = [];
     let ordersList = [
-      { id: "ORD-9401", time: "17:31:00", side: "BUY", symbol: "NVDA", algo: "Poisson TWAP", target: 500, filled: 500, avgPrice: 124.95, status: "FILLED" },
-      { id: "ORD-9402", time: "17:32:15", side: "BUY", symbol: "NVDA", algo: "Volume VWAP", target: 1000, filled: 750, avgPrice: 125.02, status: "PARTIALLY_FILLED" },
-      { id: "ORD-9403", time: "17:33:40", side: "SELL", symbol: "NVDA", algo: "Arrival Price", target: 300, filled: 300, avgPrice: 125.10, status: "FILLED" }
+      { id: "ORD-9401", time: "17:31:00", side: "BUY", symbol: "NVDA", algo: "Poisson TWAP", target: 20, filled: 20, avgPrice: 124.95, status: "FILLED" },
+      { id: "ORD-9402", time: "17:32:15", side: "BUY", symbol: "NVDA", algo: "Volume VWAP", target: 30, filled: 20, avgPrice: 125.02, status: "PARTIALLY_FILLED" },
+      { id: "ORD-9403", time: "17:33:40", side: "SELL", symbol: "NVDA", algo: "Arrival Price", target: 15, filled: 15, avgPrice: 125.10, status: "FILLED" }
     ];
 
     // Open Positions Tracking
     let positions = [
-      { symbol: 'NVDA', side: 'LONG', shares: 500, entryPrice: 124.20, markPrice: 125.00 },
-      { symbol: 'AAPL', side: 'LONG', shares: 300, entryPrice: 184.10, markPrice: 185.50 }
+      { symbol: 'NVDA', side: 'LONG', shares: 15, entryPrice: 123.50, markPrice: 125.00 },
+      { symbol: 'AAPL', side: 'LONG', shares: 10, entryPrice: 183.50, markPrice: 185.50 }
     ];
 
-    let realizedPnl = 20600.25;
+    let realizedPnl = 206.00;
     let totalWins = 26;
     let totalLosses = 12;
 
@@ -1006,8 +1006,8 @@
         const winRate = parseFloat((55 + Math.random() * 28).toFixed(1));
         
         const pnl = isElite 
-          ? Math.floor(950 + Math.random() * 2800) 
-          : Math.floor((Math.random() - 0.26) * 1800);
+          ? parseFloat((18 + Math.random() * 32).toFixed(2)) 
+          : parseFloat(((Math.random() - 0.28) * 28).toFixed(2));
         
         const weight = isElite
           ? parseFloat((baseWeight * 2.5).toFixed(2))
@@ -1173,11 +1173,11 @@
       basePrice = candles[candles.length - 1].close;
 
       buyMarkers = [
-        { index: 15, price: candles[15].low, text: "BUY 200 @ $123.80" },
-        { index: 30, price: candles[30].low, text: "BUY 500 @ $124.50" }
+        { index: 15, price: candles[15].low, text: "BUY 20 @ $123.80" },
+        { index: 30, price: candles[30].low, text: "BUY 25 @ $124.50" }
       ];
       sellMarkers = [
-        { index: 22, price: candles[22].high, text: "SELL 150 @ $125.10" }
+        { index: 22, price: candles[22].high, text: "SELL 15 @ $125.10" }
       ];
     }
     initCandles();
@@ -1618,7 +1618,7 @@
             </div>
           </td>
           <td class="py-2.5 px-2.5 whitespace-nowrap font-bold ${isProf ? 'glow-text-green' : 'glow-text-red'}">
-            ${isProf ? '+' : ''}$${s.pnl.toLocaleString()}
+            ${isProf ? '+' : ''}$${typeof s.pnl === 'number' ? s.pnl.toFixed(2) : s.pnl}
           </td>
           <td class="py-2.5 px-2.5 whitespace-nowrap text-purple-300 font-bold">${s.sharpe}</td>
           <td class="py-2.5 px-2.5 whitespace-nowrap text-slate-400">${s.maxDd}%</td>
@@ -1659,8 +1659,8 @@
               strategies = dbGenotypes.map((g, idx) => {
                 const isElite = g.cohort === 'ALPHA' || idx < Math.max(1, Math.floor(dbGenotypes.length * 0.1));
                 const pnl = isElite 
-                  ? Math.floor(1200 + g.fitness_score * 800)
-                  : Math.floor((g.fitness_score - 0.4) * 2200);
+                  ? parseFloat((18 + g.fitness_score * 30).toFixed(2))
+                  : parseFloat(((g.fitness_score - 0.4) * 35).toFixed(2));
                 return {
                   id: "DB-" + g.id.substring(0, 8).toUpperCase(),
                   archetype: `${g.cohort} (Fit: ${g.fitness_score.toFixed(2)})`,
@@ -1863,8 +1863,8 @@
       });
 
       const totalPnl = realizedPnl + openPnl;
-      const nav = 1000000.0 + totalPnl;
-      const retPct = (totalPnl / 1000000.0) * 100;
+      const nav = 10000.0 + totalPnl;
+      const retPct = (totalPnl / 10000.0) * 100;
 
       hudTotalPnl.textContent = `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
       hudTotalPnl.className = `text-xl font-black mt-1 ${totalPnl >= 0 ? 'glow-text-green' : 'glow-text-red'}`;
@@ -1900,10 +1900,30 @@
         if (p.symbol === currentAsset) p.markPrice = newClose;
       });
 
+      // Continuously evolve strategy swarm metrics on live market ticks
+      if (strategies && strategies.length > 0) {
+        const sampleSize = Math.min(25, strategies.length);
+        for (let i = 0; i < sampleSize; i++) {
+          const s = strategies[i];
+          const sensitivity = s.archetype.includes('Trend') ? 1.4 : s.archetype.includes('Breakout') ? 1.1 : s.archetype.includes('Mean') ? -0.9 : (Math.random() - 0.48);
+          const pnlDelta = parseFloat(((delta * 0.8 * sensitivity * (s.weight / 2.0)) + (Math.random() - 0.48) * 0.15).toFixed(2));
+          s.pnl = parseFloat((s.pnl + pnlDelta).toFixed(2));
+          if (Math.random() < 0.12) {
+            const winShift = pnlDelta >= 0 ? 0.1 : -0.1;
+            s.winRate = parseFloat(Math.min(96.0, Math.max(30.0, s.winRate + winShift)).toFixed(1));
+          }
+        }
+        strategies.sort((a, b) => b.pnl - a.pnl);
+      }
+
       renderChart();
       renderOrderBook();
       updateHud();
       renderPositionsTable();
+      if (tabContentAlgos && !tabContentAlgos.classList.contains('hidden')) {
+        renderAlgosTable();
+        updateLeaderboardBadges();
+      }
     }, 1200);
 
     // Side selection toggle

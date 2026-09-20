@@ -147,15 +147,15 @@ def get_risk_orchestrator() -> RiskOrchestrator:
     global _risk_orchestrator
     if _risk_orchestrator is None:
         limits = RiskLimits(
-            max_order_notional=500_000.0,
-            max_order_qty=50_000.0,
+            max_order_notional=5_000.0,
+            max_order_qty=500.0,
             max_gross_leverage=2.0,
             max_net_leverage=1.0,
             max_concentration_nav_pct=0.25,
             max_intraday_drawdown_pct=0.05,
-            min_free_margin=100_000.0,
+            min_free_margin=1_000.0,
         )
-        state = PortfolioRiskState(cash=1_000_000.0, initial_equity=1_000_000.0)
+        state = PortfolioRiskState(cash=10_000.0, initial_equity=10_000.0)
         firewall = PreTradeRiskFirewall(limits=limits)
         kill_switch = EmergencyKillSwitch(admin_token="DEFAULT_ADMIN_TOKEN")
         _risk_orchestrator = RiskOrchestrator(

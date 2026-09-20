@@ -123,8 +123,8 @@ def create_application() -> FastAPI:
             1 if (_risk_orchestrator and _risk_orchestrator.kill_switch.is_active) else 0
         )
         swarm_val = 1 if (_autonomous_trader and _autonomous_trader.state.value == "RUNNING") else 0
-        nav_val = _risk_orchestrator.state.current_equity if _risk_orchestrator else 1_000_000.0
-        cash_val = _risk_orchestrator.state.cash if _risk_orchestrator else 1_000_000.0
+        nav_val = _risk_orchestrator.state.current_equity if _risk_orchestrator else 10_000.0
+        cash_val = _risk_orchestrator.state.cash if _risk_orchestrator else 10_000.0
 
         lines = [
             "# HELP quant_up Heartbeat gauge of the quantitative engine application",
