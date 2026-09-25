@@ -23,6 +23,17 @@ from quant.data.external_providers import (
     ProviderStatus,
     ProviderUnreachableException,
 )
+from quant.data.institutional_providers import (
+    ERR_DATA_ALPACA_PAGINATION,
+    ERR_DATA_POLYGON_PAGINATION,
+    ERR_DATA_PROVIDER_FALLBACK,
+    AlpacaHistoricalError,
+    AlpacaHistoricalProvider,
+    HistoricalDataHub,
+    InstitutionalProviderError,
+    PolygonHistoricalProvider,
+    PolygonProviderError,
+)
 from quant.data.news_harvester import (
     CorruptNewsPayloadException,
     FutureTimestampException,
@@ -33,10 +44,29 @@ from quant.data.news_harvester import (
     NewsHarvesterError,
     SyntheticNewsGenerator,
 )
+from quant.data.yahoo_provider import (
+    ERR_DATA_PROVIDER_HTTP_ERROR,
+    ERR_DATA_PROVIDER_PARSE_ERROR,
+    ERR_DATA_PROVIDER_SYMBOL_NOT_FOUND,
+    ERR_DATA_PROVIDER_UNREACHABLE,
+    YahooFinanceHistoricalProvider,
+    YahooParseError,
+    YahooProviderError,
+    YahooSymbolNotFoundError,
+    YahooUnreachableError,
+)
 
 __all__ = [
-    "AlpacaMarketDataFeed",
+    "AlpacaHistoricalError",
+    "AlpacaHistoricalProvider",
     "CorruptNewsPayloadException",
+    "ERR_DATA_ALPACA_PAGINATION",
+    "ERR_DATA_POLYGON_PAGINATION",
+    "ERR_DATA_PROVIDER_FALLBACK",
+    "ERR_DATA_PROVIDER_HTTP_ERROR",
+    "ERR_DATA_PROVIDER_PARSE_ERROR",
+    "ERR_DATA_PROVIDER_SYMBOL_NOT_FOUND",
+    "ERR_DATA_PROVIDER_UNREACHABLE",
     "ERR_PROVIDER_CIRCUIT_TRIP",
     "ERR_PROVIDER_INVALID_KEY",
     "ERR_PROVIDER_MALFORMED_DATA",
@@ -49,6 +79,8 @@ __all__ = [
     "FinnhubClient",
     "FredClient",
     "FutureTimestampException",
+    "HistoricalDataHub",
+    "InstitutionalProviderError",
     "MacroIndicatorRecord",
     "NewsApiClient",
     "NewsArticle",
@@ -57,6 +89,8 @@ __all__ = [
     "NewsHarvester",
     "NewsHarvesterError",
     "PolygonClient",
+    "PolygonHistoricalProvider",
+    "PolygonProviderError",
     "ProviderCircuitTrippedException",
     "ProviderInvalidKeyException",
     "ProviderMalformedDataException",
@@ -65,4 +99,9 @@ __all__ = [
     "ProviderStatus",
     "ProviderUnreachableException",
     "SyntheticNewsGenerator",
+    "YahooFinanceHistoricalProvider",
+    "YahooParseError",
+    "YahooProviderError",
+    "YahooSymbolNotFoundError",
+    "YahooUnreachableError",
 ]

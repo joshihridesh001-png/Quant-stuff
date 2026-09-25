@@ -372,13 +372,9 @@ async def simulate_triple_barrier(
             sample_trajectory=[],
         )
 
-    tp_hits = sum(1 for lbl in labels if lbl.touch_reason == BarrierTouchReason.UPPER)
-    sl_hits = sum(
-        1
-        for lbl in labels
-        if lbl.touch_reason in (BarrierTouchReason.LOWER, BarrierTouchReason.COLLISION_STOP)
-    )
-    vert_hits = sum(1 for lbl in labels if lbl.touch_reason == BarrierTouchReason.VERTICAL)
+    tp_hits = sum(1 for lbl in labels if lbl.label == 1)
+    sl_hits = sum(1 for lbl in labels if lbl.label == -1)
+    vert_hits = sum(1 for lbl in labels if lbl.label == 0)
 
     avg_holding = float(np.mean([lbl.holding_period_bars for lbl in labels]))
     avg_net_ret = float(np.mean([lbl.realized_return for lbl in labels]) * 100.0)

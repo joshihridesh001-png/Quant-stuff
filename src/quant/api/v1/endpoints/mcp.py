@@ -35,13 +35,13 @@ router = APIRouter(prefix="/mcp", tags=["Model Context Protocol (MCP)"])
 )
 async def mcp_rpc_endpoint(
     request: dict[str, Any] = Body(..., description="Standard JSON-RPC 2.0 request payload"),
-    _: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Process an inbound MCP JSON-RPC protocol message and return protocol response.
 
     Args:
         request: Standard JSON-RPC 2.0 dictionary.
-        _: Authenticated user claims context.
+        user: Authenticated user claims context.
 
     Returns:
         dict[str, Any]: Standard JSON-RPC 2.0 response payload.
@@ -49,5 +49,6 @@ async def mcp_rpc_endpoint(
     # Functional Purpose: Provide secure, authenticated HTTP gateway for MCP agent tool calls.
     # Explicit Dependency Tracking: handle_mcp_request.
     # Structural Relationship: Remote agent gateway endpoint.
-    # Defensive Invariant: Adheres to JSON-RPC 2.0 specification envelope.
-    return await handle_mcp_request(request)
+    # Defensive Invariant: Adheres to JSON-RPC 2.0 specification envelope with RBAC enforcement.
+    user_role = str(user.get("role", "GUEST"))
+    return await handle_mcp_request(request, user_role=user_role)

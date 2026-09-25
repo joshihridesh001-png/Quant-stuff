@@ -643,3 +643,75 @@ class PayoffMatrixResponse(BaseModel):
     worst_case_regrets: list[float]
     optimal_action: str
     worst_case_counterparty_probs: list[float]
+
+
+# Backtest Studio Schemas (Phase 15 Step 15.3)
+class BacktestRunRequest(BaseModel):
+    """Request DTO to initiate a historical backtest run."""
+
+    strategy_type: str = Field(
+        "FracDiff_Swarm",
+        description="Alpha strategy identifier: FracDiff_Swarm, Kalman_StatArb, FracDiff_Momentum, Loughran_Sentiment, Vol_Breakout, Composite_Meta",
+    )
+    symbols: list[str] = Field(
+        default_factory=lambda: ["SPY", "QQQ", "AAPL", "NVDA", "MSFT"],
+        min_length=1,
+        max_length=20,
+        description="Asset symbols for the backtest universe",
+    )
+    start_date: str | None = Field(None, description="ISO start date YYYY-MM-DD")
+    end_date: str | None = Field(None, description="ISO end date YYYY-MM-DD")
+    initial_cash: float = Field(100_000.0, gt=0.0, description="Initial portfolio cash")
+    benchmark_symbol: str = Field("SPY", description="Benchmark symbol for Alpha/Beta")
+    cost_bps: float = Field(2.0, ge=0.0, le=100.0, description="Microstructure cost in bps")
+    parameters: dict[str, Any] = Field(
+        default_factory=dict, description="Custom strategy hyperparameters"
+    )
+
+
+class BacktestSummaryMetrics(BaseModel):
+    """Institutional CFA performance summary metrics."""
+
+    sharpe_ratio: float
+    sortino_ratio: float
+    calmar_ratio: float
+    max_drawdown: float
+    annualized_return: float
+    annualized_volatility: float
+    win_rate: float
+    profit_factor: float
+    deflated_sharpe_ratio: float | None = None
+    alpha: float | None = None
+    beta: float | None = None
+    total_trades: int
+    initial_capital: float
+    final_equity: float
+    net_pnl: float
+
+
+class BacktestStatusResponse(BaseModel):
+    """Status and full attribution report for a historical backtest."""
+
+    backtest_id: str
+    status: str = Field(..., description="QUEUED | RUNNING | COMPLETED | FAILED")
+    progress: float = Field(..., ge=0.0, le=1.0)
+    message: str
+    strategy_type: str
+    symbols: list[str]
+    metrics: BacktestSummaryMetrics | None = None
+    equity_curve: list[float] | None = None
+    benchmark_equity_curve: list[float] | None = None
+    drawdown_series: list[float] | None = None
+    monthly_matrix: dict[str, dict[str, float]] | None = None
+    created_at: str
+    completed_at: str | None = None
+    html_report_path: str | None = None
+
+
+class BacktestRunResponse(BaseModel):
+    """Response DTO confirming backtest job dispatch."""
+
+    backtest_id: str
+    status: str
+    message: str
+    estimated_duration_sec: float

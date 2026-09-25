@@ -1,4 +1,7 @@
-"""Pytest configuration and global asynchronous fixtures."""
+import os
+
+# Ensure all tests run with isolated in-memory DuckDB database to avoid lock conflicts with running servers
+os.environ["DUCKDB_PATH"] = ":memory:"
 
 from collections.abc import AsyncGenerator
 
@@ -19,6 +22,7 @@ from quant.infrastructure.database.models import Base
 from quant.main import app
 
 settings = get_settings()
+settings.DUCKDB_PATH = ":memory:"
 
 
 @pytest_asyncio.fixture(scope="function")

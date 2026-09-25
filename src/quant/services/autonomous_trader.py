@@ -272,12 +272,35 @@ class AutonomousTradingEngine:
         try:
             equity = self._execution_service.orchestrator.state.current_equity
         except Exception:
-            equity = 10_000.0
+            equity = 0.0
         if not math.isfinite(equity) or equity <= 0:
-            balance = await self._gateway.get_account_balance()
-            equity = float(balance.get("equity", 10_000.0))
+            try:
+                balance = await self._gateway.get_account_balance()
+                equity = float(balance.get("equity", 0.0))
+            except Exception:
+                equity = 0.0
+
         if not math.isfinite(equity) or equity <= 0:
-            equity = 10_000.0
+            logger.warning(
+                "Autonomous trading engine: non-positive or unavailable equity (%.2f). Skipping allocation.",
+                equity,
+            )
+            target_allocations, haircut = dict.fromkeys(self._universe, 0.0), 0.0
+            self._target_allocations = target_allocations
+            positions = await self._gateway.get_positions()
+            return AutonomousStepReport(
+                iteration=self._iteration,
+                timestamp_ns=start_ns,
+                universe=list(self._universe),
+                bars=bars,
+                target_allocations=target_allocations,
+                current_positions=positions,
+                orders_dispatched=[],
+                duration_ms=(time.time_ns() - start_ns) / 1_000_000.0,
+                haircut=0.0,
+                is_kill_switch_active=is_kill_active,
+                forward_alpha_priors=dict(self._forward_alpha_priors),
+            )
 
         positions = await self._gateway.get_positions()
 
@@ -300,8 +323,13 @@ class AutonomousTradingEngine:
 
                 target_dollar = target_allocations.get(sym, 0.0)
                 current_shares = positions.get(sym, 0.0)
+                # Account for working pending leaves to prevent rapid order multiplication loops
+                working_leaves = self._execution_service.orchestrator.state.pending_leaves.get(
+                    sym, 0.0
+                )
+                effective_shares = current_shares + working_leaves
                 target_shares = target_dollar / current_price
-                delta_shares = target_shares - current_shares
+                delta_shares = target_shares - effective_shares
                 trade_notional = abs(delta_shares * current_price)
 
                 if trade_notional >= self._min_trade_notional:
@@ -309,9 +337,10 @@ class AutonomousTradingEngine:
                     qty = max(0.001, round(abs(delta_shares), 4))
 
                     # Evaluate candidate order through PreTradeDecisionGate (INV-GATE-001 & INV-GATE-002)
-                    is_reducing = (side_str == "SELL" and current_shares > 0) or (
-                        side_str == "BUY" and current_shares < 0
-                    )
+                    # Only mark as exit bypass if order does NOT exceed existing position (prevent reversal bypass)
+                    is_reducing = (
+                        side_str == "SELL" and current_shares > 0 and qty <= current_shares
+                    ) or (side_str == "BUY" and current_shares < 0 and qty <= abs(current_shares))
                     gate_req = PreTradeDecisionRequest(
                         order_id=f"SWARM-{self._iteration}-{sym}",
                         symbol=sym,
@@ -394,9 +423,11 @@ class AutonomousTradingEngine:
     async def _run_loop(self) -> None:
         """Internal background async task ticking every interval_sec."""
         logger.info("Autonomous trading swarm loop started (interval: %.1fs)", self._interval_sec)
-        while self._state == AutonomousState.RUNNING:
+        while self._state in (AutonomousState.RUNNING, AutonomousState.PAUSED):
             try:
                 await asyncio.sleep(self._interval_sec)
+                if self._state == AutonomousState.PAUSED:
+                    continue
                 if self._state != AutonomousState.RUNNING:
                     break
                 await self.step_once()
@@ -414,14 +445,19 @@ class AutonomousTradingEngine:
 
     async def start(self) -> None:
         """Start the background autonomous trading loop."""
-        if self._state == AutonomousState.RUNNING:
+        if (
+            self._state == AutonomousState.RUNNING
+            and self._loop_task is not None
+            and not self._loop_task.done()
+        ):
             return
         self._state = AutonomousState.RUNNING
         try:
             await self.step_once()
         except Exception as exc:
             logger.error("Initial autonomous step error: %s", exc)
-        self._loop_task = asyncio.create_task(self._run_loop())
+        if self._loop_task is None or self._loop_task.done():
+            self._loop_task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
         """Stop the background autonomous trading loop."""
@@ -441,6 +477,8 @@ class AutonomousTradingEngine:
         """Resume trading from PAUSED state."""
         if self._state == AutonomousState.PAUSED:
             self._state = AutonomousState.RUNNING
+            if self._loop_task is None or self._loop_task.done():
+                self._loop_task = asyncio.create_task(self._run_loop())
 
     def get_status(self) -> dict[str, Any]:
         """Return comprehensive telemetry and status dictionary."""

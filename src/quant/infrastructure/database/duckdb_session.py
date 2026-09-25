@@ -9,8 +9,9 @@ Invariants: Automatically ensures market_bars table and primary keys exist befor
 import asyncio
 import os
 import threading
+import time
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Final, TypeVar
 
 # High-performance analytical columnar database engine
 import duckdb
@@ -20,6 +21,31 @@ from quant.core.config import get_settings
 
 # Generic return type for threadpool offloading
 T = TypeVar("T")
+
+# ============================================================================
+# Diagnostic Fault Codes (Rule 2: Error Taxonomy)
+# ============================================================================
+
+ERR_DATA_DB_LOCKED: Final[str] = "ERR-DATA-008"
+
+
+class DatabaseLockedError(Exception):
+    """Raised when DuckDB database file is locked by another process and cannot be accessed.
+
+    Functional Purpose:
+        Signals database lock contention preventing read/write transactions without silent fallback.
+    Explicit Dependency Tracking:
+        Exception, ERR_DATA_DB_LOCKED.
+    Structural Relationship:
+        Raised by DuckDBManager during connection acquisition failure.
+    Defensive Invariant:
+        Contains deterministic fault code ERR-DATA-008.
+    """
+
+    def __init__(self, message: str, code: str = ERR_DATA_DB_LOCKED) -> None:
+        super().__init__(f"[{code}] {message}")
+        self.message = message
+        self.code = code
 
 
 class DuckDBManager:
@@ -31,7 +57,12 @@ class DuckDBManager:
     Invariants: Ensures schema tables and indexes exist prior to executing any read/write queries.
     """
 
-    def __init__(self, database_path: str | None = None) -> None:
+    def __init__(
+        self,
+        database_path: str | None = None,
+        read_only: bool = False,
+        max_retries: int = 5,
+    ) -> None:
         """Initialize DuckDB connection and ensure database schema is prepared.
 
         Purpose: Establishes active embedded database handle and provisions tables.
@@ -56,13 +87,31 @@ class DuckDBManager:
             parent_dir = os.path.dirname(os.path.abspath(self._db_path))
             os.makedirs(parent_dir, exist_ok=True)
 
-        # Purpose: Establish connection handle to embedded DuckDB database
-        # Dependencies: duckdb.connect
-        # Invariant: Connection must be active and valid
-        self._conn = duckdb.connect(database=self._db_path)
-
-        # Purpose: Provision table schema and indices
-        self._ensure_schema()
+        # Purpose: Establish connection handle to embedded DuckDB database with retries
+        # Dependencies: duckdb.connect, time.sleep
+        # Invariant: File-backed database never silently falls back to in-memory storage
+        if self._db_path == ":memory:":
+            self._conn = duckdb.connect(database=":memory:")
+            self._ensure_schema()
+        else:
+            last_err: Exception | None = None
+            for attempt in range(max_retries):
+                try:
+                    self._conn = duckdb.connect(database=self._db_path, read_only=read_only)
+                    if not read_only:
+                        self._ensure_schema()
+                    else:
+                        self._initialized = True
+                    break
+                except duckdb.IOException as io_err:
+                    last_err = io_err
+                    if attempt < max_retries - 1:
+                        time.sleep(0.05 * (2**attempt))
+            else:
+                raise DatabaseLockedError(
+                    f"Embedded DuckDB at '{self._db_path}' could not be locked after {max_retries} attempts: {last_err}",
+                    code=ERR_DATA_DB_LOCKED,
+                ) from last_err
 
     def _ensure_schema(self) -> None:
         """Initialize market_bars table and composite lookup index.
@@ -98,6 +147,36 @@ class DuckDBManager:
                     """
                     CREATE INDEX IF NOT EXISTS idx_market_bars_lookup
                     ON market_bars (asset_id, resolution, timestamp);
+                    """
+                )
+
+                # Purpose: Create historical_bars table for institutional split/dividend adjusted bars
+                # Invariant: Primary key enforces uniqueness across symbol, resolution, and timestamp
+                self._conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS historical_bars (
+                        symbol VARCHAR NOT NULL,
+                        resolution VARCHAR NOT NULL,
+                        timestamp BIGINT NOT NULL,
+                        open DOUBLE NOT NULL,
+                        high DOUBLE NOT NULL,
+                        low DOUBLE NOT NULL,
+                        close DOUBLE NOT NULL,
+                        volume DOUBLE NOT NULL,
+                        vwap DOUBLE NOT NULL,
+                        adj_close DOUBLE NOT NULL,
+                        split_factor DOUBLE NOT NULL,
+                        dividend_amount DOUBLE NOT NULL,
+                        PRIMARY KEY (symbol, resolution, timestamp)
+                    );
+                    """
+                )
+
+                # Purpose: Create secondary composite index for accelerated historical lookup
+                self._conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_historical_bars_lookup
+                    ON historical_bars (symbol, resolution, timestamp);
                     """
                 )
 

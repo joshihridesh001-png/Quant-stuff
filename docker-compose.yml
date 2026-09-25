@@ -31,7 +31,7 @@ services:
     environment:
       ENVIRONMENT: production
       LOG_LEVEL: INFO
-      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:///./data/quant.db}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://quant_user:quant_password@postgres:5432/quant_db}
       DUCKDB_PATH: /app/data/market_data.duckdb
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-quant_super_secret_jwt_key_replace_in_prod}
       API_KEY_SECRET: ${API_KEY_SECRET:-quant_super_secret_api_key_replace_in_prod}

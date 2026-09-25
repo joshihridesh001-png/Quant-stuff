@@ -1,1 +1,80 @@
-"""Domain core layer: Pure business models, entities, and abstract interfaces."""
+"""Domain core layer: Pure business models, entities, abstract interfaces, and historical data value objects."""
+
+from quant.domain.historical import (
+    ERR_DATA_EMPTY_BATCH,
+    ERR_DATA_INVALID_BAR_GEOMETRY,
+    ERR_DATA_INVALID_QUERY_RANGE,
+    ERR_DATA_INVALID_SPLIT_FACTOR,
+    ERR_DATA_NON_FINITE_INPUT,
+    ERR_DATA_NON_MONOTONIC_TIMESTAMP,
+    CorporateActionRecord,
+    CorporateActionType,
+    EmptyHistoricalBatchError,
+    HistoricalBarBatch,
+    HistoricalDataError,
+    HistoricalDataQuery,
+    HistoricalPriceBar,
+    InvalidBarGeometryError,
+    InvalidCorporateActionError,
+    InvalidHistoricalQueryError,
+    NonFiniteHistoricalInputError,
+    NonMonotonicTimestampError,
+    PriceAdjustmentType,
+)
+from quant.domain.interfaces import (
+    IAssetRepository,
+    IEventRepository,
+    IGenotypeRepository,
+    IMarketDataRepository,
+)
+from quant.domain.models import (
+    Asset,
+    EventCentrality,
+    Genotype,
+    GenotypeCohort,
+    MarketDataBatch,
+    NewsEvent,
+    PriceBar,
+    Resolution,
+    ScenarioProfile,
+    ScenarioType,
+)
+
+__all__ = [
+    # Historical domain
+    "ERR_DATA_EMPTY_BATCH",
+    "ERR_DATA_INVALID_BAR_GEOMETRY",
+    "ERR_DATA_INVALID_QUERY_RANGE",
+    "ERR_DATA_INVALID_SPLIT_FACTOR",
+    "ERR_DATA_NON_FINITE_INPUT",
+    "ERR_DATA_NON_MONOTONIC_TIMESTAMP",
+    "CorporateActionRecord",
+    "CorporateActionType",
+    "EmptyHistoricalBatchError",
+    "HistoricalBarBatch",
+    "HistoricalDataError",
+    "HistoricalDataQuery",
+    "HistoricalPriceBar",
+    "InvalidBarGeometryError",
+    "InvalidCorporateActionError",
+    "InvalidHistoricalQueryError",
+    "NonFiniteHistoricalInputError",
+    "NonMonotonicTimestampError",
+    "PriceAdjustmentType",
+    # Core domain models
+    "Asset",
+    "EventCentrality",
+    "Genotype",
+    "GenotypeCohort",
+    "MarketDataBatch",
+    "NewsEvent",
+    "PriceBar",
+    "Resolution",
+    "ScenarioProfile",
+    "ScenarioType",
+    # Domain interfaces
+    "IAssetRepository",
+    "IEventRepository",
+    "IGenotypeRepository",
+    "IMarketDataRepository",
+]

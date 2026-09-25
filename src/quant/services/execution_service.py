@@ -85,6 +85,7 @@ class ExecutionService:
         "_cancelled_orders",
         "_fill_listeners",
         "_gateway",
+        "_max_slice_delay_sec",
         "_orchestrator",
         "_order_listeners",
         "_orders",
@@ -96,6 +97,7 @@ class ExecutionService:
         orchestrator: RiskOrchestrator,
         gateway: ExecutionGateway,
         audit_logger: OrderAuditLogger | None = None,
+        max_slice_delay_sec: float | None = None,
     ) -> None:
         """Initialize ExecutionService with injected dependencies.
 
@@ -103,6 +105,7 @@ class ExecutionService:
             orchestrator: Live risk orchestrator managing pre-trade firewall and kill switch.
             gateway: Primary execution gateway for order routing and fills.
             audit_logger: Optional asynchronous WAL audit logger.
+            max_slice_delay_sec: Optional maximum delay cap between slices for testing/simulations.
 
         Raises:
             NonFiniteInputException: If orchestrator or gateway is invalid.
@@ -120,6 +123,7 @@ class ExecutionService:
         self._orchestrator: RiskOrchestrator = orchestrator
         self._gateway: ExecutionGateway = gateway
         self._audit_logger: OrderAuditLogger | None = audit_logger
+        self._max_slice_delay_sec: float | None = max_slice_delay_sec
 
         self._orders: dict[str, ParentOrder] = {}
         self._cancelled_orders: set[str] = set()
@@ -300,10 +304,26 @@ class ExecutionService:
 
             now_ns = time.time_ns()
             if slice_item.scheduled_time_ns > now_ns:
-                # Sleep delay bounded to 0.05s in test/sim runs
-                delay_s = min(0.05, (slice_item.scheduled_time_ns - now_ns) / 1_000_000_000)
+                raw_delay_s = (slice_item.scheduled_time_ns - now_ns) / 1_000_000_000.0
+                delay_s = (
+                    min(self._max_slice_delay_sec, raw_delay_s)
+                    if self._max_slice_delay_sec is not None
+                    else raw_delay_s
+                )
                 if delay_s > 0.0:
                     await asyncio.sleep(delay_s)
+
+            # Check parent order timeout (INV-SOR-006)
+            if parent_order.max_duration_seconds > 0.0:
+                elapsed_sec = (time.time_ns() - parent_order.start_time_ns) / 1_000_000_000.0
+                if elapsed_sec > parent_order.max_duration_seconds:
+                    logger.warning(
+                        "Parent order %s exceeded execution horizon (%.1fs > %.1fs)",
+                        parent_order.parent_id,
+                        elapsed_sec,
+                        parent_order.max_duration_seconds,
+                    )
+                    break
 
             if (
                 parent_order.parent_id in self._cancelled_orders
@@ -439,9 +459,12 @@ class ExecutionService:
             if hasattr(self._gateway, "set_market_price"):
                 self._gateway.set_market_price(request.symbol, request.price)
         else:
-            arrival_price = 100.0
-            if hasattr(self._gateway, "set_market_price"):
-                self._gateway.set_market_price(request.symbol, 100.0)
+            prevailing_px = self._orchestrator.state.current_prices.get(request.symbol) or getattr(
+                self._gateway, "_market_prices", {}
+            ).get(request.symbol)
+            arrival_price = (
+                prevailing_px if (prevailing_px is not None and prevailing_px > 0.0) else 100.0
+            )
 
         slices = self._generate_slices(request, t0_ns, request.price)
 
@@ -514,9 +537,12 @@ class ExecutionService:
             if hasattr(self._gateway, "set_market_price"):
                 self._gateway.set_market_price(request.symbol, request.price)
         else:
-            arrival_price = 100.0
-            if hasattr(self._gateway, "set_market_price"):
-                self._gateway.set_market_price(request.symbol, 100.0)
+            prevailing_px = self._orchestrator.state.current_prices.get(request.symbol) or getattr(
+                self._gateway, "_market_prices", {}
+            ).get(request.symbol)
+            arrival_price = (
+                prevailing_px if (prevailing_px is not None and prevailing_px > 0.0) else 100.0
+            )
 
         slices = self._generate_slices(request, t0_ns, request.price)
 

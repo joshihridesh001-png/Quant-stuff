@@ -1,7 +1,10 @@
 """Application configuration and environment settings."""
 
+from __future__ import annotations
+
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,7 +24,7 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
 
     # Relational Database (Transactional Metadata: Assets, News, Genotypes, Auth)
-    DATABASE_URL: str = "sqlite+aiosqlite:///./quant.db"
+    DATABASE_URL: str = "sqlite+aiosqlite:///./data/quant.db"
     DATABASE_ECHO: bool = False
 
     # Embedded Columnar Storage (High-Throughput Time-Series Market Data)
@@ -37,7 +40,32 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
     # Cross-Origin Resource Sharing
-    CORS_ORIGINS: list[str] = ["*"]
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
+
+    @model_validator(mode="after")
+    def validate_production_security(self) -> Settings:
+        """Enforce strict cryptographic secret standards and prevent wildcard CORS in production."""
+        if self.ENVIRONMENT.lower() == "production":
+            if "dev-" in self.JWT_SECRET_KEY or len(self.JWT_SECRET_KEY) < 32:
+                raise ValueError(
+                    "Production mode requires a secure, non-default JWT_SECRET_KEY (at least 32 characters)"
+                )
+            if "dev-" in self.API_KEY_SECRET or len(self.API_KEY_SECRET) < 32:
+                raise ValueError(
+                    "Production mode requires a secure, non-default API_KEY_SECRET (at least 32 characters)"
+                )
+            if "*" in self.CORS_ORIGINS:
+                raise ValueError(
+                    "Wildcard CORS_ORIGINS ['*'] is strictly prohibited in production mode"
+                )
+        return self
 
     # Execution Broker & Gateway Configuration (Paper or Live Alpaca Markets)
     # Purpose: Configures target broker connectivity, credentials, and endpoints

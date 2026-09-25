@@ -50,6 +50,24 @@ async def test_auth_token_issuance(client: AsyncClient) -> None:
     assert "access_token" in token_data
     assert token_data["token_type"] == "bearer"
 
+    # 3. Privilege Escalation Prevention -> 403 when non-admin requests ADMIN role
+    escalation_attempt = await client.post(
+        "/api/v1/auth/token",
+        json={"username": "lead_quant", "password": "quant-secret-pass", "role": "ADMIN"},
+    )
+    assert escalation_attempt.status_code == 403
+    assert (
+        "Administrative role requires dedicated administrator credentials"
+        in escalation_attempt.json()["detail"]
+    )
+
+    # 4. Legitimate admin login -> 200
+    admin_login = await client.post(
+        "/api/v1/auth/token",
+        json={"username": "admin", "password": "quant-secret-pass", "role": "ADMIN"},
+    )
+    assert admin_login.status_code == 200
+
 
 @pytest.mark.asyncio
 async def test_prometheus_metrics_endpoint(client: AsyncClient) -> None:

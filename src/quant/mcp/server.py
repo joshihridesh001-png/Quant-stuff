@@ -34,11 +34,15 @@ SERVER_NAME: str = "quant-engine-mcp"
 SERVER_VERSION: str = "0.1.0"
 
 
-async def handle_mcp_request(request: dict[str, Any]) -> dict[str, Any]:
+async def handle_mcp_request(
+    request: dict[str, Any],
+    user_role: str = "ADMIN",
+) -> dict[str, Any]:
     """Process a single JSON-RPC 2.0 Model Context Protocol request.
 
     Args:
         request: Dictionary representing inbound JSON-RPC message.
+        user_role: Security role of caller (defaults to ADMIN for local stdio transport).
 
     Returns:
         dict[str, Any]: Standard JSON-RPC 2.0 response dictionary.
@@ -100,8 +104,11 @@ async def handle_mcp_request(request: dict[str, Any]) -> dict[str, Any]:
                 "error": {"code": -32602, "message": "Invalid params: 'name' is required"},
             }
 
-        result = await execute_tool(tool_name, arguments)
+        result = await execute_tool(tool_name, arguments, user_role=user_role)
         text_content = json.dumps(result, ensure_ascii=False)
+        is_error = isinstance(result, dict) and (
+            "error" in result or result.get("success") is False
+        )
         return {
             "jsonrpc": "2.0",
             "id": req_id,
@@ -111,7 +118,8 @@ async def handle_mcp_request(request: dict[str, Any]) -> dict[str, Any]:
                         "type": "text",
                         "text": text_content,
                     }
-                ]
+                ],
+                "isError": is_error,
             },
         }
 
@@ -137,16 +145,12 @@ class MCPServer:
         # Structural Relationship: Main entrypoint when run via python -m quant.mcp.server.
         # Defensive Invariant: Gracefully handles EOF and malformed JSON lines.
         self._running = True
-        loop = asyncio.get_running_loop()
-        reader = asyncio.StreamReader()
-        protocol = asyncio.StreamReaderProtocol(reader)
-        await loop.connect_read_pipe(lambda: protocol, sys.stdin)
 
         while self._running:
-            line = await reader.readline()
+            line = await asyncio.to_thread(sys.stdin.readline)
             if not line:
                 break
-            raw_text = line.decode("utf-8").strip()
+            raw_text = line.strip()
             if not raw_text:
                 continue
 

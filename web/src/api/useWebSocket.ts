@@ -39,8 +39,9 @@ export function useRiskWebSocket() {
           if (msg.gateways) {
             setGateways(msg.gateways);
           }
-          if (msg.type === 'KILL_SWITCH_EVENT' && msg.is_active !== undefined) {
-            setRisk((prev) => (prev ? { ...prev, is_kill_switch_active: !!msg.is_active } : null));
+          if (msg.type === 'KILL_SWITCH_EVENT') {
+            const active = msg.is_active !== undefined ? !!msg.is_active : !!msg.risk?.is_kill_switch_active;
+            setRisk((prev) => (prev ? { ...prev, is_kill_switch_active: active } : null));
           }
         } catch (err) {
           console.warn('Risk WS message parse error:', err);
@@ -114,6 +115,36 @@ export function useExecutionsWebSocket() {
                 return next;
               }
               return [updated, ...prev];
+            });
+          } else if (msg.type === 'CHILD_FILL' && msg.parent_id && msg.fill) {
+            const childFill = msg.fill;
+            setOrders((prev) => {
+              const idx = prev.findIndex((o) => o.order_id === msg.parent_id);
+              if (idx === -1) return prev;
+              const parentOrder = prev[idx];
+              const childFills = parentOrder.child_fills ? [...parentOrder.child_fills] : [];
+              const childIdx = childFills.findIndex((c) => c.child_id === childFill.child_id);
+              if (childIdx !== -1) {
+                // Duplicate packet or fill update: avoid double-counting
+                childFills[childIdx] = childFill;
+                const next = [...prev];
+                next[idx] = { ...parentOrder, child_fills: childFills };
+                return next;
+              }
+              childFills.push(childFill);
+              const fillQty = childFill.quantity || 0;
+              const newFilled = parentOrder.filled_quantity + fillQty;
+              const newLeaves = Math.max(0, parentOrder.leaves_quantity - fillQty);
+              const updatedParent: ParentOrder = {
+                ...parentOrder,
+                filled_quantity: newFilled,
+                leaves_quantity: newLeaves,
+                is_closed: newLeaves <= 0,
+                child_fills: childFills,
+              };
+              const next = [...prev];
+              next[idx] = updatedParent;
+              return next;
             });
           }
         } catch (err) {

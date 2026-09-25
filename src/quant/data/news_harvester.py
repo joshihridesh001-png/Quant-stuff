@@ -383,7 +383,20 @@ class NewsHarvester:
         client = self._client
         owns_client = False
         if client is None:
-            client = httpx.AsyncClient(follow_redirects=True)
+            user_agent = (
+                "QuantResearchWorkbench/1.0 (compliance@quant.internal)"
+                if "sec.gov" in feed_config.url
+                else (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                )
+            )
+            default_headers = {
+                "User-Agent": user_agent,
+                "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+            }
+            client = httpx.AsyncClient(headers=default_headers, follow_redirects=True)
             owns_client = True
 
         try:

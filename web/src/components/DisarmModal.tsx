@@ -11,15 +11,20 @@ export const DisarmModal: React.FC<DisarmModalProps> = ({ isOpen, onClose }) => 
   const { resetKillSwitch } = useQuantContext();
   const [token, setToken] = useState('DEFAULT_ADMIN_TOKEN');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError(null);
     try {
       await resetKillSwitch(token.trim());
       onClose();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Invalid HMAC recovery token. Access denied.';
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -43,6 +48,12 @@ export const DisarmModal: React.FC<DisarmModalProps> = ({ isOpen, onClose }) => 
         <p className="text-xs text-slate-300 font-mono mt-2">
           Enter cryptographically verified HMAC administrator secret to disarm the circuit breaker lockout and restore trading desk operations.
         </p>
+
+        {error && (
+          <div className="mt-3 p-2.5 rounded-lg bg-rose-500/20 border border-rose-500/50 text-rose-300 text-xs font-mono">
+            {error}
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-3 font-mono">
           <div>

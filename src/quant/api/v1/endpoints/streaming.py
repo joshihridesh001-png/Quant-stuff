@@ -120,7 +120,7 @@ async def websocket_executions(
         while True:
             data = await websocket.receive_json()
             if isinstance(data, dict) and data.get("action") == "PING":
-                await websocket.send_json(
+                await queue.put(
                     {
                         "type": "PONG",
                         "timestamp_ns": time.time_ns(),
@@ -232,7 +232,7 @@ async def websocket_risk(
         while True:
             data = await websocket.receive_json()
             if isinstance(data, dict) and data.get("action") == "PING":
-                await websocket.send_json(
+                await queue.put(
                     {
                         "type": "PONG",
                         "timestamp_ns": time.time_ns(),

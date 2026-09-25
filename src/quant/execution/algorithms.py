@@ -864,17 +864,18 @@ class NonlinearArrivalPriceScheduler:
         self.num_intervals: int = num_intervals
 
         # 7. Validate optional baseline_volatility (> 0.0, finite float, reject bool)
-        if baseline_volatility is not None and (
-            not isinstance(baseline_volatility, (int, float))
-            or isinstance(baseline_volatility, bool)
-            or not math.isfinite(baseline_volatility)
-            or baseline_volatility <= 0.0
-        ):
-            raise InvalidScheduleException(
-                f"NonlinearArrivalPriceScheduler baseline_volatility must be "
-                f"finite float > 0.0 if provided, got {baseline_volatility!r}",
-                code=ERR_SOR_INVALID_SCHEDULE,
-            )
+        if baseline_volatility is not None:
+            if (
+                not isinstance(baseline_volatility, (int, float))
+                or isinstance(baseline_volatility, bool)
+                or not math.isfinite(baseline_volatility)
+                or baseline_volatility <= 0.0
+            ):
+                raise InvalidScheduleException(
+                    f"NonlinearArrivalPriceScheduler baseline_volatility must be "
+                    f"finite float > 0.0 if provided, got {baseline_volatility!r}",
+                    code=ERR_SOR_INVALID_SCHEDULE,
+                )
             self.baseline_volatility: float | None = float(baseline_volatility)
         else:
             self.baseline_volatility = None

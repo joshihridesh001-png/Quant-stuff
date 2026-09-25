@@ -188,6 +188,7 @@ def compute_probabilistic_sharpe_ratio(
     skewness: float = 0.0,
     kurtosis: float = 3.0,
     sample_length: int = 10,
+    annualization_factor: float = 1.0,
 ) -> float:
     """Compute the Probabilistic Sharpe Ratio (PSR) under non-normal returns.
 
@@ -199,24 +200,34 @@ def compute_probabilistic_sharpe_ratio(
     Invariants:
         - sample_length >= 3.
         - Returned PSR is bounded in [0.0, 1.0].
+        - Annualized Sharpe ratios are normalized to per-period scale to preserve the Mertens-Lo invariant.
     """
     if sample_length < 3:
         raise ValueError(f"sample_length must be at least 3, got {sample_length}")
+
+    # Normalize to per-period scale if annualization factor provided
+    if annualization_factor > 1.0:
+        scale = np.sqrt(annualization_factor)
+        sr = sharpe_ratio / scale
+        bm = benchmark_sharpe / scale
+    else:
+        sr = sharpe_ratio
+        bm = benchmark_sharpe
 
     # Enforce theoretical lower bound on kurtosis to guarantee strictly positive denominator
     min_kurt = 1.0 + (skewness**2) + 1e-6
     kurt = max(kurtosis, min_kurt)
 
-    # Compute variance term under non-normality
-    var_term = 1.0 - (skewness * sharpe_ratio) + (((kurt - 1.0) / 4.0) * (sharpe_ratio**2))
+    # Compute variance term under non-normality on per-period scale
+    var_term = 1.0 - (skewness * sr) + (((kurt - 1.0) / 4.0) * (sr**2))
     # Defensive floor against numerical floating-point inaccuracies
     var_term = max(1e-8, var_term)
 
     std_error = np.sqrt(var_term / float(sample_length - 1))
     if std_error < 1e-12:
-        return 1.0 if sharpe_ratio >= benchmark_sharpe else 0.0
+        return 1.0 if sr >= bm else 0.0
 
-    z_score = (sharpe_ratio - benchmark_sharpe) / std_error
+    z_score = (sr - bm) / std_error
     psr = float(sc_special.ndtr(z_score))
     return float(np.clip(psr, 0.0, 1.0))
 
@@ -260,6 +271,7 @@ def compute_min_backtest_length(
     skewness: float = 0.0,
     kurtosis: float = 3.0,
     significance_level: float = 0.95,
+    annualization_factor: float = 1.0,
 ) -> float:
     """Compute the Minimum Backtest Length (MinBTL) required to certify statistical significance.
 
@@ -274,18 +286,27 @@ def compute_min_backtest_length(
     if not (0.50 < significance_level < 1.0):
         raise ValueError(f"significance_level must be in (0.50, 1.0), got {significance_level}")
 
+    # Normalize to per-period scale if annualization factor provided
+    if annualization_factor > 1.0:
+        scale = np.sqrt(annualization_factor)
+        sr = sharpe_ratio / scale
+        bm = benchmark_sharpe / scale
+    else:
+        sr = sharpe_ratio
+        bm = benchmark_sharpe
+
     # If the strategy fails to beat the benchmark, no finite sample length can make it significant
-    if sharpe_ratio <= benchmark_sharpe:
+    if sr <= bm:
         return float("inf")
 
     min_kurt = 1.0 + (skewness**2) + 1e-6
     kurt = max(kurtosis, min_kurt)
 
-    var_term = 1.0 - (skewness * sharpe_ratio) + (((kurt - 1.0) / 4.0) * (sharpe_ratio**2))
+    var_term = 1.0 - (skewness * sr) + (((kurt - 1.0) / 4.0) * (sr**2))
     var_term = max(1e-8, var_term)
 
     z_alpha = float(sc_special.ndtri(significance_level))
-    diff = sharpe_ratio - benchmark_sharpe
+    diff = sr - bm
 
     min_btl = 1.0 + (var_term * ((z_alpha / diff) ** 2))
     return float(max(1.0, min_btl))
@@ -456,6 +477,7 @@ class DeflatedSharpeEngine:
             skewness=skew_val,
             kurtosis=kurt_val,
             sample_length=sample_len,
+            annualization_factor=ann_factor if annualize else 1.0,
         )
 
         # Compute Expected Maximum Sharpe Ratio under null hypothesis of selection bias
@@ -472,6 +494,7 @@ class DeflatedSharpeEngine:
             skewness=skew_val,
             kurtosis=kurt_val,
             sample_length=sample_len,
+            annualization_factor=ann_factor if annualize else 1.0,
         )
 
         # Compute Minimum Backtest Length (in return observations)
@@ -481,6 +504,7 @@ class DeflatedSharpeEngine:
             skewness=skew_val,
             kurtosis=kurt_val,
             significance_level=self._config.significance_level,
+            annualization_factor=ann_factor if annualize else 1.0,
         )
 
         # Dual Institutional Gate
@@ -625,8 +649,8 @@ class DeflatedSharpeEngine:
                 annualize=True,
             )
             initial_results.append(res)
-            # Two-sided empirical p-value from DSR: p = 1 - DSR
-            p_values.append(1.0 - res.deflated_sharpe_ratio)
+            # Empirical p-value against benchmark hurdle for cohort FDR control: p = 1 - PSR
+            p_values.append(max(0.0, 1.0 - res.probabilistic_sharpe_ratio))
 
         # Apply False Discovery Rate stepdown adjustment
         _, fdr_mask = adjust_p_values_fdr(

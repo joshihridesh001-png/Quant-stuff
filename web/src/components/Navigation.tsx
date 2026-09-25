@@ -1,7 +1,7 @@
 import React from 'react';
-import { Newspaper, LineChart, Dices, Dna, FlaskConical } from 'lucide-react';
+import { Newspaper, LineChart, Dices, Dna, FlaskConical, BarChart3 } from 'lucide-react';
 
-export type ActivePillar = 'news' | 'econometrics' | 'regimes' | 'swarm' | 'simulation';
+export type ActivePillar = 'news' | 'econometrics' | 'regimes' | 'swarm' | 'simulation' | 'backtest';
 
 interface NavigationProps {
   activePillar: ActivePillar;
@@ -15,6 +15,7 @@ export const Navigation: React.FC<NavigationProps> = ({ activePillar, onSelectPi
     { id: 'regimes' as ActivePillar, label: '3. Game Theory & Regimes', icon: Dices },
     { id: 'swarm' as ActivePillar, label: '4. Evolutionary Swarm', icon: Dna },
     { id: 'simulation' as ActivePillar, label: '5. Simulation & Risk Studio', icon: FlaskConical },
+    { id: 'backtest' as ActivePillar, label: '6. Backtest & Attribution Studio', icon: BarChart3 },
   ];
 
   return (

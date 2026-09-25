@@ -61,7 +61,8 @@ export const QuantProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setRisk((prev) => (prev ? { ...prev, is_kill_switch_active: false } : null));
       await refreshSwarm();
     } catch (err) {
-      alert('Kill switch reset error: ' + err);
+      console.error('Kill switch reset error:', err);
+      throw err;
     }
   }, [setRisk, refreshSwarm]);
 

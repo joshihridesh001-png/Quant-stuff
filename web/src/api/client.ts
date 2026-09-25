@@ -1,28 +1,37 @@
 // Authenticated REST API Client for Quantitative Research Workbench
 
 let cachedToken: string | null = null;
+let authPromise: Promise<string | null> | null = null;
 
 export async function getAuthToken(): Promise<string | null> {
   if (cachedToken) return cachedToken;
-  try {
-    const res = await fetch('/api/v1/auth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'admin',
-        password: 'quant-secret-pass',
-        role: 'ADMIN',
-      }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      cachedToken = data.access_token;
-      return cachedToken;
+  if (authPromise) return authPromise;
+
+  authPromise = (async () => {
+    try {
+      const res = await fetch('/api/v1/auth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: 'admin',
+          password: 'quant-secret-pass',
+          role: 'ADMIN',
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        cachedToken = data.access_token;
+        return cachedToken;
+      }
+    } catch (err) {
+      console.error('Failed to negotiate auth token:', err);
+    } finally {
+      authPromise = null;
     }
-  } catch (err) {
-    console.error('Failed to negotiate auth token:', err);
-  }
-  return null;
+    return null;
+  })();
+
+  return authPromise;
 }
 
 export async function apiFetch<T>(
@@ -59,7 +68,15 @@ export async function apiFetch<T>(
     let errorDetail = `HTTP ${res.status} ${res.statusText}`;
     try {
       const errorJson = await res.json();
-      errorDetail = errorJson.detail?.message || errorJson.detail || errorDetail;
+      if (Array.isArray(errorJson.detail)) {
+        errorDetail = errorJson.detail
+          .map((d: any) => (d.msg ? `${d.loc ? d.loc.join('.') + ': ' : ''}${d.msg}` : JSON.stringify(d)))
+          .join('; ');
+      } else if (typeof errorJson.detail === 'object' && errorJson.detail !== null) {
+        errorDetail = errorJson.detail?.message || JSON.stringify(errorJson.detail);
+      } else if (typeof errorJson.detail === 'string') {
+        errorDetail = errorJson.detail;
+      }
     } catch {
       // ignore
     }
@@ -111,6 +128,10 @@ export const apiClient = {
       method: 'POST',
       body: JSON.stringify({ population_size: count }),
     }),
+  stepGenotypes: <T>(currentGen: number = 0, populationSize: number = 20) =>
+    apiFetch<T>(`/api/v1/genotypes/step?current_generation=${currentGen}&population_size=${populationSize}`, {
+      method: 'POST',
+    }),
 
   // Orders
   getOrders: <T>() => apiFetch<T>('/api/v1/orders'),
@@ -119,7 +140,7 @@ export const apiClient = {
       method: 'POST',
       body: JSON.stringify(orderPayload),
     }),
-  getOrderTca: <T>(orderId: string) => apiFetch<T>(`/api/v1/orders/${orderId}/tca`),
+  getOrderTca: <T>(orderId: string) => apiFetch<T>(`/api/v1/orders/${orderId}/shortfall`),
 
   // Simulation
   runSimulation: <T>(simPayload: unknown) =>
@@ -172,6 +193,26 @@ export const apiClient = {
       method: 'POST',
       body: JSON.stringify({ ambiguity_beta: ambiguityBeta, risk_aversion: riskAversion }),
     }),
+
+  // Backtest Studio & Attribution Reporting
+  runBacktest: <T>(params: {
+    strategy_type: string;
+    symbols: string[];
+    start_date?: string | null;
+    end_date?: string | null;
+    initial_cash: number;
+    benchmark_symbol: string;
+    cost_bps: number;
+    parameters?: Record<string, any>;
+  }) =>
+    apiFetch<T>('/api/v1/backtest/run', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }),
+  getBacktestStatus: <T>(backtestId: string) =>
+    apiFetch<T>(`/api/v1/backtest/${backtestId}/status`),
+  getBacktestHistory: <T>() =>
+    apiFetch<T>('/api/v1/backtest/history'),
 };
 
 export const quantApi = apiClient;

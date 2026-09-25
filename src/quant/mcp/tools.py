@@ -152,12 +152,17 @@ def get_tool_definitions() -> list[dict[str, Any]]:
     ]
 
 
-async def execute_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+async def execute_tool(
+    name: str,
+    arguments: dict[str, Any],
+    user_role: str = "ADMIN",
+) -> dict[str, Any]:
     """Execute target MCP tool and return standardized JSON payload.
 
     Args:
         name: Name of tool to execute.
         arguments: Parameters dictionary.
+        user_role: Role of calling agent context (defaults to ADMIN for stdio).
 
     Returns:
         dict[str, Any]: Result dictionary containing tool output or error.
@@ -167,6 +172,15 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     # Structural Relationship: Executed upon tools/call JSON-RPC request.
     # Defensive Invariant: Unhandled tool exceptions caught and formatted into error payloads.
     try:
+        # Enforce RBAC on critical actions
+        if name in {"quant_emergency_panic", "quant_kill_switch_reset"} and user_role not in {
+            "ADMIN",
+            "SYSTEM",
+        }:
+            return {
+                "error": f"Permission denied: Tool '{name}' requires ADMIN or SYSTEM privileges, but caller has role '{user_role}'"
+            }
+
         if name == "quant_portfolio_telemetry":
             risk_service = get_risk_service()
             status = risk_service.get_risk_status()

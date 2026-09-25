@@ -40,8 +40,10 @@ engine: AsyncEngine = create_async_engine(
 def _set_sqlite_pragma(dbapi_connection: Any, connection_record: Any) -> None:
     if settings.DATABASE_URL.startswith("sqlite"):
         cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
 
@@ -58,9 +60,11 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
     async with async_session_factory() as session:
         try:
             yield session
-            await session.commit()
+            if session.is_active:
+                await session.commit()
         except Exception:
-            await session.rollback()
+            if session.is_active:
+                await session.rollback()
             raise
         finally:
             await session.close()

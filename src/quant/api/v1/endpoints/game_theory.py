@@ -27,6 +27,7 @@ Invariants Enforced:
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any
 
@@ -150,19 +151,33 @@ async def get_regime_status(
     timestamps, returns = await _get_returns(symbol, bar_count, service)
     n = len(returns)
 
-    # Standardize returns for CUSUM calculation
-    mean_ret = float(np.mean(returns))
-    std_ret = float(np.std(returns)) if np.std(returns) > 1e-8 else 0.01
-    z_scores = (returns - mean_ret) / std_ret
-
-    # Two-sided CUSUM recursion: S_t^+ = max(0, S_{t-1}^+ + z_t - k), S_t^- = max(0, S_{t-1}^- - z_t - k)
+    # Causal standardization for CUSUM calculation (zero lookahead bias)
     s_pos = 0.0
     s_neg = 0.0
     cusum_series: list[CUSUMPointDTO] = []
     alarm_active = False
 
+    running_sum = 0.0
+    running_sq_sum = 0.0
+    causal_vols: list[float] = []
+
     for i in range(n):
-        z = float(z_scores[i])
+        r_i = float(returns[i])
+        running_sum += r_i
+        running_sq_sum += r_i * r_i
+        count = i + 1
+
+        if count >= 2:
+            mean_c = running_sum / count
+            var_c = max(0.0, (running_sq_sum - (running_sum**2) / count) / (count - 1))
+            std_c = math.sqrt(var_c) if var_c > 1e-12 else 0.01
+        else:
+            mean_c = 0.0
+            std_c = max(abs(r_i), 0.01)
+
+        causal_vols.append(std_c)
+
+        z = (r_i - mean_c) / std_c
         s_pos = max(0.0, s_pos + z - cusum_drift)
         s_neg = max(0.0, s_neg - z - cusum_drift)
         is_shock = bool(s_pos >= cusum_threshold or s_neg >= cusum_threshold)
@@ -195,7 +210,7 @@ async def get_regime_status(
 
     for i in range(n):
         r_step = np.array([returns[i]], dtype=np.float64)
-        vol_step = max(std_ret, 1e-4)
+        vol_step = max(causal_vols[i] if causal_vols else 0.01, 1e-4)
         try:
             res = reg_filter.step(returns=r_step, realized_volatility=vol_step)
             probs = res.probabilities

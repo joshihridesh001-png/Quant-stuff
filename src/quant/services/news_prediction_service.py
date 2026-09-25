@@ -48,8 +48,8 @@ DEFAULT_FEEDS: list[NewsFeedConfig] = [
         timeout_seconds=5.0,
     ),
     NewsFeedConfig(
-        name="cnbc_finance",
-        url="https://search.cnbc.com/rs/search/combinedlist/view.xml?partnerId=wrss01&id=10000664",
+        name="marketwatch",
+        url="https://feeds.content.dowjones.io/public/rss/mw_topstories",
         feed_type="rss",
         timeout_seconds=5.0,
     ),

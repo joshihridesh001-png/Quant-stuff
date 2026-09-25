@@ -112,6 +112,32 @@ async def get_pareto_ranking(
 
 
 @router.post(
+    "/step",
+    response_model=list[ParetoRankedGenotypeResponse],
+    summary="Advance evolutionary swarm by breeding and mutating generation t+1",
+)
+async def step_generation(
+    current_generation: int = Query(0, ge=0, description="Current generation index to evolve from"),
+    population_size: int = Query(20, ge=4, le=100, description="Target population size"),
+    service: GenotypeService = Depends(get_genotype_service),
+) -> list[ParetoRankedGenotypeResponse]:
+    """Advance generation t to generation t+1 via selection, crossover, and mutation."""
+    offspring = await service.step_generation(
+        current_generation=current_generation,
+        population_size=population_size,
+    )
+    ranked = service.rank_population_pareto(offspring)
+    return [
+        ParetoRankedGenotypeResponse(
+            genotype=_to_response(g),
+            pareto_rank=rank,
+            crowding_distance=dist if dist != float("inf") else 1e9,
+        )
+        for g, rank, dist in ranked
+    ]
+
+
+@router.post(
     "/{genotype_id}/evaluate",
     response_model=dict[str, Any],
     summary="Record multi-objective fitness evaluation",

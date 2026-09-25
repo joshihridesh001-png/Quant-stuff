@@ -291,7 +291,7 @@ export const EconometricsView: React.FC = () => {
                   stroke="#f43f5e"
                   fontSize={11}
                   domain={[0, 1]}
-                  tickFormatter={(val) => val.toFixed(2)}
+                  tickFormatter={(val) => (typeof val === 'number' && Number.isFinite(val) ? val.toFixed(2) : '0.00')}
                   label={{ value: 'ADF p-value', angle: -90, position: 'insideLeft', fill: '#f43f5e', fontSize: 10 }}
                 />
                 <YAxis
@@ -300,7 +300,7 @@ export const EconometricsView: React.FC = () => {
                   stroke="#38bdf8"
                   fontSize={11}
                   domain={[0, 1]}
-                  tickFormatter={(val) => (val * 100).toFixed(0) + '%'}
+                  tickFormatter={(val) => (typeof val === 'number' && Number.isFinite(val) ? `${(val * 100).toFixed(0)}%` : '0%')}
                   label={{ value: 'Correlation ρ', angle: 90, position: 'insideRight', fill: '#38bdf8', fontSize: 10 }}
                 />
                 <Tooltip

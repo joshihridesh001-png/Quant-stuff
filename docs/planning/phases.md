@@ -524,3 +524,62 @@ Integrates curated high-signal financial and macroeconomic public APIs from `pub
   * 100% test pass rate across all **2,058 repository tests**, 0 mypy strict errors across 83 source files, and 0 ruff deviations across all 176 files.
   * Formally concluded **Phase 10 as 100% COMPLETE**.
 
+---
+
+### Phase 11: Closed-Form Bayesian Pre-Trade Gate, MCP Server & Multi-Stage Containerization [COMPLETE]
+
+#### Step 1: Closed-Form Bayesian Log-Odds Decision Gate [COMPLETE]
+* **Deliverables:**
+  * Implemented `PreTradeDecisionGate` in `src/quant/execution/pre_trade_gate.py`:
+    * Evaluates 5 risk dimensions: data freshness ($\le 120\text{s}$), macro yield spread ($T10Y2Y$ inversion), order book imbalance toxicity (OBI adverse selection), momentum alignment, and CVaR drawdown budget.
+    * Fail-open on exits (`INV-GATE-001`), sub-$50\mu\text{s}$ execution SLA (`INV-GATE-003`), non-finite input guards (`INV-GATE-004`).
+    * Coupled hard tripwires with diagnostic error codes `ERR-GATE-001` through `ERR-GATE-006`.
+  * 11 unit tests in `tests/unit/test_pre_trade_gate.py` passing 100%.
+
+#### Step 2: Model Context Protocol (MCP) Server [COMPLETE]
+* **Deliverables:**
+  * Implemented JSON-RPC 2.0 MCP Server in `src/quant/mcp/server.py` and `tools.py`:
+    * Standard stdio transport and authenticated REST endpoint (`POST /api/v1/mcp/rpc`).
+    * Exposes 7 institutional tools (`quant_portfolio_telemetry`, `quant_market_orderbook`, `quant_macro_regimes`, `quant_evaluate_pre_trade`, `quant_swarm_status`, `quant_emergency_panic`, `quant_kill_switch_reset`).
+  * 10 unit and API tests in `tests/unit/test_mcp_server.py` and `tests/api/test_mcp_api.py` passing 100%.
+
+#### Step 3: Hardened Containerization & OpenMetrics [COMPLETE]
+* **Deliverables:**
+  * Multi-stage `Dockerfile` (`python:3.13-slim`, non-root UID 10001, volume mount `/app/data`, PID 1 signal trapping).
+  * OpenMetrics Prometheus `/metrics` endpoint in `src/quant/main.py`.
+  * Formally concluded **Phase 11 as 100% COMPLETE (2,085 passing tests)**.
+
+---
+
+### Phase 12: Track D - Autonomous AI Agent Integration via Model Context Protocol (MCP) [COMPLETE]
+
+#### Step 1: Institutional MCP Client & Dual-Transport Multiplexing [COMPLETE]
+* **Deliverables:**
+  * Implemented `MCPClient` in `src/quant/mcp/client.py`:
+    * Non-blocking stdio subprocess execution (`sys.executable -m quant.mcp.server`) with cross-platform async threadpool reader.
+    * Authenticated HTTP JSON-RPC gateway execution (`POST /api/v1/mcp/rpc`).
+    * Cryptographic JWT lifecycle management (`INV-MCP-002`): automatic token acquisition and seamless auto-renewal on HTTP 401 Unauthorized.
+    * Client-side pre-flight schema and bounds verification (`INV-MCP-001`, `ERR-MCP-005`): enforces non-empty strings, finite positive floats (`math.isfinite`), and bounded parameters.
+    * Structured tool result envelope (`MCPToolCallResponse`) inheriting from `dict[str, Any]` with typed `.data`, `.content`, `.is_error`, and `.raw_text` accessors.
+    * Type-safe high-level facades: `get_portfolio_telemetry()`, `get_macro_regimes()`, `get_market_orderbook(symbol)`, `evaluate_pre_trade(...)`, `get_swarm_status()`, `trigger_emergency_panic()`, `reset_kill_switch()`.
+    * Deterministic diagnostic fault codes `ERR-MCP-001` through `ERR-MCP-005`.
+
+#### Step 2: Autonomous Agent Observation & Pre-Trade Decision Loop [COMPLETE]
+* **Deliverables:**
+  * Implemented `scripts/run_mcp_agent.py`:
+    * Autonomous observation cycle: queries portfolio telemetry, macro FRED rates, and consolidated quotes.
+    * Mandatory pre-trade simulation: submits hypothetical rebalancing orders through the 5-D Bayesian log-odds decision gate before execution proposals.
+    * Universal clean ASCII terminal presentation with ANSI status badges, dimension breakdown tables, and latency reporting.
+
+#### Step 3: Claude Desktop & Cursor Integration Guide [COMPLETE]
+* **Deliverables:**
+  * Authored `docs/mcp_agent_guide.md`:
+    * First-principles architectural critique: standard LLM tool calling flaws vs. institutional MCP solution.
+    * Exact `claude_desktop_config.json` snippet for Windows and macOS/Linux.
+    * Cursor MCP JSON configuration snippet (`.cursor/mcp.json`).
+    * Full JSON-RPC 2.0 protocol specifications and JSON Schema definitions for all 7 tools.
+  * Added 16 unit and integration tests in `tests/unit/test_mcp_client.py` passing 100%.
+  * 100% test pass rate across **2,101 repository tests**, 0 mypy strict errors across 94 source files, and 0 ruff deviations across all 201 files.
+  * Formally concluded **Track D (Autonomous AI Agent Integration via MCP) as 100% COMPLETE**.
+
+

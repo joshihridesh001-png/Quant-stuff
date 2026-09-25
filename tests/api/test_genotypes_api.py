@@ -80,3 +80,29 @@ async def test_seed_population_rbac_guards(
     assert len(ranked) == 10
     assert "pareto_rank" in ranked[0]
     assert "crowding_distance" in ranked[0]
+
+
+@pytest.mark.asyncio
+async def test_step_generation_endpoint(
+    client: AsyncClient, researcher_jwt_headers: dict[str, str]
+) -> None:
+    # 1. Seed generation 0
+    seed_res = await client.post(
+        "/api/v1/genotypes/seed",
+        json={"population_size": 10},
+        headers=researcher_jwt_headers,
+    )
+    assert seed_res.status_code == 201
+
+    # 2. Step generation 0 -> 1
+    step_res = await client.post(
+        "/api/v1/genotypes/step?current_generation=0&population_size=10",
+        headers=researcher_jwt_headers,
+    )
+    assert step_res.status_code == 200
+    generation_1 = step_res.json()
+    assert len(generation_1) == 10
+    assert generation_1[0]["genotype"]["generation"] == 1
+    assert "pareto_rank" in generation_1[0]
+    ranks = [item["pareto_rank"] for item in generation_1]
+    assert all(r >= 1 for r in ranks)

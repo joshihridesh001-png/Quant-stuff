@@ -1052,3 +1052,88 @@ Phase 9 integrates live external financial news ingestion with Loughran-McDonald
    - Clean institutional terminal HUD provides real-time news telemetry, manual harvesting triggers, and scenario shock simulation.
    - Full test coverage: 2,035 tests passing with 100% strict Python 3.13 typing across 81 files.
 
+---
+
+### 4.25 Phase 10: External Quantitative Data Providers & Multi-API Swarm Integration
+
+Integrates curated high-signal financial and macroeconomic public APIs from `public-apis` (Finance, Cryptocurrency, Currency Exchange, News) into the live quantitative trading stack with zero-secret hermetic offline fallback, live health telemetry, and autonomous swarm coupling:
+- `ExternalProviderManager`: Master facade managing provider telemetry (`is_configured`, `is_healthy`, `calls_made`), health tracking, and circuit-tripping (`ERR-EXT-001` through `ERR-EXT-006`).
+- `FredClient`: St. Louis Fed observations client with calibrated offline fallback (`T10Y2Y` = 0.18, `DFF` = 5.25%, `CPIAUCSL` = 314.5).
+- `FinnhubClient`: Real-time ticker news and pricing quotes with graceful offline defaults.
+- `NewsApiClient`: Curated business headline search with keyword filtering.
+- `PolygonClient`: US equities previous-day aggregate bar retrieval.
+- REST endpoints: `GET /api/v1/providers/status`, `POST /api/v1/providers/macro/sync`, `GET /api/v1/providers/company-news/{symbol}`.
+- 2,058 passing tests with 100% strict typing across 83 files.
+
+---
+
+### 4.26 Phase 11: Closed-Form Bayesian Pre-Trade Gate, MCP Server & Multi-Stage Containerization
+
+- `PreTradeDecisionGate`: Closed-form Bayesian log-odds decision gate evaluating 5 risk dimensions in $< 50\mu\text{s}$ (`INV-GATE-001` to `INV-GATE-004`, `ERR-GATE-001` to `ERR-GATE-006`): data freshness ($\le 120\text{s}$), macro yield spread ($T10Y2Y$ inversion), order book imbalance toxicity (OBI adverse selection), momentum alignment, and CVaR drawdown budget.
+- `MCPServer`: JSON-RPC 2.0 protocol router supporting stdio transport and authenticated REST gateway (`POST /api/v1/mcp/rpc`) exposing 7 institutional tools.
+- Production containerization: multi-stage `Dockerfile` (`python:3.13-slim`, non-root UID 10001, volume mount `/app/data`, PID 1 `exec uvicorn` signal trapping).
+- OpenMetrics Prometheus `/metrics` endpoint in `src/quant/main.py`.
+- 2,085 passing tests with 100% strict typing across 89 files.
+
+---
+
+### 4.27 Phase 12: Track D - Model Context Protocol (MCP) AI Agent Integration Architecture
+
+Track D establishes an institutional Model Context Protocol client and autonomous AI agent loop connecting external frontier reasoning agents (Claude Desktop, Cursor, Gemini, Google Antigravity) with the quantitative trading stack.
+
+```
++---------------------------------------------------------------------------------------------------+
+|               TRACK D: AUTONOMOUS AI AGENT INTEGRATION (MCP 2024-11-05)                           |
++---------------------------------------------------------------------------------------------------+
+|                                                                                                   |
+|  [External AI Agent / Desktop Assistant] (Claude Desktop, Cursor, Custom Agent Loop)               |
+|                                     |                                                             |
+|          +--------------------------+--------------------------+                                  |
+|          | (Local Stdio Pipes)                                 | (Authenticated HTTPS JSON-RPC)   |
+|          v                                                     v                                  |
+|  +---------------------------------------------------------------------------------------------+  |
+|  | MCPClient (src/quant/mcp/client.py)                                                         |  |
+|  |  - Dual-Transport Multiplexing: Subprocess stdio pipes & httpx connection pool              |  |
+|  |  - Automatic JWT Token Lifecycle & Renewal on 401 Unauthorized (INV-MCP-002, ERR-MCP-001)   |  |
+|  |  - Client-Side Pre-Flight Schema & Finite Bounds Validation (INV-MCP-001, ERR-MCP-005)      |  |
+|  |  - Structured Envelope MCPToolCallResponse (Dict + Typed Property Accessors)                |  |
+|  |  - Type-Safe Helper Facades: Telemetry, Macro Regimes, Order Book, Pre-Trade, Swarm, Panic |  |
+|  |  - Deterministic Diagnostics: ERR-MCP-001 through ERR-MCP-005                              |  |
+|  +---------------------------------------------------------------------------------------------+  |
+|                                     |                                                             |
+|                                     v Inbound JSON-RPC 2.0 Request                                |
+|  +---------------------------------------------------------------------------------------------+  |
+|  | Quantitative Engine MCP Gateway (src/quant/mcp/server.py & tools.py)                         |  |
+|  |  - JSON-RPC 2.0 Router: initialize, tools/list, tools/call                                  |  |
+|  |  - RBAC Boundary Enforcement: RESEARCHER (Read-Only) vs ADMIN (Panic & Reset)              |  |
+|  |  - 7 Institutional Tools: Telemetry, OrderBook, FRED Macro, Pre-Trade, Swarm, Panic, Reset |  |
+|  +---------------------------------------------------------------------------------------------+  |
+|                                     |                                                             |
+|                                     v Mandatory Risk Simulation Gate                              |
+|  +---------------------------------------------------------------------------------------------+  |
+|  | PreTradeDecisionGate (src/quant/execution/pre_trade_gate.py)                                |  |
+|  |  - 5-D Bayesian Log-Odds Pre-Trade Evaluation (< 50us SLA)                                  |  |
+|  |  - Fail-Open on Exits (INV-GATE-001) & Strict Non-Finite Input Rejection (INV-GATE-004)       |  |
+|  +---------------------------------------------------------------------------------------------+  |
+|                                     |                                                             |
+|                                     v Approved Order Flow                                         |
+|  [Execution Gateway / Smart Order Router / Autonomous Swarm Engine]                               |
++---------------------------------------------------------------------------------------------------+
+```
+
+1. **Dual Transport Multiplexing (`MCPClient`)**:
+   - Stdio Subprocess Transport: Communicates over non-blocking stdin/stdout pipes with `python -m quant.mcp.server`, engineered with `asyncio.to_thread` for universal Windows IOCP proactor compatibility.
+   - HTTP JSON-RPC Transport: Connects to `POST /api/v1/mcp/rpc` with `httpx.AsyncClient` connection pooling.
+2. **Transparent Cryptographic Session Management (`INV-MCP-002`)**:
+   - Automatically acquires HS256 JWT bearer tokens on startup.
+   - Catches HTTP 401 Unauthorized responses to transparently renew expired tokens and retry the pending RPC call once without disrupting agent decision cycles (`ERR-MCP-001`).
+3. **Client-Side Pre-Flight Parameter Verification (`INV-MCP-001`)**:
+   - Inspects tool argument dictionaries prior to dispatch: rejects missing required keys, empty strings, non-finite values (`math.isfinite`), negative share quantities, and out-of-bounds metrics (OBI $\notin [-1.0, 1.0]$) with `MCPSchemaValidationException` (`ERR-MCP-005`).
+4. **Structured Output Container (`MCPToolCallResponse`)**:
+   - Subclasses `dict[str, Any]` to preserve 100% compatibility with standard JSON-RPC response dicts while exposing typed accessors (`.data`, `.content`, `.is_error`, `.raw_text`).
+5. **Autonomous Agent Observation & Decision Script (`scripts/run_mcp_agent.py`)**:
+   - Autonomous loop: dynamically discovers registered tools via `tools/list`, queries portfolio telemetry and macroeconomic rates, evaluates candidate rebalancing orders through `quant_evaluate_pre_trade`, and renders structured tables with clean universal ASCII formatting.
+6. **Integration Guides (`docs/mcp_agent_guide.md`)**:
+   - Complete configuration snippets for Claude Desktop (`claude_desktop_config.json`) and Cursor IDE (`.cursor/mcp.json`).
+   - Diagnostic fault codes `ERR-MCP-001` through `ERR-MCP-005` cataloged in `Memory.md`.
+   - Comprehensive test suite: 16 unit and integration tests passing 100% (2,101 total repository tests).

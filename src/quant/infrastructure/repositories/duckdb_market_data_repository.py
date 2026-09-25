@@ -6,6 +6,8 @@ Relationship: Injected into MarketDataService and econometric feature pipelines.
 Invariants: Always returns contiguous, chronologically sorted MarketDataBatch instances.
 """
 
+import contextlib
+import uuid
 from collections.abc import Sequence
 
 # High-performance columnar database handle
@@ -78,22 +80,25 @@ class DuckDBMarketDataRepository(IMarketDataRepository):
             ],
         )
 
+        view_name = f"incoming_batch_view_{uuid.uuid4().hex}"
+
         def _insert(conn: duckdb.DuckDBPyConnection) -> int:
             # Purpose: Temporarily register PyArrow table in DuckDB memory space
             # Dependencies: conn.register
-            conn.register("incoming_batch_view", arrow_table)
-
-            # Purpose: Execute bulk upsert replacing conflicting composite primary keys
-            # Dependencies: INSERT OR REPLACE INTO market_bars
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO market_bars
-                SELECT * FROM incoming_batch_view;
-                """
-            )
-
-            # Purpose: Cleanly release arrow view registration
-            conn.unregister("incoming_batch_view")
+            conn.register(view_name, arrow_table)
+            try:
+                # Purpose: Execute bulk upsert replacing conflicting composite primary keys
+                # Dependencies: INSERT OR REPLACE INTO market_bars
+                conn.execute(
+                    f"""
+                    INSERT OR REPLACE INTO market_bars
+                    SELECT * FROM {view_name};
+                    """
+                )
+            finally:
+                # Purpose: Cleanly release arrow view registration and prevent catalog view leaks
+                with contextlib.suppress(Exception):
+                    conn.unregister(view_name)
             return len(bars)
 
         # Purpose: Delegate database write to background worker thread

@@ -147,3 +147,34 @@ class TestAlpacaMarketDataFeed:
         assert frac_buffers["AAPL"]._buffer[-1] == bars["AAPL"].close
 
         await feed.aclose()
+
+    @pytest.mark.asyncio
+    async def test_online_api_failure_does_not_poison_duckdb(
+        self,
+        market_repo: DuckDBMarketDataRepository,
+        frac_buffers: dict[str, StreamingFracDiffBuffer],
+    ) -> None:
+        """Verify that HTTP 500 errors in live/online mode do not write synthetic data to DuckDB."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, text="Internal Server Error")
+
+        transport = _mock_transport(handler)
+        feed = AlpacaMarketDataFeed(
+            api_key="test-key",
+            secret_key="test-secret",
+            repository=market_repo,
+            frac_diff_buffers=frac_buffers,
+            offline_mode=False,
+            transport=transport,
+        )
+
+        bars = await feed.fetch_latest_bars(["AAPL", "NVDA"])
+        assert bars == {}
+
+        # Verify DuckDB repository remained pristine (zero rows inserted)
+        history = await market_repo.get_latest_bars(
+            "AAPL", count=5, resolution=Resolution.ONE_MINUTE
+        )
+        assert history.count == 0
+        await feed.aclose()

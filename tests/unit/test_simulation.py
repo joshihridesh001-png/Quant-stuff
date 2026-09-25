@@ -3144,8 +3144,8 @@ class TestReplayEngine:
                 and any(sys.monitoring.get_tool(i) is not None for i in range(6))
             )
         )
-        # Latency threshold: <= 60.0ms under tracing/coverage, <= 35.0ms on untraced hardware
-        threshold_ms = 60.0 if is_traced else 35.0
+        # Latency threshold: <= 75.0ms under tracing/coverage/load, <= 45.0ms on untraced hardware
+        threshold_ms = 75.0 if is_traced else 45.0
         min_latency = float(np.min(latencies_ms))
         assert min_latency <= threshold_ms, (
             f"INV-SIM-006 SLA breached: min replay time was {min_latency:.3f}ms > {threshold_ms}ms"

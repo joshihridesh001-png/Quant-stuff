@@ -611,8 +611,8 @@ class RiskOrchestrator:
             report = await target_gw.submit_order(order)
 
             # Reconcile fills and leaves based on execution report
-            if report.exec_type == OrderState.REJECTED:
-                # Gateway rejected order: complete atomic leaves rollback
+            if report.exec_type in (OrderState.REJECTED, OrderState.CANCELLED, OrderState.EXPIRED):
+                # Gateway rejected, cancelled, or expired order: complete atomic leaves rollback
                 self._state.pending_leaves[sym] = (
                     self._state.pending_leaves.get(sym, 0.0) - signed_leaves_delta
                 )

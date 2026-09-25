@@ -31,7 +31,8 @@ def hash_password(password: str, salt: str | None = None, algorithm: str = "pbkd
         try:
             argon2_mod = __import__("argon2")
             ph = argon2_mod.PasswordHasher()
-            return f"argon2id${ph.hash(password)}"
+            raw_hash = str(ph.hash(password))
+            return f"argon2id${raw_hash}"
         except (ImportError, AttributeError) as err:
             raise NotImplementedError(
                 "Argon2id hashing requires 'argon2-cffi' package to be installed."
@@ -42,20 +43,20 @@ def hash_password(password: str, salt: str | None = None, algorithm: str = "pbkd
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify that a plaintext password matches a stored hash across supported algorithms."""
     try:
-        parts = hashed_password.split("$", 2)
-        algorithm = parts[0]
-        if algorithm == "pbkdf2_sha256":
+        if hashed_password.startswith("pbkdf2_sha256$"):
+            parts = hashed_password.split("$", 2)
             if len(parts) != 3:
                 return False
             _, salt, _ = parts
             expected_hash = hash_password(plain_password, salt=salt, algorithm="pbkdf2_sha256")
             return hmac.compare_digest(expected_hash, hashed_password)
-        elif algorithm == "argon2id":
-            if len(parts) < 2:
-                return False
+        elif hashed_password.startswith("argon2id$") or hashed_password.startswith("$argon2id$"):
+            raw_hash = hashed_password
+            if raw_hash.startswith("argon2id$"):
+                raw_hash = raw_hash[len("argon2id$") :]
             argon2_mod = __import__("argon2")
             ph = argon2_mod.PasswordHasher()
-            return bool(ph.verify(parts[1], plain_password))
+            return bool(ph.verify(raw_hash, plain_password))
         return False
     except Exception:
         return False
@@ -75,8 +76,8 @@ def _b64url_encode(data: bytes) -> str:
 
 def _b64url_decode(data: str) -> bytes:
     """URL-safe Base64 decode with proper padding reconstruction."""
-    padding = 4 - (len(data) % 4)
-    if padding != 4:
+    padding = (-len(data)) % 4
+    if padding != 0:
         data += "=" * padding
     return base64.urlsafe_b64decode(data.encode("utf-8"))
 
@@ -125,11 +126,22 @@ def decode_access_token(token: str) -> dict[str, Any]:
     if not hmac.compare_digest(sig_b64, expected_sig_b64):
         raise ValueError("Invalid token signature")
 
+    header_bytes = _b64url_decode(header_b64)
+    header: dict[str, Any] = json.loads(header_bytes.decode("utf-8"))
+    if not isinstance(header, dict) or header.get("alg") != settings.JWT_ALGORITHM:
+        raise ValueError(
+            f"Unsupported or mismatched JWT algorithm: {header.get('alg') if isinstance(header, dict) else 'none'}"
+        )
+
     payload_bytes = _b64url_decode(payload_b64)
     payload: dict[str, Any] = json.loads(payload_bytes.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Token payload must be a JSON object")
 
     now_ts = int(datetime.now(UTC).timestamp())
-    if "exp" in payload and payload["exp"] < now_ts:
+    if "exp" not in payload:
+        raise ValueError("Token missing mandatory 'exp' claim")
+    if not isinstance(payload["exp"], (int, float)) or payload["exp"] < now_ts:
         raise ValueError("Token has expired")
 
     return payload

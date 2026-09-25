@@ -1747,9 +1747,13 @@ class BenchmarkAuditor:
             )
 
         # 7. Statistical Significance Certification via Deflated Sharpe Ratio
+        var_trials = (
+            float(1.0 / self.config.annualization_factor) if self.config.num_trials > 1 else 0.0
+        )
         dsr_result = self._dsr_engine.evaluate_strategy(
             returns=r_net,
             n_trials=self.config.num_trials,
+            var_trials=var_trials,
         )
         deflated_sharpe = float(dsr_result.deflated_sharpe_ratio)
         min_btl = float(dsr_result.min_backtest_length)
@@ -1774,19 +1778,21 @@ class BenchmarkAuditor:
                 r_rp[1] = float(np.mean(asset_returns[1]))
             if t_len > 2:
                 window = 20
-                u = asset_returns - np.mean(asset_returns, axis=0, keepdims=True)
-                cumsum_u = np.vstack(
-                    [np.zeros((1, n_assets), dtype=np.float64), np.cumsum(u, axis=0)]
+                cumsum_x = np.vstack(
+                    [np.zeros((1, n_assets), dtype=np.float64), np.cumsum(asset_returns, axis=0)]
                 )
-                cumsum_u2 = np.vstack(
-                    [np.zeros((1, n_assets), dtype=np.float64), np.cumsum(u**2, axis=0)]
+                cumsum_x2 = np.vstack(
+                    [np.zeros((1, n_assets), dtype=np.float64), np.cumsum(asset_returns**2, axis=0)]
                 )
                 t_idx = np.arange(2, t_len, dtype=np.int64)
                 s_idx = np.maximum(0, t_idx - window)
                 k_vec = (t_idx - s_idx)[:, np.newaxis]
-                sum_u = cumsum_u[t_idx] - cumsum_u[s_idx]
-                sum_u2 = cumsum_u2[t_idx] - cumsum_u2[s_idx]
-                var_t = np.maximum(0.0, (sum_u2 - (sum_u**2) / k_vec) / (k_vec - 1.0))
+                sum_x = cumsum_x[t_idx] - cumsum_x[s_idx]
+                sum_x2 = cumsum_x2[t_idx] - cumsum_x2[s_idx]
+                var_t = np.maximum(
+                    0.0,
+                    (sum_x2 - (sum_x**2) / k_vec) / np.maximum(k_vec - 1.0, 1.0),
+                )
                 vols_t = np.sqrt(np.maximum(var_t, 1e-24))
                 vols_t = np.where(vols_t < 1e-12, 1e-12, vols_t)
                 inv_vols_t = 1.0 / vols_t

@@ -14,15 +14,24 @@ An institutional-grade, multi-algorithmic market prediction and alpha generation
 
 ## Canonical Documentation Suite
 
-The system's operational and architectural standards are codified across 7 canonical documents:
+The system's operational and architectural standards are organized into a tiered documentation hierarchy in [`docs/`](./docs):
 
-1. **[`PRD.md`](./PRD.md)**: Product Requirements Document — product vision, market inefficiencies, user personas, and feature matrices (Phase 1 through Phase 9 complete).
-2. **[`Architecture.md`](./Architecture.md)**: System Architecture & Component Topology — layered domain design, hybrid storage (DuckDB + PostgreSQL), module maps, Alpaca broker gateway, autonomous trading swarm daemon, real-world news prediction engine, and data flow pipelines.
-3. **[`Rules.md`](./Rules.md)**: The Three Fundamental Engineering Rules — micro-level code transparency, zero-execution diagnostics, and strict CI quality gates.
-4. **[`Phases.md`](./Phases.md)**: Implementation Roadmap & Delivery Phases — granular phase-by-phase delivery schedule (Sprint 1 through Phase 9 complete; 2,035 tests passing).
-5. **[`Design.md`](./Design.md)**: Quantitative & Technical Design Specification — mathematical formulations for decay kernels, fractional diff, triple-barrier labeling, CPCV, DSR, hypergamic mating, RD-DMA, circuit breakers, EVT tail risk, smart order routing, live execution gateways, and autonomous swarm rebalancing loops.
-6. **[`Memory.md`](./Memory.md)**: Project Memory — Autonomous Decision Register (ADR-001 through ADR-026), Deterministic Diagnostic Failure Matrix (ERR-GW-001..006, ERR-SOR-001..007, ERR-RSK-001..008, ERR-HB-001..003, ERR-NEWS-001..006), and complete engineering audit trail across 35 sprint phases.
-7. **[`SRS.md`](./SRS.md)**: Software Requirements Specification — IEEE Std 830-1998 compliant functional and non-functional engineering requirements.
+### 1. Architecture & Design
+- **[`docs/architecture/architecture.md`](./docs/architecture/architecture.md)**: System Architecture & Component Topology — layered domain design, hybrid storage (DuckDB + PostgreSQL), module maps, Alpaca broker gateway, autonomous trading swarm daemon, real-world news prediction engine, and data flow pipelines.
+- **[`docs/architecture/design.md`](./docs/architecture/design.md)**: Quantitative & Technical Design Specification — mathematical formulations for decay kernels, fractional diff, triple-barrier labeling, CPCV, DSR, hypergamic mating, RD-DMA, circuit breakers, EVT tail risk, smart order routing, live execution gateways, and autonomous swarm rebalancing loops.
+- **[`docs/architecture/srs.md`](./docs/architecture/srs.md)**: Software Requirements Specification — IEEE Std 830-1998 compliant functional and non-functional engineering requirements.
+
+### 2. Planning & Roadmaps
+- **[`docs/planning/prd.md`](./docs/planning/prd.md)**: Product Requirements Document — product vision, market inefficiencies, user personas, and feature matrices (Phase 1 through Phase 12 complete).
+- **[`docs/planning/phases.md`](./docs/planning/phases.md)**: Implementation Roadmap & Delivery Phases — granular phase-by-phase delivery schedule (Sprint 1 through Phase 12 complete; 2,133 tests passing).
+
+### 3. Standards & Governance
+- **[`docs/standards/rules.md`](./docs/standards/rules.md)**: The Four Fundamental Engineering Rules — micro-level code transparency, zero-execution diagnostics, strict CI quality gates, and mandatory adversarial red-teaming.
+- **[`docs/standards/memory.md`](./docs/standards/memory.md)**: Project Memory — Architectural Decision Register (ADR-001 through ADR-028), Deterministic Diagnostic Failure Matrix (ERR-GW, ERR-SOR, ERR-RSK, ERR-HB, ERR-NEWS, ERR-GATE, ERR-BKT, ERR-MCP), and complete engineering audit trail.
+
+### 4. Integration & Operations Guides
+- **[`docs/guides/mcp_agent_guide.md`](./docs/guides/mcp_agent_guide.md)**: Model Context Protocol (MCP) Integration Manual — setting up autonomous AI agents with Claude Desktop and Cursor IDE.
+- **[`docs/guides/backtest_report.md`](./docs/guides/backtest_report.md)**: Institutional Historical Backtester & Strategy Swarm Optimization Report.
 
 ---
 
@@ -32,72 +41,54 @@ The codebase enforces a **Layered Domain-Driven Design (DDD)** structure to ensu
 
 ```
 quant/
-├── src/quant/
-│   ├── domain/               # Pure business models, value objects, and repository interfaces (ABCs)
-│   │   ├── models.py         # NewsEvent, Asset, Genotype, PriceBar, MarketDataBatch
-│   │   └── interfaces.py     # IAssetRepository, IEventRepository, IGenotypeRepository, IMarketDataRepository
-│   ├── analytics/            # High-performance econometric, game-theoretic, evolutionary & simulation engines
-│   │   ├── fractional_diff.py       # Memory-preserving fractional differentiation (FFD)
-│   │   ├── labeling.py              # Dynamic volatility triple-barrier labeling
-│   │   ├── cross_validation.py      # Combinatorial purged cross-validation (CPCV)
-│   │   ├── meta_labeling.py         # Two-stage continuous-payoff Kelly meta-labeling
-│   │   ├── deflated_sharpe.py       # Deflated Sharpe Ratio (DSR) & MinBTL
-│   │   ├── regimes.py               # Causal Bayesian jump-regime filter & OAS covariance
-│   │   ├── market_impact.py         # Multi-asset cross-impact propagator & Pseudo-Huber
-│   │   ├── payoff_matrix.py         # Stackelberg leader-follower trajectory & payoff tensor
-│   │   ├── minimax_regret.py        # Vectorized Newton entropic minimax regret solver
-│   │   ├── chromosomes.py           # Scale-free 20-gene chromosome vector codec
-│   │   ├── pareto_sorting.py        # Boundary-anchored RVEA & SVD subspace orthogonal sorting
-│   │   ├── hypergamic_selection.py  # Hypergamic assortative mating & residual orthogonality
-│   │   ├── evolutionary_lifecycle.py # Cauchy mutation, APD Rechenberg adaptation & (mu+lambda) selection
-│   │   ├── ensemble.py              # Regime-conditioned DMA (RD-DMA) & Entropic Mirror Descent
-│   │   ├── circuit_breakers.py      # Epistemic disagreement entropy & multi-tier circuit breakers
-│   │   ├── tail_risk.py             # Semi-parametric EVT-POT GPD with closed-form PWM & CVaR
-│   │   ├── execution_sizing.py      # Strictly concave convex sizer & 2D Newton dual projection
-│   │   ├── simulation.py            # End-to-end live replay simulator & institutional benchmarking
-│   │   ├── news_classifier.py       # Loughran-McDonald sentiment & financial event classifier
-│   │   └── price_reaction.py        # Causal price reaction & Triple-Barrier breakout engine
-│   ├── data/                 # High-throughput market data feeds and online feature streaming
-│   │   ├── alpaca_feed.py    # Alpaca real-time market data feed, DuckDB sink & FracDiff buffer
-│   │   ├── news_harvester.py # Multi-source RSS/Atom parser & SHA-256 deduplication
-│   │   └── external_providers.py # High-signal public APIs (FRED, Finnhub, NewsAPI, Polygon)
-│   ├── execution/            # Live execution gateway, SOR, order state machine & async audit logger
-│   │   ├── models.py         # Pure domain entities (Order, ExecutionReport, enums, errors)
-│   │   ├── fsm.py            # OrderStateMachine with causal out-of-order fill reconciliation
-│   │   ├── idempotency.py    # IdempotencyRouter with deterministic UUIDv5 & FIFO ring buffer
-│   │   ├── gateway.py        # ExecutionGateway protocol & PaperExecutionGateway broker
-│   │   ├── alpaca_gateway.py # Alpaca Markets v2 Paper/Live ExecutionGateway protocol adapter
-│   │   ├── audit.py          # Non-blocking async SQLite WAL order audit logger
-│   │   ├── venues.py         # Multi-venue representation, VenueProfile, ConsolidatedQuote & NBBO
-│   │   ├── algorithms.py     # Institutional schedulers (PoissonTWAP, VolumeAdaptiveVWAP, ArrivalPrice)
-│   │   ├── sor.py            # SmartOrderRouter with dark midpoint probing & algebraic lit waterfilling
-│   │   ├── parent_order.py   # ParentOrder lifecycle coordinator & Perold Implementation Shortfall TCA
-│   │   ├── risk.py           # PreTradeRiskFirewall, RiskLimits, PortfolioRiskState & directional netting
-│   │   ├── heartbeat.py      # HeartbeatWatchdog, ConnectionStatus, sequence/latency monitor
-│   │   ├── kill_switch.py    # EmergencyKillSwitch, PanicTrigger, concurrent multi-gateway mass cancel
-│   │   └── risk_orchestrator.py # RiskOrchestrator unified live risk, watchdog & panic façade
-│   ├── infrastructure/       # Concrete adapters, database ORM, and repository implementations
-│   │   ├── database/         # Async engine, sessionmaker, declarative models, DuckDBManager
-│   │   └── repositories/     # SqlAlchemyAssetRepository, SqlAlchemyEventRepository, DuckDBMarketDataRepository
-│   ├── services/             # Application orchestration & quantitative algorithms
-│   │   ├── event_service.py  # Hybrid decay kernel & active news state vector calculation
-│   │   ├── genotype_service.py # Multi-objective fitness evaluation & population seeding
-│   │   ├── market_data_service.py # Columnar bar queries & realized volatility
-│   │   ├── execution_service.py # Parent order lifecycle, scheduling & Perold TCA coordinator
-│   │   ├── risk_service.py   # Portfolio telemetry, dynamic firewall limits & panic dispatch
-│   │   ├── autonomous_trader.py # Autonomous trading engine live swarm rebalancing daemon
-│   │   └── news_prediction_service.py # Real-time news prediction facade & shock distributor
-│   ├── api/                  # FastAPI routers, ASGI middleware, and authentication dependencies
-│   │   ├── v1/endpoints/     # /events, /genotypes, /auth, /market-data, /orders, /risk, /gateways, /autonomous, /news, /providers, /ws
-│   │   ├── middleware.py     # Correlation ID (X-Request-ID), timing, RFC 7807 problem details
-│   │   └── dependencies.py   # RBAC guards, session dependency injection & gateway/engine providers
-│   ├── templates/            # WebGL/Canvas institutional trading terminal HUD
-│   │   └── trading_terminal.html # High-refresh browser terminal HUD with live WebSockets & News HUD
-│   └── main.py               # Application factory, lifespan manager & background daemons
-├── migrations/               # Alembic database schema migrations
-├── tests/                    # Unit, integration, and API test suites (2035 tests, 100% green)
-├── pyproject.toml            # PEP 621 packaging, dependency locks, and linter settings
-└── CHANGELOG_DEV.md          # Technical audit log
+├── docs/                             # Tiered Institutional Documentation Hierarchy
+│   ├── architecture/                 # System Architecture & Technical Specifications
+│   │   ├── architecture.md           # Layered Domain-Driven Design & Component Topology
+│   │   ├── design.md                 # Quantitative & Mathematical Formulations
+│   │   └── srs.md                    # Software Requirements Specification (IEEE Std 830-1998)
+│   ├── planning/                     # Product Requirements & Delivery Roadmaps
+│   │   ├── prd.md                    # Product Requirements Document & Feature Matrices
+│   │   └── phases.md                 # Multi-Sprint Implementation Roadmap & Milestones
+│   ├── standards/                    # Engineering Governance & Auditing
+│   │   ├── rules.md                  # Fundamental Engineering Rules (Rules 1-4)
+│   │   └── memory.md                 # ADRs (ADR-001..028) & Diagnostic Error Code Matrix
+│   ├── guides/                       # Operator & Developer Integration Manuals
+│   │   ├── mcp_agent_guide.md        # Autonomous AI Agent Setup (Claude Desktop & Cursor)
+│   │   └── backtest_report.md        # Institutional Backtester & Swarm Optimizer Guide
+│   └── superpowers/                  # SDD Plan & Spec Artifacts
+├── src/quant/                        # Production Source Code (Clean Architecture / DDD)
+│   ├── domain/                       # Pure business models, value objects & repository interfaces
+│   ├── analytics/                    # High-performance econometric, evolutionary & simulation engines
+│   ├── data/                         # Real-time feeds, news harvesting & external data providers
+│   ├── execution/                    # OMS, broker gateways, smart order router, pre-trade risk firewall
+│   ├── infrastructure/               # Relational & columnar databases (DuckDB, SQLite/PostgreSQL)
+│   ├── mcp/                          # Model Context Protocol server, client & tool definitions
+│   ├── services/                     # Application orchestration facades & business workflows
+│   ├── api/                          # FastAPI REST endpoints, middleware & WebSocket handlers
+│   └── main.py                       # Application entrypoint & ASGI lifespan management
+├── tests/                            # Comprehensive Test Rig (2,133 tests, 100% green)
+│   ├── unit/                         # Pure mathematical & isolated component unit tests
+│   ├── integration/                  # Multi-component, database & gateway integration tests
+│   ├── api/                          # REST & WebSocket endpoint tests
+│   └── conftest.py                   # Async test fixtures & isolated database harness
+├── web/                              # React / TypeScript / Vite / WebGL Trading Workbench
+├── scripts/                          # Operational CLI Runners & Utility Tools
+│   ├── run_historical_backtest.py    # Multi-asset historical backtest & swarm optimizer
+│   ├── run_mcp_agent.py              # Autonomous AI agent observation & decision loop
+│   └── run_full_workbench_tour.py    # Complete interactive system test tour
+├── data/                             # Isolated Local Persistence Storage
+│   ├── quant.db                      # Relational ACID SQLite store
+│   └── market_data.duckdb            # High-throughput columnar bar store
+├── reports/                          # Generated audit tear sheets and backtest JSON exports
+├── migrations/                       # Alembic schema migrations
+├── .github/                          # CI/CD workflows
+├── pyproject.toml                    # PEP 621 packaging, dependency locks & tool configurations
+├── Dockerfile                        # Multi-stage production container definition
+├── docker-compose.yml                # Microservices orchestration definition
+├── alembic.ini                       # Database migration configuration
+├── .env.example                      # Documented environment variables
+├── .gitignore                        # Git ignore patterns
+└── README.md                         # Canonical Project Overview & Documentation Sitemap
 ```
 
 ---
@@ -139,7 +130,7 @@ cp .env.example .env
   ```
   Uses the official `pgvector/pgvector:pg16` image providing PostgreSQL 16 with native vector index support.
 * **Option B: Local Embedded SQLite**:
-  Set `DATABASE_URL=sqlite+aiosqlite:///./quant.db` in `.env` for zero-dependency local experimentation.
+  Set `DATABASE_URL=sqlite+aiosqlite:///./data/quant.db` in `.env` for zero-dependency local experimentation.
 
 ### 3. Database Migrations
 

@@ -528,7 +528,7 @@ export const RegimesView: React.FC = () => {
                       )}
                       {act}
                     </td>
-                    {payoffData.payoff_matrix[rIdx].map((val, cIdx) => (
+                    {(payoffData?.payoff_matrix?.[rIdx] ?? []).map((val, cIdx) => (
                       <td
                         key={cIdx}
                         className={`py-2.5 text-right font-bold ${
@@ -582,7 +582,7 @@ export const RegimesView: React.FC = () => {
                         {isOptimal && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />}
                         {act}
                       </td>
-                      {payoffData.regret_matrix[rIdx].map((val, cIdx) => (
+                      {(payoffData?.regret_matrix?.[rIdx] ?? []).map((val, cIdx) => (
                         <td key={cIdx} className="py-2.5 text-right text-slate-400">
                           {(val ?? 0).toFixed(1)}
                         </td>
@@ -626,13 +626,13 @@ export const RegimesView: React.FC = () => {
               <span className="block text-[10px] text-slate-500">Worst-Case Counterparty Probs:</span>
               <div className="flex gap-2 mt-0.5">
                 <span className="text-slate-300">
-                  Noise: {((payoffData?.worst_case_counterparty_probs[0] ?? 0.33) * 100).toFixed(0)}%
+                  Noise: {(((payoffData?.worst_case_counterparty_probs?.[0]) ?? 0.33) * 100).toFixed(0)}%
                 </span>
                 <span className="text-rose-300">
-                  Predatory: {((payoffData?.worst_case_counterparty_probs[1] ?? 0.33) * 100).toFixed(0)}%
+                  Predatory: {(((payoffData?.worst_case_counterparty_probs?.[1]) ?? 0.33) * 100).toFixed(0)}%
                 </span>
                 <span className="text-amber-300">
-                  Latency: {((payoffData?.worst_case_counterparty_probs[2] ?? 0.33) * 100).toFixed(0)}%
+                  Latency: {(((payoffData?.worst_case_counterparty_probs?.[2]) ?? 0.33) * 100).toFixed(0)}%
                 </span>
               </div>
             </div>

@@ -590,17 +590,15 @@ class PortfolioRiskState:
         else:
             self.cash += f_qty * f_price
             self.positions[symbol] = self.positions.get(symbol, 0.0) - f_qty
-            # Reconcile working open sell leaves if tracked
+            # Reconcile working open sell leaves if tracked (supporting both signed negative and unsigned positive)
             if symbol in self.pending_leaves:
                 leaves = self.pending_leaves[symbol]
                 if leaves < 0.0:
                     self.pending_leaves[symbol] = min(0.0, leaves + f_qty)
-                    if abs(self.pending_leaves[symbol]) <= 1e-12:
-                        del self.pending_leaves[symbol]
                 elif leaves > 0.0:
                     self.pending_leaves[symbol] = max(0.0, leaves - f_qty)
-                    if self.pending_leaves[symbol] <= 1e-12:
-                        del self.pending_leaves[symbol]
+                if abs(self.pending_leaves[symbol]) <= 1e-12:
+                    del self.pending_leaves[symbol]
 
         # Clean zero inventory to prevent dictionary bloat
         if symbol in self.positions and abs(self.positions[symbol]) < 1e-12:
@@ -786,14 +784,20 @@ class PreTradeRiskFirewall:
         if order.side == OrderSide.BUY:
             # If closing existing short position, no margin required for closing portion;
             # if opening or expanding a long position, margin equals incremental long notional.
-            current_short_pos = max(0.0, -state.positions.get(order.symbol, 0.0))
-            long_units = max(0.0, order.quantity - current_short_pos)
+            pending_buy_leaves = max(0.0, state.pending_leaves.get(order.symbol, 0.0))
+            available_short_pos = max(
+                0.0, -state.positions.get(order.symbol, 0.0) - pending_buy_leaves
+            )
+            long_units = max(0.0, order.quantity - available_short_pos)
             required_margin = long_units * ref_price
         else:
             # Sell order: if closing existing long position, no margin required;
             # if opening or expanding a short position, margin equals short notional.
-            current_long_pos = max(0.0, state.positions.get(order.symbol, 0.0))
-            short_units = max(0.0, order.quantity - current_long_pos)
+            pending_sell_leaves = abs(min(0.0, state.pending_leaves.get(order.symbol, 0.0)))
+            available_long_pos = max(
+                0.0, state.positions.get(order.symbol, 0.0) - pending_sell_leaves
+            )
+            short_units = max(0.0, order.quantity - available_long_pos)
             required_margin = short_units * ref_price
 
         # Mandate Invariant: De-risking orders with required_margin <= 0.0 (e.g. selling

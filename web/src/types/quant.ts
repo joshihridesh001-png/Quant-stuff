@@ -21,11 +21,16 @@ export interface RiskMetrics {
 }
 
 export interface GatewayHealthDTO {
-  gateway_name: string;
+  gateway_id: string;
+  gateway_name?: string;
+  status?: string;
   is_connected: boolean;
-  last_heartbeat_timestamp_ns: number;
-  latency_ms: number;
-  unacknowledged_orders: number;
+  last_heartbeat_timestamp?: number;
+  last_heartbeat_timestamp_ns?: number;
+  last_latency_ms?: number;
+  latency_ms?: number;
+  missed_sequence_count?: number;
+  unacknowledged_orders?: number;
 }
 
 export interface RiskWebSocketMessage {
@@ -83,11 +88,13 @@ export interface ParentOrder {
 }
 
 export interface ExecWebSocketMessage {
-  type: 'SNAPSHOT' | 'ORDER_UPDATE' | 'PONG';
+  type: 'SNAPSHOT' | 'ORDER_UPDATE' | 'CHILD_FILL' | 'PONG';
   timestamp_ns?: number;
   orders?: ParentOrder[];
   order?: ParentOrder;
   event_type?: string;
+  parent_id?: string;
+  fill?: ChildOrderDTO;
 }
 
 export interface TcaReport {
@@ -355,4 +362,57 @@ export interface PayoffMatrixResponse {
   worst_case_regrets: number[];
   optimal_action: string;
   worst_case_counterparty_probs: number[];
+}
+
+export interface BacktestSummaryMetrics {
+  sharpe_ratio: number;
+  sortino_ratio: number;
+  calmar_ratio: number;
+  max_drawdown: number;
+  annualized_return: number;
+  annualized_volatility: number;
+  win_rate: number;
+  profit_factor: number;
+  deflated_sharpe_ratio?: number | null;
+  alpha?: number | null;
+  beta?: number | null;
+  total_trades: number;
+  initial_capital: number;
+  final_equity: number;
+  net_pnl: number;
+}
+
+export interface BacktestStatusResponse {
+  backtest_id: string;
+  status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  progress: number;
+  message: string;
+  strategy_type: string;
+  symbols: string[];
+  metrics?: BacktestSummaryMetrics | null;
+  equity_curve?: number[] | null;
+  benchmark_equity_curve?: number[] | null;
+  drawdown_series?: number[] | null;
+  monthly_matrix?: Record<string, Record<string, number>> | null;
+  created_at: string;
+  completed_at?: string | null;
+  html_report_path?: string | null;
+}
+
+export interface BacktestRunRequest {
+  strategy_type: string;
+  symbols: string[];
+  start_date?: string | null;
+  end_date?: string | null;
+  initial_cash: number;
+  benchmark_symbol: string;
+  cost_bps: number;
+  parameters?: Record<string, any>;
+}
+
+export interface BacktestRunResponse {
+  backtest_id: string;
+  status: string;
+  message: string;
+  estimated_duration_sec: number;
 }

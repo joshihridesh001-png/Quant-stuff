@@ -89,7 +89,8 @@ def get_market_data_repo(
     manager: DuckDBManager = Depends(get_duckdb_manager),
 ) -> IMarketDataRepository:
     """Provide DuckDB market data persistence adapter."""
-    return DuckDBMarketDataRepository(manager)
+    mgr = manager if isinstance(manager, DuckDBManager) else get_duckdb_manager()
+    return DuckDBMarketDataRepository(mgr)
 
 
 def get_market_data_service(
@@ -192,8 +193,10 @@ def get_execution_service(
 ) -> ExecutionService:
     """Provide live ExecutionService application coordinator."""
     global _execution_service
+    orch = orchestrator if isinstance(orchestrator, RiskOrchestrator) else get_risk_orchestrator()
+    gw = gateway if isinstance(gateway, ExecutionGateway) else get_execution_gateway()
     if _execution_service is None:
-        _execution_service = ExecutionService(orchestrator=orchestrator, gateway=gateway)
+        _execution_service = ExecutionService(orchestrator=orch, gateway=gw)
     return _execution_service
 
 
@@ -215,11 +218,12 @@ def get_market_feed(
 ) -> AlpacaMarketDataFeed:
     """Provide singleton AlpacaMarketDataFeed instance bound to active DuckDBManager."""
     global _alpaca_feed
+    mgr = manager if isinstance(manager, DuckDBManager) else get_duckdb_manager()
     current_manager = (
         getattr(_alpaca_feed._repository, "_manager", None) if _alpaca_feed is not None else None
     )
-    if _alpaca_feed is None or current_manager is not manager:
-        repo = DuckDBMarketDataRepository(manager)
+    if _alpaca_feed is None or current_manager is not mgr:
+        repo = DuckDBMarketDataRepository(mgr)
         _alpaca_feed = AlpacaMarketDataFeed(
             repository=repo,
             api_key=settings.ALPACA_API_KEY,
@@ -236,15 +240,23 @@ def get_autonomous_trader(
 ) -> AutonomousTradingEngine:
     """Provide singleton AutonomousTradingEngine daemon bound to active gateway and feed."""
     global _autonomous_trader
+    exec_svc = (
+        execution_service
+        if isinstance(execution_service, ExecutionService)
+        else get_execution_service()
+    )
+    gw = gateway if isinstance(gateway, ExecutionGateway) else get_execution_gateway()
+    feed = market_feed if isinstance(market_feed, AlpacaMarketDataFeed) else get_market_feed()
+
     if (
         _autonomous_trader is None
-        or getattr(_autonomous_trader, "_market_feed", None) is not market_feed
-        or getattr(_autonomous_trader, "_gateway", None) is not gateway
+        or getattr(_autonomous_trader, "_market_feed", None) is not feed
+        or getattr(_autonomous_trader, "_gateway", None) is not gw
     ):
         _autonomous_trader = AutonomousTradingEngine(
-            execution_service=execution_service,
-            gateway=gateway,
-            market_feed=market_feed,
+            execution_service=exec_svc,
+            gateway=gw,
+            market_feed=feed,
             universe=settings.TRADING_UNIVERSE,
             interval_sec=settings.AUTONOMOUS_LOOP_INTERVAL_SEC,
             min_trade_notional=settings.MIN_TRADE_NOTIONAL,
@@ -276,15 +288,29 @@ def get_external_provider_manager() -> ExternalProviderManager:
 _news_prediction_service: NewsPredictionService | None = None
 
 
-def get_news_prediction_service() -> NewsPredictionService:
+def get_news_prediction_service(
+    autonomous_engine: AutonomousTradingEngine = Depends(get_autonomous_trader),
+    provider_manager: ExternalProviderManager = Depends(get_external_provider_manager),
+) -> NewsPredictionService:
     """Provide singleton NewsPredictionService instance."""
     global _news_prediction_service
-    if _news_prediction_service is None:
-        autonomous_engine = get_autonomous_trader()
-        provider_manager = get_external_provider_manager()
+    engine = (
+        autonomous_engine
+        if isinstance(autonomous_engine, AutonomousTradingEngine)
+        else get_autonomous_trader()
+    )
+    provider = (
+        provider_manager
+        if isinstance(provider_manager, ExternalProviderManager)
+        else get_external_provider_manager()
+    )
+    if (
+        _news_prediction_service is None
+        or getattr(_news_prediction_service, "_autonomous_engine", None) is not engine
+    ):
         _news_prediction_service = NewsPredictionService(
-            autonomous_engine=autonomous_engine,
-            provider_manager=provider_manager,
+            autonomous_engine=engine,
+            provider_manager=provider,
         )
     return _news_prediction_service
 

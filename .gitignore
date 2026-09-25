@@ -41,7 +41,10 @@ quant.db
 *.db-wal
 *.db-shm
 *.duckdb
-/data/
+/data/*
+!/data/.gitkeep
+/reports/*
+!/reports/.gitkeep
 .coverage
 coverage.xml
 .pytest_cache/

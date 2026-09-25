@@ -7,6 +7,7 @@ import { EconometricsView } from './views/EconometricsView';
 import { RegimesView } from './views/RegimesView';
 import { StrategySwarmView } from './views/StrategySwarmView';
 import { SimulationRiskView } from './views/SimulationRiskView';
+import { BacktestStudioView } from './views/BacktestStudioView';
 import { Activity, Shield, Terminal, Cpu } from 'lucide-react';
 
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -26,6 +27,8 @@ const WorkbenchContent: React.FC = () => {
         return <StrategySwarmView />;
       case 'simulation':
         return <SimulationRiskView />;
+      case 'backtest':
+        return <BacktestStudioView />;
       default:
         return <NewsDecayView />;
     }
@@ -35,7 +38,9 @@ const WorkbenchContent: React.FC = () => {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500 selection:text-black">
       {/* Pinned Top Telemetry HUD */}
       <div className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/80 px-4 sm:px-6 py-3">
-        <HUD />
+        <ErrorBoundary fallbackTitle="Telemetry HUD Error">
+          <HUD />
+        </ErrorBoundary>
       </div>
 
       {/* Navigation Tab Bar */}

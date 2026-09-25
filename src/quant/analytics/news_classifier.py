@@ -225,6 +225,7 @@ NEGATION_TOKENS: frozenset[str] = frozenset(
         "no",
         "never",
         "neither",
+        "nor",
         "none",
         "unable",
         "failed",
@@ -233,6 +234,9 @@ NEGATION_TOKENS: frozenset[str] = frozenset(
         "hardly",
         "without",
         "little",
+        "cannot",
+        "cant",
+        "wont",
     }
 )
 
@@ -296,7 +300,9 @@ class FinancialSentimentClassifier:
         Formula:
             s = (N_pos - N_neg) / (N_pos + N_neg + 1e-6) in [-1.0, 1.0]
         """
-        tokens = _WORD_RE.findall(text.lower())
+        normalized_text = re.sub(r"n't\b", " not", text.lower())
+        normalized_text = re.sub(r"'s\b", "", normalized_text)
+        tokens = _WORD_RE.findall(normalized_text)
         if not tokens:
             return 0.0
 

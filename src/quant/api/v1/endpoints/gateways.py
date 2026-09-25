@@ -28,7 +28,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from quant.api.dependencies import get_current_user, get_risk_service
+from quant.api.dependencies import get_current_user, get_risk_service, require_role
 from quant.api.v1.schemas import GatewayHealthDTO, HeartbeatPingRequest
 from quant.services.risk_service import RiskService
 
@@ -72,7 +72,7 @@ def get_gateway_health(
 def record_heartbeat(
     gateway_id: str,
     payload: HeartbeatPingRequest,
-    _: dict[str, Any] = Depends(get_current_user),
+    _: dict[str, Any] = Depends(require_role(["ADMIN", "SYSTEM", "RESEARCHER"])),
     service: RiskService = Depends(get_risk_service),
 ) -> GatewayHealthDTO:
     """Process an inbound heartbeat packet, validate sequence numbers, and evaluate latency degradation.

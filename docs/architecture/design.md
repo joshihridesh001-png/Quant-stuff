@@ -380,3 +380,102 @@ $$\text{Total Shortfall} \equiv \text{Delay Cost} + \text{Price Impact} + \text{
 * **Emergency Coupling**: When emergency kill switch is activated or drawdown limits are breached, target allocations instantly collapse to $\mathbf{0}$, halting trading loop execution.
 * **REST & Operational Controls**: Full lifecycle management via `/api/v1/autonomous` (`status`, `start`, `stop`, `pause`, `resume`, `step`).
 
+---
+
+## 14. Model Context Protocol (MCP) Client & Autonomous AI Agent Integration (Track D)
+
+### 14.1 Institutional Architecture & Anti-Fragile Critique of Naive Tool-Calling
+Standard LLM agent architectures rely on unconstrained function calling or brittle ad-hoc REST/Python scripts. In institutional algorithmic trading, naive agent integration introduces catastrophic tail risks:
+1. **Unbounded Non-Finite Hallucinations**: LLMs can emit non-finite numerical values ($\pm \infty$, `NaN`) or unphysically large order quantities, triggering divide-by-zero or numerical blowups in execution schedulers.
+2. **Infinite Variance Execution Actions**: Naive direct broker execution by autonomous LLMs bypasses portfolio gross leverage caps and Expected Shortfall ($\text{CVaR}$) budgets, risking catastrophic ruin during sudden volatility spikes.
+3. **Transport Brittleness & State Desynchronization**: Process crashes, unhandled pipe deadlocks (e.g., Windows IOCP pipe failures), or expired API credentials can lead to silent drop of telemetry signals and zombie trading processes.
+4. **Latency Tail Risk**: Direct LLM execution introduces seconds-long stochastic deliberation latency into execution paths that require deterministic microsecond response times.
+
+**The Track D First-Principles Solution**:
+Decouples LLM frontier reasoning (Claude Desktop, Cursor, custom autonomous loops) from live exchange execution via an anti-fragile **Model Context Protocol (MCP 2024-11-05)** layer. In this architecture:
+- All order generation requests are routed through a closed-form, sub-$50\mu\text{s}$ **5-Dimensional Bayesian Pre-Trade Decision Gate** (`PreTradeDecisionGate`).
+- Autonomous agents can query market telemetry, inspect order book imbalances, check macroeconomic yields, and run pre-trade simulations, but cannot bypass risk firewalls or submit unvalidated live orders.
+- Client-side invariant verification (`INV-MCP-001`) traps invalid or non-finite inputs prior to transport serialization.
+- Transparent cryptographic session renewal (`INV-MCP-002`) eliminates credential dropouts during long-running reasoning sessions.
+
+### 14.2 Dual-Transport RPC Multiplexing Engine
+The `MCPClient` (`src/quant/mcp/client.py`) provides seamless dual-transport multiplexing across local subprocess and networked enterprise gateways:
+
+1. **Stdio Subprocess Transport**:
+   - Spawns and manages a local MCP server subprocess via OS pipes (`python -m quant.mcp.server`).
+   - Resolves the Windows `ProactorEventLoop` fatal `connect_read_pipe` crash (`[WinError 6] The handle is invalid`) by offloading standard input reads to non-blocking OS worker threads via `await asyncio.to_thread(sys.stdin.readline)`.
+   - Formats bidirectional line-delimited JSON-RPC 2.0 payloads over clean stdout/stdin streams, ensuring zero corruption from process log output.
+
+2. **HTTP JSON-RPC Gateway Transport**:
+   - Connects to enterprise API deployments via `POST /api/v1/mcp/rpc`.
+   - Utilizes persistent HTTP/2 connection pooling via `httpx.AsyncClient` with configurable read/write timeouts and TLS verification.
+   - Enforces Role-Based Access Control (RBAC): `RESEARCHER` role for read-only telemetry and simulation tools; `ADMIN` role required for operational intervention (`quant_trigger_emergency_panic`, `quant_reset_kill_switch`).
+
+### 14.3 Client-Side Invariant Verification & Parameter Guards (`INV-MCP-001`, `ERR-MCP-005`)
+Before serializing any tool call request over the wire, `MCPClient` executes deterministic pre-flight schema and numeric bounds validation:
+
+$$\forall x \in \text{arguments}, \quad \text{isfinite}(x) \land \neg \text{isnan}(x) \land \neg \text{isinf}(x)$$
+
+- **Required Key Enforcement**: Validates that all mandatory fields are present and non-empty.
+- **Physical Bounds Clamping**:
+  - Share quantities: $q \in \mathbb{R}_{> 0}$.
+  - Limit prices: $P \in \mathbb{R}_{> 0}$.
+  - Order Book Imbalance: $\text{OBI} \in [-1.0, 1.0]$.
+  - Momentum Signal: $m \in [-1.0, 1.0]$.
+- **Deterministic Rejection**: Any breach immediately raises `MCPSchemaValidationException` (`ERR-MCP-005`) on the client side, preventing invalid network packets from reaching the gateway.
+
+### 14.4 Cryptographic JWT Session Lifecycle & Self-Healing Token Renewal (`INV-MCP-002`, `ERR-MCP-001`)
+For authenticated HTTP transports, `MCPClient` manages zero-intervention cryptographic authentication:
+1. **Startup Handshake**: Obtains HS256 JWT bearer token from `/api/v1/auth/token` using client credentials.
+2. **Transparent Auto-Renewal**:
+   $$\text{HTTP 401 Unauthorized} \implies \text{Acquire New Token} \longrightarrow \text{Retry Pending RPC Call Once}$$
+   If the subsequent retry fails, raises `MCPAuthenticationException` (`ERR-MCP-001`).
+3. **Session State Invariant**: In-flight reasoning loops and autonomous decision cycles never crash due to token expiration during market hours.
+
+### 14.5 Typed Envelope Container (`MCPToolCallResponse`) & Domain Facades
+To guarantee both backward compatibility with standard JSON-RPC response dictionaries and type safety for quantitative applications, responses are wrapped in `MCPToolCallResponse`:
+- **Dual Inheritance**: Subclasses `dict[str, Any]` so that dictionary lookups (`response["data"]`) function seamlessly.
+- **Typed Accessors**:
+  - `response.data: dict[str, Any]` returns structured tool result payload.
+  - `response.content: list[dict[str, Any]]` returns standard MCP content blocks.
+  - `response.is_error: bool` flags server-side tool execution faults.
+  - `response.raw_text: str` provides extracted string content for LLM context injection.
+- **Type-Safe Facades**:
+  - `get_portfolio_telemetry()`: Real-time NAV, cash, leverage, drawdowns, and kill switch status.
+  - `get_macro_regimes()`: FRED yield curve spreads ($T10Y2Y$), Fed Funds rate, CPI, and regime classification.
+  - `get_market_orderbook(symbol)`: Consolidated NBBO quotes, bid/ask depth, and Order Book Imbalance ($\text{OBI}$).
+  - `evaluate_pre_trade(...)`: Full 5-D Bayesian log-odds simulation before order submission.
+  - `get_swarm_status()`: Autonomous strategy weights, entropy haircut $\kappa_t$, and circuit breaker states.
+  - `trigger_emergency_panic(reason)`: Administrative circuit breaker triggering concurrent mass cancellation.
+  - `reset_kill_switch()`: Administrative authorization to re-enable trading post-incident.
+
+### 14.6 Closed-Form 5-D Bayesian Pre-Trade Simulation Coupling
+When an autonomous AI agent proposes a portfolio rebalancing or trade action via `quant_evaluate_pre_trade`, the execution subsystem invokes the `PreTradeDecisionGate`. The evaluation updates the Bayesian log-odds of trade success in $< 50\mu\text{s}$:
+
+$$L_{\text{posterior}} = L_{\text{prior}} + \Delta L_{\text{freshness}} + \Delta L_{\text{macro}} + \Delta L_{\text{micro}} + \Delta L_{\text{momentum}} + \Delta L_{\text{risk}}$$
+
+Where:
+1. **Data Freshness Dimension**:
+   $$\Delta L_{\text{freshness}} = \begin{cases} +0.3 & \text{if } \Delta t \le 30\text{s} \\ 0.0 & \text{if } 30\text{s} < \Delta t \le 120\text{s} \\ -2.5 & \text{if } \Delta t > 120\text{s} \text{ (Stale Data Penalty)} \end{cases}$$
+2. **Macro Yield Curve Dimension**:
+   $$\Delta L_{\text{macro}} = \begin{cases} -0.8 & \text{if } T10Y2Y < 0.0 \land \text{side} = \text{BUY} \text{ (Yield Inversion Headwind)} \\ +0.4 & \text{if } T10Y2Y \ge 0.20 \land \text{side} = \text{BUY} \\ 0.0 & \text{otherwise} \end{cases}$$
+3. **Microstructural Order Book Imbalance ($\text{OBI}$)**:
+   $$\text{OBI} = \frac{V_{\text{bid}} - V_{\text{ask}}}{V_{\text{bid}} + V_{\text{ask}}} \in [-1.0, 1.0]$$
+   $$\Delta L_{\text{micro}} = \begin{cases} +0.6 \cdot \text{sign}(\text{side}) \cdot \text{OBI} & \text{if sign aligned} \\ -1.2 \cdot |\text{OBI}| & \text{if toxic adverse selection} \end{cases}$$
+4. **Momentum Alignment**: Evaluates alignment between proposed direction and short-horizon fractional price drift.
+5. **Tail Risk & Drawdown Headroom**: Penalizes trades consuming $> 50\%$ of remaining Expected Shortfall ($\text{CVaR}$) budget.
+
+* **Decision Rule**: Trade is approved if and only if:
+  $$P(\text{Success} \mid \mathcal{F}_t) = \frac{1}{1 + e^{-L_{\text{posterior}}}} \ge P_{\text{threshold}} \quad (0.55)$$
+* **Fail-Open on De-Risking Exits (`INV-GATE-001`)**: Positions reducing portfolio gross leverage or closing risk are unconditionally approved regardless of score.
+
+### 14.7 Deterministic Diagnostic Error Codes (`ERR-MCP-001` - `ERR-MCP-005`)
+All MCP client and server components emit deterministic fault codes conforming to Rule 2:
+
+| Fault Code | Component | Invariant | Description |
+|:---|:---|:---|:---|
+| `ERR-MCP-001` | `MCPClient` | `INV-MCP-002` | Authentication failure or invalid JWT credentials |
+| `ERR-MCP-002` | `MCPClient` | Transport | Connection failed to stdio process or HTTP endpoint |
+| `ERR-MCP-003` | `MCPClient` | Protocol | Remote tool execution returned server-side error |
+| `ERR-MCP-004` | `MCPClient` | Latency SLA | Tool call timed out breaching SLA limit |
+| `ERR-MCP-005` | `MCPClient` | `INV-MCP-001` | Pre-flight validation failed: missing, non-finite, or out-of-bounds parameter |

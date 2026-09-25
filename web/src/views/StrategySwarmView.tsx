@@ -57,7 +57,12 @@ export const StrategySwarmView: React.FC = () => {
     setIsSeeding(true);
     try {
       await quantApi.seedGenotypes(size);
-      await loadGenotypes();
+      setGeneration(0);
+      const data = await quantApi.getParetoGenotypes<GenotypeItem[]>(0);
+      setGenotypes(data || []);
+      if (data && data.length > 0) {
+        setSelectedGenotype(data[0].genotype);
+      }
     } catch (err) {
       console.error('Failed to seed population:', err);
     } finally {
@@ -69,8 +74,13 @@ export const StrategySwarmView: React.FC = () => {
   const handleStepGeneration = async () => {
     setIsStepping(true);
     try {
-      await quantApi.stepSwarm();
-      setGeneration((prev) => prev + 1);
+      const nextGen = generation + 1;
+      const data = await quantApi.stepGenotypes<GenotypeItem[]>(generation, 20);
+      setGeneration(nextGen);
+      if (data && data.length > 0) {
+        setGenotypes(data);
+        setSelectedGenotype(data[0].genotype);
+      }
     } catch (err) {
       console.error('Failed to step swarm generation:', err);
     } finally {
@@ -588,7 +598,7 @@ export const StrategySwarmView: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-2.5 text-right text-slate-400">
-                      {item.crowding_distance === Infinity ? '∞' : item.crowding_distance.toFixed(3)}
+                      {item.crowding_distance === Infinity ? '∞' : typeof item.crowding_distance === 'number' && Number.isFinite(item.crowding_distance) ? item.crowding_distance.toFixed(3) : '0.000'}
                     </td>
                     <td
                       className={`py-2.5 text-right font-bold ${

@@ -31,6 +31,7 @@ Invariants Enforced:
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import datetime
 from typing import Final
@@ -42,6 +43,8 @@ from quant.domain.models import PriceBar, Resolution
 from quant.infrastructure.repositories.duckdb_market_data_repository import (
     DuckDBMarketDataRepository,
 )
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_DATA_URL: Final[str] = "https://data.alpaca.markets"
 _DEFAULT_TIMEOUT_SEC: Final[float] = 10.0
@@ -227,13 +230,13 @@ class AlpacaMarketDataFeed:
                             results[sym] = bar
                             self._last_prices[sym] = close_p
                 else:
-                    # Fallback to synthetic if HTTP error
-                    for sym in symbols:
-                        results[sym] = self._generate_synthetic_bar(sym)
-            except Exception:
-                # Network exception fallback
-                for sym in symbols:
-                    results[sym] = self._generate_synthetic_bar(sym)
+                    logger.warning(
+                        "Alpaca market data API error: HTTP %d %s",
+                        response.status_code,
+                        response.text,
+                    )
+            except Exception as exc:
+                logger.error("Alpaca market data network exception: %s", exc)
 
         # Ingestion & Streaming side-effects
         if self._repository is not None and results:

@@ -134,6 +134,9 @@ async def get_active_news_state(
     use_projected_subspace: bool = Query(
         False, description="Balance dense embeddings with scalar signals using projected subspace"
     ),
+    auto_harvest: bool = Query(
+        False, description="Explicitly trigger news harvesting if event count is zero"
+    ),
     event_service: EventService = Depends(get_event_service),
     news_service: NewsPredictionService = Depends(get_news_prediction_service),
 ) -> ActiveStateResponse:
@@ -142,7 +145,7 @@ async def get_active_news_state(
     Purpose: Deliver bi-exponential decayed multi-factor news state vector for asset k.
     Explicit Dependency Tracking: EventService, NewsPredictionService.
     Structural Relationship: Ingestion layer endpoint consumed by Pillar 1 NewsDecayView.
-    Defensive Invariant: Guaranteed non-empty vector on initial platform bootstrap by triggering news harvest.
+    Defensive Invariant: Safe read-only behavior by default; external harvesting requires explicit opt-in.
     """
     calc_time = as_of_time or datetime.now(UTC)
     vector, count = await event_service.get_active_news_state(
@@ -153,7 +156,7 @@ async def get_active_news_state(
         tau_slow=tau_slow,
         use_projected_subspace=use_projected_subspace,
     )
-    if count == 0:
+    if count == 0 and auto_harvest:
         if news_service._event_service is None:
             news_service._event_service = event_service
         await news_service.harvest_and_predict(fallback_to_synthetic=True, target_ticker=ticker)

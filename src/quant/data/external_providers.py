@@ -575,6 +575,7 @@ class ExternalProviderManager:
     """Unified master coordinator managing all external quantitative data providers."""
 
     __slots__ = (
+        "_client",
         "_finnhub",
         "_fred",
         "_newsapi",
@@ -583,17 +584,22 @@ class ExternalProviderManager:
         "_statuses",
     )
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
         # Functional Purpose: Orchestrate external providers, track metrics, and manage fallbacks.
         # Explicit Dependency Tracking: Settings, FredClient, FinnhubClient, NewsApiClient, PolygonClient.
         # Structural Relationship: Injected into dependencies.py and services.
         # Defensive Invariant: Initializes all clients with safe zero-secret defaults.
         self._settings = settings or get_settings()
+        self._client = client or httpx.AsyncClient(timeout=10.0)
 
-        self._fred = FredClient(api_key=self._settings.FRED_API_KEY)
-        self._finnhub = FinnhubClient(api_key=self._settings.FINNHUB_API_KEY)
-        self._newsapi = NewsApiClient(api_key=self._settings.NEWS_API_KEY)
-        self._polygon = PolygonClient(api_key=self._settings.POLYGON_API_KEY)
+        self._fred = FredClient(api_key=self._settings.FRED_API_KEY, client=self._client)
+        self._finnhub = FinnhubClient(api_key=self._settings.FINNHUB_API_KEY, client=self._client)
+        self._newsapi = NewsApiClient(api_key=self._settings.NEWS_API_KEY, client=self._client)
+        self._polygon = PolygonClient(api_key=self._settings.POLYGON_API_KEY, client=self._client)
 
         self._statuses: dict[str, ProviderStatus] = {
             "FRED": ProviderStatus(
@@ -637,6 +643,10 @@ class ExternalProviderManager:
     def polygon(self) -> PolygonClient:
         """Access the Polygon.io market data client."""
         return self._polygon
+
+    async def aclose(self) -> None:
+        """Cleanly release underlying shared HTTP client pool."""
+        await self._client.aclose()
 
     def get_provider_statuses(self) -> dict[str, dict[str, Any]]:
         """Return runtime health telemetry across all external data providers."""

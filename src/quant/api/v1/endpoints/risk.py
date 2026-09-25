@@ -146,7 +146,7 @@ def update_risk_limits(
 )
 async def trigger_panic(
     payload: PanicTriggerRequest,
-    _: dict[str, Any] = Depends(get_current_user),
+    _: dict[str, Any] = Depends(require_role(["ADMIN", "RISK_OFFICER", "RESEARCHER", "TRADER"])),
     service: RiskService = Depends(get_risk_service),
 ) -> dict[str, Any]:
     """Manually trip emergency panic kill switch: cancels all open orders and locks submissions.

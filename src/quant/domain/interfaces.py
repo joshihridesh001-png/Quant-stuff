@@ -84,6 +84,7 @@ class IGenotypeRepository(ABC):
         deflated_sharpe: float,
         max_drawdown: float,
         regret_score: float,
+        novelty_score: float = 0.0,
     ) -> None:
         """Update fitness evaluation metrics after backtest/scenario execution."""
 

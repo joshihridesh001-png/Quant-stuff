@@ -85,6 +85,7 @@ class SqlAlchemyGenotypeRepository(IGenotypeRepository):
         deflated_sharpe: float,
         max_drawdown: float,
         regret_score: float,
+        novelty_score: float = 0.0,
     ) -> None:
         stmt = (
             update(DBGenotype)
@@ -94,7 +95,9 @@ class SqlAlchemyGenotypeRepository(IGenotypeRepository):
                 deflated_sharpe=deflated_sharpe,
                 max_drawdown=max_drawdown,
                 regret_score=regret_score,
+                novelty_score=novelty_score,
             )
+            .execution_options(synchronize_session="fetch")
         )
         await self.session.execute(stmt)
         await self.session.flush()

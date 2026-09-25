@@ -31,7 +31,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from quant.api.dependencies import get_current_user, get_execution_service
+from quant.api.dependencies import get_current_user, get_execution_service, require_role
 from quant.api.v1.schemas import (
     ImplementationShortfallResponse,
     ParentOrderCreateRequest,
@@ -53,7 +53,7 @@ router = APIRouter(prefix="/orders", tags=["Live Execution Orders"])
 )
 async def submit_order(
     request: ParentOrderCreateRequest,
-    _: dict[str, Any] = Depends(get_current_user),
+    _: dict[str, Any] = Depends(require_role(["ADMIN", "TRADER", "RESEARCHER"])),
     service: ExecutionService = Depends(get_execution_service),
 ) -> ParentOrderResponse:
     """Submit a parent order for algorithmic slicing and risk-cleared gateway dispatch.
@@ -172,7 +172,7 @@ def get_order(
 )
 def cancel_order(
     order_id: str,
-    _: dict[str, Any] = Depends(get_current_user),
+    _: dict[str, Any] = Depends(require_role(["ADMIN", "TRADER", "RESEARCHER"])),
     service: ExecutionService = Depends(get_execution_service),
 ) -> dict[str, Any]:
     """Cancel open parent order, stopping subsequent slice dispatch.
@@ -205,6 +205,11 @@ def cancel_order(
     "/{order_id}/shortfall",
     response_model=ImplementationShortfallResponse,
     summary="Get Perold implementation shortfall TCA report",
+)
+@router.get(
+    "/{order_id}/tca",
+    response_model=ImplementationShortfallResponse,
+    include_in_schema=False,
 )
 def get_shortfall_report(
     order_id: str,

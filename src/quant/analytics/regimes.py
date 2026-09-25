@@ -375,7 +375,22 @@ class CausalBayesianRegimeFilter:
         self._state.last_shock = alarm
 
         # Prior transition model with Dirichlet smoothing
-        prior_probs = self._state.probabilities.copy()
+        # P_ij = P(S_t = j | S_{t-1} = i) with high persistence on diagonal and Dirichlet prior smoothing off-diagonal
+        alpha = self.config.dirichlet_alpha
+        diag_persistence = 0.95
+        off_diag_mass = (1.0 - diag_persistence) / max(1, self.config.n_regimes - 1)
+        trans_matrix = np.full(
+            (self.config.n_regimes, self.config.n_regimes),
+            off_diag_mass,
+            dtype=np.float64,
+        )
+        np.fill_diagonal(trans_matrix, diag_persistence)
+        # Smooth with Dirichlet alpha prior pseudo-counts
+        trans_matrix = (trans_matrix * 100.0 + alpha) / (100.0 + alpha * self.config.n_regimes)
+        trans_matrix = trans_matrix / np.sum(trans_matrix, axis=1, keepdims=True)
+
+        # Causal one-step forward prior prediction: pi_{t|t-1} = pi_{t-1} @ P
+        prior_probs = np.asarray(self._state.probabilities @ trans_matrix, dtype=np.float64)
 
         # If CUSUM detects a severe negative shock, inject emergency panic prior
         panic_regime_idx = self.config.n_regimes - 1

@@ -81,10 +81,10 @@ export const SimulationRiskView: React.FC = () => {
   }, [orders, selectedOrder]);
 
   // Transform equity curve for Recharts
-  const equityChartData = simResult
+  const equityChartData = Array.isArray(simResult?.equity_curve)
     ? simResult.equity_curve.map((val, idx) => ({
         bar: idx,
-        equity: Number(val.toFixed(2)),
+        equity: typeof val === 'number' && Number.isFinite(val) ? Number(val.toFixed(2)) : 0,
       }))
     : [];
 
