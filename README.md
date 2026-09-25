@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![SQLAlchemy 2.0](https://img.shields.io/badge/SQLAlchemy-2.0+-D71F00?logo=sqlalchemy&logoColor=white)](https://www.sqlalchemy.org/)
 [![Coverage 96%](https://img.shields.io/badge/Coverage-96%25-brightgreen)](https://pytest.org/)
-[![Tests 2058 Passed](https://img.shields.io/badge/Tests-2058%20Passed-brightgreen)](https://pytest.org/)
+[![Tests 2258 Passed](https://img.shields.io/badge/Tests-2258%20Passed-brightgreen)](https://pytest.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Mypy Strict](https://img.shields.io/badge/Mypy-Strict-blue)](https://mypy-lang.org/)
 
@@ -90,6 +90,71 @@ quant/
 ├── .gitignore                        # Git ignore patterns
 └── README.md                         # Canonical Project Overview & Documentation Sitemap
 ```
+
+---
+
+## Institutional Quantitative SDLC (Software Development Life Cycle)
+
+The platform enforces a rigorous, institutional **Doubt-Driven Development (DDD)** lifecycle governed by [`docs/standards/rules.md`](./docs/standards/rules.md). Every quantitative model, execution component, and risk guard progresses through seven gated stages to prevent capital misallocation, numerical instabilities, and forward lookahead bias.
+
+```mermaid
+flowchart TD
+    subgraph S1["1. Theory & Mathematical Specification"]
+        A1["Quantitative Model Formulation<br/>(docs/architecture/design.md)"] --> A2["Diagnostic Error Taxonomy<br/>(Rule 2: ERR-*)"]
+        A2 --> A3["Domain Invariants Definition<br/>(INV-DATA, INV-STRAT, INV-RSK)"]
+    end
+
+    subgraph S2["2. Architectural Contracts & Protocol Design"]
+        B1["Protocol Interfaces<br/>(IAlphaStrategy, IExecutionGateway)"] --> B2["Layered DDD Isolation<br/>(Domain &rarr; Repositories &rarr; Services &rarr; API)"]
+        B2 --> B3["4-Tier Code Annotations<br/>(Rule 1: Purpose, Deps, Struct, Invariant)"]
+    end
+
+    subgraph S3["3. Adversarial Red-Teaming & TDD"]
+        C1["Test-First Fixture Creation<br/>(tests/unit, tests/integration)"] --> C2["Non-Finite & Bool Rejections<br/>(Rule 4: NaN, Inf, bool-as-int)"]
+        C2 --> C3["Point-in-Time Causality Audits<br/>(Zero Lookahead Bias)"]
+    end
+
+    subgraph S4["4. High-Performance Core Implementation"]
+        D1["Vectorized Math Kernels<br/>(NumPy, Kalman Filter, FracDiff)"] --> D2["Columnar Storage & Ingestion<br/>(DuckDB, Parquet Partitions)"]
+        D2 --> D3["GAAP Double-Entry Accounting<br/>(Compound Journal Entries, FIFO/LIFO)"]
+    end
+
+    subgraph S5["5. Automated Quality Gate Auditing (Rule 3)"]
+        E1["pytest Suite<br/>(2,258 tests &bull; 100% pass)"] --> E2["mypy src --strict<br/>(0 errors &bull; 115 files)"]
+        E2 --> E3["ruff check & format<br/>(0 lint errors &bull; 0 format diffs)"]
+        E3 --> E4["npm run build<br/>(Type-safe React 19 Frontend)"]
+    end
+
+    subgraph S6["6. Simulation, Optimization & Attribution"]
+        F1["Historical Market Replay<br/>(ReplayEngine & Kyle-Obizhaeva)"] --> F2["Multiple Testing Deflation<br/>(Bailey-Lopez de Prado DSR)"]
+        F2 --> F3["CFA-Grade Reporting<br/>(Interactive HTML Tear Sheets)"]
+    end
+
+    subgraph S7["7. Live Execution & Operational Safety"]
+        G1["Pre-Trade Risk Firewall<br/>(Sub-10&mu;s latency & margin checks)"] --> G2["Broker Heartbeat Watchdogs<br/>(Disconnect tripwires)"]
+        G2 --> G3["Emergency Kill Switch<br/>(Sub-50ms atomic mass cancellation)"]
+        G3 --> G4["Non-Blocking Terminal HUD<br/>(Streaming telemetry & hotkeys)"]
+    end
+
+    S1 --> S2
+    S2 --> S3
+    S3 --> S4
+    S4 --> S5
+    S5 -->|All Gates Passed| S6
+    S6 --> S7
+```
+
+### SDLC Stage Breakdown & Governance Matrix
+
+| Stage | Focus & Methodology | Primary Input / Spec | Automated Verification Gate | Governing Rule / Invariant |
+| :--- | :--- | :--- | :--- | :--- |
+| **1. Mathematical Spec** | Derivation of mathematical formulations, closed-form estimators, and failure boundaries. | [`docs/architecture/design.md`](./docs/architecture/design.md) | Peer review & analytical proofs | **Rule 2:** Deterministic fault code catalog (`ERR-*`). |
+| **2. Architectural Contracts** | Protocol interface definitions and clean architectural decoupling (Domain, Data, Execution, API). | [`docs/architecture/architecture.md`](./docs/architecture/architecture.md) | Abstract interface conformance | **Rule 1:** 4-tier line annotations (Purpose, Deps, Struct, Invariant). |
+| **3. Adversarial TDD** | Writing failing test cases covering pathological inputs, edge cases, and market crashes before writing code. | [`docs/standards/rules.md`](./docs/standards/rules.md) | Test failure validation on unhardened code | **Rule 4:** Strict rejection of `NaN`, `Inf`, and `bool-as-int`. |
+| **4. Core Implementation** | Vectorized implementation using NumPy, DuckDB columnar SQL, and double-entry accounting. | Strategy & OMS contracts | Sub-10μs hot-path latency SLAs | `INV-LDG-001` ($\sum \text{Debit} = \sum \text{Credit}$), `INV-NEWS-001` (Point-in-time causality). |
+| **5. Quality Gate Audit** | Automated multi-engine static and dynamic verification pipeline. | CI/CD test runners & Linters | `pytest` 100%, `mypy --strict`, `ruff`, `npm build` | **Rule 3:** Zero-tolerance compiler/linter/test deviations. |
+| **6. Simulation & Replay** | Replaying strategies over historical tick/bar data with realistic execution friction and slippage. | DuckDB Data Lake | Bailey & Lopez de Prado DSR > 0.0, FDR $q$-value | Kyle-Obizhaeva market impact, continuous borrow fees. |
+| **7. Live Execution & Ops** | Live deployment to paper/broker gateways with real-time risk supervision. | Production deployment config | Liveness watchdogs & pre-trade checks | `INV-RSK-008`: Emergency mass cancellation (< 50ms SLA). |
 
 ---
 
