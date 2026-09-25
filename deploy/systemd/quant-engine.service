@@ -1,0 +1,41 @@
+[Unit]
+Description=Institutional Quant Alpha & Live Trading Engine
+Documentation=https://github.com/joshihridesh001-png/Quant-stuff
+After=network.target network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=quant
+Group=quant
+WorkingDirectory=/opt/quant
+Environment="PATH=/opt/quant/.venv/bin:/usr/local/bin:/usr/bin"
+Environment="PYTHONPATH=/opt/quant/src"
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=/etc/quant/quant.env
+
+# Sandboxing & Hardened Process Isolation
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/opt/quant/data /opt/quant/reports /var/log/quant
+
+# Lifecycle Execution & Signal Trapping
+ExecStart=/opt/quant/.venv/bin/uvicorn quant.main:app --host 127.0.0.1 --port 8000 --workers 1 --log-level info
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=always
+RestartSec=5s
+
+# File & Socket Limits for High-Throughput Trading
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

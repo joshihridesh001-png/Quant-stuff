@@ -1,10 +1,23 @@
 # ==============================================================================
 # Multi-Stage Hardened Production Dockerfile for Quant Alpha Engine
-# Python 3.13-slim runtime with unprivileged user (UID 10001) & signal trapping
+# React 19 Frontend + Python 3.13 Backend + Non-Root Hardened Security (UID 10001)
 # ==============================================================================
 
-# --- Stage 1: Build & Dependency Wheel Cache ---
-FROM python:3.13-slim AS builder
+# --- Stage 1: Build Frontend Single-Page Application (SPA) ---
+FROM node:22-alpine AS frontend-builder
+
+WORKDIR /web
+
+# Install build dependencies
+COPY web/package*.json ./
+RUN npm ci
+
+# Copy web source and compile production bundle
+COPY web/ ./
+RUN npm run build
+
+# --- Stage 2: Build Python Dependencies & Wheel Cache ---
+FROM python:3.13-slim AS python-builder
 
 WORKDIR /build
 
@@ -21,7 +34,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 COPY pyproject.toml .
 RUN pip wheel --no-cache-dir --wheel-dir /build/wheels -e .
 
-# --- Stage 2: Hardened Runtime Container ---
+# --- Stage 3: Hardened Production Runtime Container ---
 FROM python:3.13-slim AS runtime
 
 # System runtime dependencies (curl for container healthcheck)
@@ -37,11 +50,11 @@ RUN groupadd -g 10001 quant && \
 
 # Working directory & data volume setup
 WORKDIR /app
-RUN mkdir -p /app/data /app/src && \
+RUN mkdir -p /app/data /app/src /app/web/dist && \
     chown -R quant:quant /app
 
-# Install wheels from builder stage
-COPY --from=builder /build/wheels /tmp/wheels
+# Install wheels from Python builder stage
+COPY --from=python-builder /build/wheels /tmp/wheels
 RUN pip install --no-cache-dir /tmp/wheels/* && rm -rf /tmp/wheels
 
 # Copy application source and configuration
@@ -49,7 +62,10 @@ COPY --chown=quant:quant pyproject.toml .
 COPY --chown=quant:quant alembic.ini* .
 COPY --chown=quant:quant src/ /app/src/
 
-# Install application in editable/link mode for clean module discovery
+# Copy compiled frontend SPA from frontend builder stage
+COPY --from=frontend-builder --chown=quant:quant /web/dist /app/web/dist
+
+# Install application in link mode for clean module discovery
 RUN pip install --no-cache-dir --no-deps -e .
 
 # Security & runtime execution environment variables

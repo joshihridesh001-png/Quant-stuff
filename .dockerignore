@@ -45,3 +45,8 @@ scratch/
 # Agentic / Superpowers workspace caches
 .superpowers/
 .gemini/
+
+# Frontend build caches
+web/node_modules/
+web/dist/
+
