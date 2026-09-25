@@ -224,6 +224,77 @@ Once running:
 
 ---
 
+## Frontend Quantitative Research Workbench (React 19)
+
+The platform includes a modern dark-glass web research terminal built with React 19, TypeScript, Tailwind CSS, Lucide icons, and Recharts:
+
+```bash
+# In a separate terminal, navigate to web directory:
+cd web
+
+# Install frontend dependencies (if not already installed)
+npm install
+
+# Start Vite development server with Hot Module Replacement (HMR)
+npm run dev
+```
+
+* **Development Server**: [`http://localhost:5173`](http://localhost:5173)
+* **Production Build**: Served directly at the FastAPI root [`http://127.0.0.1:8000/`](http://127.0.0.1:8000/)
+
+### Interactive Workbench Views
+1. **Causal News & Decay Engine (`/news`)**: Live breaking news wire (MarketWatch, Yahoo Finance, SEC EDGAR 8-K), Loughran-McDonald sentiment scores, bi-exponential information decay visualization, and ad-hoc headline shock simulator.
+2. **Econometric Stationarity Rig (`/econometrics`)**: Fractional differentiation $(1-B)^d$ search rig, Augmented Dickey-Fuller (ADF) stationarity test curves, Parkinson & Garman-Klass intraday range volatility estimators, and dynamic Triple-Barrier labeling simulation.
+3. **Bayesian Game Theory & Jump Regimes (`/regimes`)**: Real-time regime classification (Calm Bull, High Vol Bear, Crisis Jump), CUSUM structural break detector, Markov transition probability heatmaps, and thermodynamic ambiguity optimization.
+4. **Evolutionary Strategy Swarm (`/swarm`)**: Multi-objective Pareto frontier optimizer (Sharpe vs CVaR vs Turnover), NSGA-II non-dominated sorting, chromosome gene inspection, and single-step generation stepper.
+5. **Simulation & Risk Studio (`/simulation`)**: Historical replay engine, Kyle-Obizhaeva market impact slippage curves, EVT Pickands-Balkema-de Haan tail risk distribution, and Perold (1988) implementation shortfall TCA.
+6. **Visual Backtest Studio (`/backtest`)**: Institutional backtester with multi-asset strategy selection, capital allocation controls, equity curve overlays, drawdown underwater charts, and embedded CFA-grade HTML tear sheets.
+
+---
+
+## CLI Operational Runbook (Turnkey Tools)
+
+The platform provides standalone, institutional CLI runner scripts in `scripts/`:
+
+### 1. Ingest Real Historical Market Data
+Backfill 5+ years of real historical daily bars with split and dividend adjustments into the columnar DuckDB data lake:
+```bash
+python scripts/ingest_historical_data.py --symbols SPY,QQQ,AAPL,NVDA,MSFT --provider yahoo --years 5
+```
+
+### 2. Launch Turnkey Live Paper Trading Station & Terminal HUD
+Start an interactive live trading session with real-time bar processing, alpha generation, pre-trade risk firewall, execution routing, and double-entry ledger booking:
+```bash
+# Interactive Live Terminal with Swarm Meta-Strategy:
+python scripts/run_live_trader.py --symbols SPY,QQQ,AAPL,NVDA,MSFT --strategy swarm --capital 100000
+
+# Kalman Pairs Trading Strategy (SPY vs QQQ):
+python scripts/run_live_trader.py --symbols SPY,QQQ --strategy kalman --capital 250000
+
+# Headless background execution (for servers / systemd / Docker):
+python scripts/run_live_trader.py --symbols SPY,QQQ,AAPL --strategy momentum --headless --poll-interval 2.0
+```
+
+**Non-Blocking Operator Keyboard Hotkeys**:
+* `[SPACE]`: Pause / Resume trading session event loop.
+* `[K]`: Emergency panic kill switch (sub-50ms concurrent multi-gateway mass cancellation sweep).
+* `[R]`: Re-arm risk firewall via constant-time admin authentication.
+* `[Q]`: Orderly session shutdown with ledger reconciliation.
+
+### 3. Run Historical Simulation Backtest & Generate CFA Tear Sheets
+Execute a high-fidelity historical backtest over the DuckDB data lake with Kyle-Obizhaeva execution frictions, overnight margin interest, and short stock borrow drag:
+```bash
+python scripts/run_historical_backtest.py --symbols SPY,QQQ,AAPL,NVDA,MSFT --capital 100000 --output reports/backtest_tearsheet.html
+```
+
+### 4. Launch Autonomous AI Agent via Model Context Protocol (MCP)
+Run the autonomous AI observation and decision loop communicating over standardized MCP tools:
+```bash
+python scripts/run_mcp_agent.py
+```
+
+---
+
 ## Primary API Endpoints
 
 ### 1. News Ingestion & Active State
@@ -283,6 +354,13 @@ Once running:
 ### 10. Institutional Trading Terminal HUD
 * `GET /terminal`: High-refresh browser trading dashboard featuring live WebSocket integration, 1,000-strategy evolutionary swarm selector, order book visualization, candlestick chart, live blotter, autonomous swarm controls, live news feed, scenario shock simulator, and emergency kill switch panel.
 
+### 11. CFA-Grade Backtesting & Reporting Endpoints
+* `POST /api/v1/backtest/run`: Run historical simulation backtest across user-configured universes, strategies, capital allocations, and friction models.
+* `GET /api/v1/backtest/reports/{run_id}`: Retrieve self-contained interactive CFA-grade HTML tear sheet report with embedded SVG visualizations.
+
+### 12. Model Context Protocol (MCP) AI Agent Server
+* `POST /api/v1/mcp/rpc`: Standardized JSON-RPC 2.0 endpoint dispatching authenticated MCP tools (`quant_portfolio_telemetry`, `quant_macro_regimes`, `quant_market_orderbook`, `quant_evaluate_pre_trade`, `quant_swarm_status`, `quant_panic_kill_switch`) for autonomous AI agents.
+
 ---
 
 ## Verification & Quality Assurance
@@ -296,14 +374,17 @@ ruff check .
 # 2. Code Formatting Verification
 ruff format --check .
 
-# 3. Static Type Checking (Strict Mode across 83 source files)
+# 3. Static Type Checking (Strict Mode across 115 source files)
 mypy src --strict
 
 # 4. Automated Test Suite with Coverage Enforcement (> 85%)
-pytest tests/unit tests/api
+pytest tests/unit tests/api tests/integration
+
+# 5. Frontend Production Bundle & Type Validation
+npm --prefix web run build
 ```
 
-All **2058 unit and integration tests** pass with 100% green execution in $< 15$ seconds.
+All **2,258 unit and integration tests** pass with 100% green execution across the entire test suite.
 
 ---
 
@@ -328,6 +409,13 @@ All **2058 unit and integration tests** pass with 100% green execution in $< 15$
 | **Phase 8** | **Production Live Trading Engine & Autonomous Swarm Daemon** | Institutional Alpaca Markets live/paper broker gateway adapter (`AlpacaExecutionGateway`), live streaming and polled market data feed (`AlpacaMarketDataFeed`) writing to DuckDB and streaming FracDiff buffers, continuous autonomous trading swarm loop (`AutonomousTradingEngine`) integrating RD-DMA ensemble forecasts, circuit breakers, EVT-POT tail risk CVaR, convex execution sizing, pre-trade risk firewall, and SOR execution slicing with automated zero-drift state loop and operator controls (`/api/v1/autonomous`). | **Complete** |
 | **Phase 9** | **Real-World News Harvester & Causal Price Reaction Engine** | Multi-source async RSS/Atom parser (`NewsHarvester`) with SHA-256 deduplication and point-in-time causality, Loughran-McDonald sentiment and event taxonomy (`FinancialSentimentClassifier`), closed-form causal price reaction and Triple-Barrier breakout engine (`NewsPriceReactionEngine`), directional forward prior injection into autonomous swarm, REST endpoints (`/api/v1/news`), and terminal HUD live news and scenario shock widget. | **Complete** |
 | **Phase 10** | **External Quantitative Data Providers & Multi-API Swarm Integration** | Selected high-utility public APIs from `public-apis`: FRED (yield curve spreads `T10Y2Y`, Fed funds `DFF`), Finnhub (real-time ticker quotes, company news), NewsAPI.org (global business headlines), and Polygon.io (aggregate bars) with hermetic offline fallback, zero-secret defaults, provider status monitoring (`/api/v1/providers`), and full autonomous swarm integration. | **Complete** |
+| **Phase 11** | **Quantitative Research Workbench (React 19)** | Full React 19 / TypeScript / Tailwind CSS / Recharts dark-glass visual research terminal with 6 views, real-time WebSocket HUD, and econometric parameter rigs. | **Complete** |
+| **Phase 12** | **Autonomous AI Agent Integration via MCP** | Model Context Protocol (2024-11-05) client and server exposing authenticated JSON-RPC tools with stdio & HTTP transports for Claude Desktop and Cursor. | **Complete** |
+| **Phase 13** | **Historical Ingestion Lake & Columnar Storage** | Real market data providers (Yahoo Finance v8, Alpaca v2, Polygon.io), DuckDB columnar repository partitioned by symbol with sub-millisecond range queries, and 5+ year historical backfill. | **Complete** |
+| **Phase 14** | **Modular Cross-Asset Alpha Strategy Library** | Decoupled `IAlphaStrategy` protocol, Kalman Stat-Arb with dollar-beta and hysteresis, FracDiff Momentum, Loughran-McDonald Sentiment with bi-exponential memory decay, Volatility Squeeze with Parkinson/Garman-Klass, and Swarm Meta RD-DMA. | **Complete** |
+| **Phase 15** | **Visual CFA-Grade Backtesting Studio & Interactive Reporting** | High-fidelity backtester with Kyle-Obizhaeva slippage, Bailey-Lopez de Prado Deflated Sharpe Ratio (DSR), EVT Pickands-Balkema-de Haan tail risk, and self-contained interactive SVG HTML tear sheets. | **Complete** |
+| **Phase 16** | **Persistent Double-Entry GAAP Ledger & Tax-Lots** | Relational double-entry accounting schema, balanced compound journal entries, FIFO and LIFO tax-lot matching engine, continuous margin loan interest, and hard-to-borrow (HTB) short borrow drag models. | **Complete** |
+| **Phase 17** | **Turnkey Continuous Live Paper Trading Station** | Sub-second event loop session orchestrator, Rich terminal HUD, non-blocking operator hotkeys (`[SPACE]`, `[K]`, `[R]`, `[Q]`), OS signal traps, and CLI runner. | **Complete** |
 
 
 
