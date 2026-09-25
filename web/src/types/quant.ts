@@ -416,3 +416,30 @@ export interface BacktestRunResponse {
   message: string;
   estimated_duration_sec: number;
 }
+
+export interface CandlestickBarDTO {
+  time: number; // Unix epoch seconds
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface TradeFillMarker {
+  time: number; // Unix timestamp in seconds
+  side: 'BUY' | 'SELL';
+  price: number;
+  quantity: number;
+  shortfallBps?: number;
+  algorithm?: string;
+}
+
+export interface CandlestickSeriesResponse {
+  symbol: string;
+  resolution: string;
+  count: number;
+  bars: CandlestickBarDTO[];
+  source: string;
+}
+

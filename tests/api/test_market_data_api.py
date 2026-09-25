@@ -200,3 +200,40 @@ async def test_get_bars_invalid_time_range(
         headers=researcher_jwt_headers,
     )
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_get_candlesticks_fallback_gbm(client: AsyncClient) -> None:
+    """Verify GET /api/v1/market-data/candlesticks returns normalized ascending OHLCV bars."""
+    response = await client.get(
+        "/api/v1/market-data/candlesticks?symbol=NVDA&bar_count=50&resolution=1m"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["symbol"] == "NVDA"
+    assert payload["count"] == 50
+    assert len(payload["bars"]) == 50
+
+    bars = payload["bars"]
+    for i in range(len(bars)):
+        bar = bars[i]
+        assert bar["time"] > 0
+        assert bar["open"] > 0.0
+        assert bar["high"] >= max(bar["open"], bar["close"])
+        assert bar["low"] <= min(bar["open"], bar["close"])
+        assert bar["volume"] >= 0.0
+        if i > 0:
+            assert bar["time"] > bars[i - 1]["time"], "Timestamps must be strictly ascending"
+
+
+@pytest.mark.asyncio
+async def test_get_candlesticks_resolutions(client: AsyncClient) -> None:
+    """Verify candlestick endpoint handles various resolutions cleanly."""
+    for res in ["1m", "5m", "15m", "1h", "1d"]:
+        response = await client.get(
+            f"/api/v1/market-data/candlesticks?symbol=AAPL&bar_count=20&resolution={res}"
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["resolution"] == res
+        assert len(payload["bars"]) == 20

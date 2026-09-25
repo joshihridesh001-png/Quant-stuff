@@ -1,4 +1,5 @@
 // Authenticated REST API Client for Quantitative Research Workbench
+import { CandlestickSeriesResponse } from '../types/quant';
 
 let cachedToken: string | null = null;
 let authPromise: Promise<string | null> | null = null;
@@ -213,6 +214,13 @@ export const apiClient = {
     apiFetch<T>(`/api/v1/backtest/${backtestId}/status`),
   getBacktestHistory: <T>() =>
     apiFetch<T>('/api/v1/backtest/history'),
+
+  // Market Data Candlesticks (Lightweight Charts Compatible)
+  getCandlesticks: <T = CandlestickSeriesResponse>(symbol: string = 'NVDA', resolution: string = '1m', barCount: number = 200) =>
+    apiFetch<T>(
+      `/api/v1/market-data/candlesticks?symbol=${encodeURIComponent(symbol)}&resolution=${encodeURIComponent(resolution)}&bar_count=${barCount}`
+    ),
 };
+
 
 export const quantApi = apiClient;

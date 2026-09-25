@@ -715,3 +715,47 @@ class BacktestRunResponse(BaseModel):
     status: str
     message: str
     estimated_duration_sec: float
+
+
+class CandlestickBarDTO(BaseModel):
+    """Normalized OHLCV Bar DTO adhering to Lightweight Charts UTCTimestamp.
+
+    Functional Purpose:
+        Supplies integer-second UTC timestamped OHLCV bars for canvas rendering.
+    Explicit Dependency Tracking:
+        pydantic.BaseModel, pydantic.Field.
+    Structural Relationship:
+        Nested within CandlestickSeriesResponse; consumed by React TradingViewChart.
+    Defensive Invariants:
+        time > 0, open > 0, high >= max(open, close), low <= min(open, close), volume >= 0.
+    """
+
+    time: int = Field(..., description="Unix epoch timestamp in SECONDS")
+    open: float = Field(..., gt=0.0)
+    high: float = Field(..., gt=0.0)
+    low: float = Field(..., gt=0.0)
+    close: float = Field(..., gt=0.0)
+    volume: float = Field(..., ge=0.0)
+
+
+class CandlestickSeriesResponse(BaseModel):
+    """Response DTO delivering contiguous candlestick series for charting.
+
+    Functional Purpose:
+        Transfers OHLCV series metadata and bars to the frontend charting engine.
+    Explicit Dependency Tracking:
+        pydantic.BaseModel, CandlestickBarDTO.
+    Structural Relationship:
+        Output schema of GET /api/v1/market-data/candlesticks.
+    Defensive Invariants:
+        Bars strictly sorted by time ascending without duplicate timestamps.
+    """
+
+    symbol: str
+    resolution: str
+    count: int
+    bars: list[CandlestickBarDTO]
+    source: str = Field(
+        "DUCKDB_HISTORICAL_LAKE",
+        description="DUCKDB_HISTORICAL_LAKE or SYNTHETIC_GBM_FALLBACK",
+    )

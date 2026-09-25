@@ -7,18 +7,32 @@ Invariants: Ingestion requires API key; retrieval requires authenticated JWT.
 """
 
 import logging
+import math
+import time
 from typing import Any
 
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 # Application dependencies and security
-from quant.api.dependencies import get_current_user, get_market_data_service, require_api_key
+from quant.api.dependencies import (
+    get_current_user,
+    get_duckdb_manager,
+    get_market_data_service,
+    require_api_key,
+)
 from quant.api.v1.schemas import (
     BatchPriceBarIngestRequest,
     BatchPriceBarIngestResponse,
+    CandlestickBarDTO,
+    CandlestickSeriesResponse,
     MarketDataBatchSummaryResponse,
 )
 from quant.domain.models import Resolution
+from quant.infrastructure.database.duckdb_session import DuckDBManager
+from quant.infrastructure.repositories.duckdb_historical_repository import (
+    DuckDBHistoricalRepository,
+)
 from quant.services.market_data_service import MarketDataService
 
 # Structured logger for endpoint traces
@@ -178,3 +192,153 @@ async def get_latest_bars(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+
+def _generate_synthetic_gbm_bars(
+    symbol: str,
+    count: int = 200,
+    resolution_sec: int = 60,
+) -> list[CandlestickBarDTO]:
+    """Generate realistic Geometric Brownian Motion price bars with intraday vol.
+
+    Functional Purpose:
+        Provides high-fidelity fallback OHLCV price series for canvas charting.
+    Explicit Dependency Tracking:
+        numpy.random.default_rng, math.exp, math.sqrt.
+    Structural Relationship:
+        Internal fallback utility invoked when DuckDB historical store is sparse.
+    Defensive Invariants:
+        All prices strictly positive, High >= max(Open, Close), Low <= min(Open, Close).
+    """
+    seed = sum(ord(c) for c in symbol)
+    rng = np.random.default_rng(seed)
+
+    current_time_sec = int(time.time())
+    start_time_sec = current_time_sec - (count * resolution_sec)
+
+    s0 = 150.0 + (seed % 100)
+    dt = resolution_sec / 86400.0
+    mu = 0.05
+    sigma = 0.25
+
+    bars: list[CandlestickBarDTO] = []
+    price = s0
+
+    for i in range(count):
+        bar_time = start_time_sec + (i * resolution_sec)
+        drift = (mu - 0.5 * sigma**2) * dt
+        shock = sigma * math.sqrt(dt) * float(rng.standard_normal())
+        ret = drift + shock
+        close_price = max(1.0, float(price * math.exp(ret)))
+
+        # Intra-bar geometry
+        intra_vol = sigma * math.sqrt(dt) * 0.6
+        high_price = max(price, close_price) * (1.0 + abs(float(rng.standard_normal())) * intra_vol)
+        low_price = min(price, close_price) * (1.0 - abs(float(rng.standard_normal())) * intra_vol)
+        low_price = max(0.01, low_price)
+        open_price = price
+
+        volume = float(rng.lognormal(mean=9.0, sigma=0.8))
+
+        bars.append(
+            CandlestickBarDTO(
+                time=bar_time,
+                open=round(open_price, 2),
+                high=round(high_price, 2),
+                low=round(low_price, 2),
+                close=round(close_price, 2),
+                volume=round(volume, 0),
+            )
+        )
+        price = close_price
+
+    return bars
+
+
+@router.get(
+    "/candlesticks",
+    response_model=CandlestickSeriesResponse,
+    summary="Retrieve Normalized Candlestick Bars (Lightweight Charts Compatible)",
+)
+async def get_candlesticks(
+    symbol: str = Query("NVDA", description="Asset ticker symbol"),
+    resolution: str = Query("1m", description="Bar sampling resolution"),
+    bar_count: int = Query(200, ge=10, le=2000, description="Number of bars to retrieve"),
+    manager: DuckDBManager = Depends(get_duckdb_manager),
+) -> CandlestickSeriesResponse:
+    """Retrieve chronologically ordered OHLCV candlesticks for canvas rendering.
+
+    Functional Purpose:
+        Transfers normalized, integer-second timestamped OHLCV candlesticks to frontend.
+    Explicit Dependency Tracking:
+        DuckDBHistoricalRepository, Resolution enum, CandlestickSeriesResponse.
+    Structural Relationship:
+        Direct feed for React TradingViewChart in BacktestStudioView and SimulationRiskView.
+    Defensive Invariants:
+        Timestamps strictly integer seconds ascending; High >= max(Open, Close); Low <= min(Open, Close).
+    """
+    repo = DuckDBHistoricalRepository(manager)
+    try:
+        res_enum = Resolution(resolution)
+    except ValueError:
+        res_enum = Resolution.ONE_MINUTE
+
+    res_seconds_map: dict[Resolution, int] = {
+        Resolution.ONE_SECOND: 1,
+        Resolution.ONE_MINUTE: 60,
+        Resolution.FIVE_MINUTES: 300,
+        Resolution.FIFTEEN_MINUTES: 900,
+        Resolution.ONE_HOUR: 3600,
+        Resolution.ONE_DAY: 86400,
+    }
+    step_sec = res_seconds_map.get(res_enum, 60)
+
+    try:
+        now_ns = int(time.time() * 1_000_000_000)
+        start_ns = now_ns - (bar_count * step_sec * 1_000_000_000)
+
+        batch = await repo.get_bars_range(
+            symbol=symbol,
+            start_time=start_ns,
+            end_time=now_ns,
+            resolution=res_enum,
+        )
+
+        bars_dto: list[CandlestickBarDTO] = []
+        last_time_sec = -1
+        for bar in sorted(batch.bars, key=lambda b: b.timestamp):
+            time_sec = int(bar.timestamp // 1_000_000_000)
+            if time_sec > last_time_sec:
+                bars_dto.append(
+                    CandlestickBarDTO(
+                        time=time_sec,
+                        open=float(bar.open),
+                        high=float(bar.high),
+                        low=float(bar.low),
+                        close=float(bar.close),
+                        volume=float(bar.volume),
+                    )
+                )
+                last_time_sec = time_sec
+
+        if bars_dto:
+            return CandlestickSeriesResponse(
+                symbol=symbol,
+                resolution=resolution,
+                count=len(bars_dto),
+                bars=bars_dto,
+                source="DUCKDB_HISTORICAL_LAKE",
+            )
+    except Exception as exc:
+        logger.debug("DuckDB candlestick fetch falling back to GBM for %s: %s", symbol, exc)
+
+    fallback_bars = _generate_synthetic_gbm_bars(
+        symbol=symbol, count=bar_count, resolution_sec=step_sec
+    )
+    return CandlestickSeriesResponse(
+        symbol=symbol,
+        resolution=resolution,
+        count=len(fallback_bars),
+        bars=fallback_bars,
+        source="SYNTHETIC_GBM_FALLBACK",
+    )

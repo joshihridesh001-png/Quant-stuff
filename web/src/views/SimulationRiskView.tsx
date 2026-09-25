@@ -19,6 +19,7 @@ import {
   Activity,
   CheckCircle,
   FileSpreadsheet,
+  BarChart2,
 } from 'lucide-react';
 import { quantApi } from '../api/client';
 import { useQuant } from '../api/context';
@@ -26,7 +27,11 @@ import {
   SimulationRunResponse,
   SimulationRunRequest,
   ParentOrder,
+  CandlestickBarDTO,
+  CandlestickSeriesResponse,
+  TradeFillMarker,
 } from '../types/quant';
+import { TradingViewChart } from '../components/TradingViewChart';
 
 const SYMBOLS = ['NVDA', 'AAPL', 'MSFT', 'SPY', 'TSLA'];
 
@@ -47,6 +52,65 @@ export const SimulationRiskView: React.FC = () => {
 
   // Selected Order for child fills drill-down
   const [selectedOrder, setSelectedOrder] = useState<ParentOrder | null>(null);
+
+  // TradingView Canvas & Candlestick State
+  const [activeChartTab, setActiveChartTab] = useState<'candles' | 'equity'>('candles');
+  const [timeframe, setTimeframe] = useState<string>('1m');
+  const [candles, setCandles] = useState<CandlestickBarDTO[]>([]);
+  const [isLoadingCandles, setIsLoadingCandles] = useState<boolean>(false);
+
+  // Fetch Candlesticks for active asset
+  const fetchCandles = useCallback(async () => {
+    setIsLoadingCandles(true);
+    try {
+      const res = await quantApi.getCandlesticks<CandlestickSeriesResponse>(assetId, timeframe, 300);
+      if (res && Array.isArray(res.bars)) {
+        setCandles(res.bars);
+      }
+    } catch (err) {
+      console.error('Failed to fetch candlesticks for simulation asset:', err);
+    } finally {
+      setIsLoadingCandles(false);
+    }
+  }, [assetId, timeframe]);
+
+  useEffect(() => {
+    fetchCandles();
+  }, [fetchCandles]);
+
+  // Map live and simulation order fills to TradingView Series Markers
+  const tradeFillMarkers = React.useMemo<TradeFillMarker[]>(() => {
+    const markers: TradeFillMarker[] = [];
+    orders.forEach((o) => {
+      if (o.symbol === assetId && Array.isArray(o.child_fills)) {
+        o.child_fills.forEach((fill) => {
+          const rawTs = fill.timestamp_ns;
+          const timeSec = Math.floor(rawTs / 1_000_000_000);
+          if (timeSec > 0 && Number.isFinite(timeSec)) {
+            const isBuy = o.side === 'BUY';
+            markers.push({
+              time: timeSec,
+              side: isBuy ? 'BUY' : 'SELL',
+              price: fill.price,
+              quantity: fill.quantity,
+              shortfallBps: fill.spread_slippage ? fill.spread_slippage * 10000 : undefined,
+              algorithm: o.algorithm,
+            });
+          }
+        });
+      }
+    });
+    // Deduplicate and sort strictly ascending by timestamp
+    const sorted = [...markers].sort((a, b) => a.time - b.time);
+    const deduplicated: TradeFillMarker[] = [];
+    for (let i = 0; i < sorted.length; i++) {
+      if (i > 0 && sorted[i].time <= deduplicated[deduplicated.length - 1].time) {
+        sorted[i].time = deduplicated[deduplicated.length - 1].time + 1;
+      }
+      deduplicated.push(sorted[i]);
+    }
+    return deduplicated;
+  }, [orders, assetId]);
 
   // Execute Backtest Replay
   const runBacktest = useCallback(async () => {
@@ -269,65 +333,119 @@ export const SimulationRiskView: React.FC = () => {
         </div>
       )}
 
-      {/* SECTION 3: Cumulative Portfolio Equity Curve */}
+      {/* SECTION 3: Visual Analytics Canvas (TradingView 60 FPS Candlesticks & Volume OR Equity Curve) */}
       <div className="bg-slate-900 border border-slate-800 rounded-lg p-5">
-        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-800 gap-3">
           <div>
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              <TrendingUp className="w-4 h-4 text-emerald-400" />
-              Cumulative Strategy Equity Curve
-            </h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              High-resolution mark-to-market portfolio value C_t with full transaction friction and slippage
+            <div className="flex items-center gap-3">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                {activeChartTab === 'candles' ? (
+                  <>
+                    <BarChart2 className="w-4 h-4 text-cyan-400" />
+                    Market Microstructure & Execution Canvas
+                  </>
+                ) : (
+                  <>
+                    <TrendingUp className="w-4 h-4 text-emerald-400" />
+                    Cumulative Strategy Equity Curve
+                  </>
+                )}
+              </h2>
+              {/* Tab Selector Switch */}
+              <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800">
+                <button
+                  onClick={() => setActiveChartTab('candles')}
+                  className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold transition ${
+                    activeChartTab === 'candles'
+                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  60 FPS Candlestick & Fills
+                </button>
+                <button
+                  onClick={() => setActiveChartTab('equity')}
+                  className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold transition ${
+                    activeChartTab === 'equity'
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Equity Curve
+                </button>
+              </div>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              {activeChartTab === 'candles'
+                ? `Hardware-accelerated TradingView canvas with EMA 20/50 overlays, volume histogram, and executed fills for ${assetId}`
+                : 'High-resolution mark-to-market portfolio value C_t with full transaction friction and slippage'}
             </p>
           </div>
-          <span className="text-xs font-mono text-slate-400">
-            Initial Capital: <strong className="text-white">${initialCapital.toLocaleString()}</strong>
-          </span>
+          <div className="flex items-center gap-3">
+            {isLoadingCandles && activeChartTab === 'candles' && (
+              <span className="text-xs font-mono text-cyan-400 animate-pulse">Syncing DuckDB lake...</span>
+            )}
+            <span className="text-xs font-mono text-slate-400">
+              Initial Capital: <strong className="text-white">${initialCapital.toLocaleString()}</strong>
+            </span>
+          </div>
         </div>
 
-        <div className="mt-4 h-72">
-          {equityChartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={equityChartData} margin={{ top: 10, right: 20, left: 10, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                <XAxis dataKey="bar" stroke="#64748b" fontSize={10} tickFormatter={(v) => `Bar ${v}`} />
-                <YAxis
-                  stroke="#64748b"
-                  fontSize={10}
-                  domain={['auto', 'auto']}
-                  tickFormatter={(v) => `$${v.toLocaleString()}`}
-                />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '6px', fontSize: '11px' }}
-                  formatter={(val: any) => [`$${Number(val).toLocaleString(undefined, { minimumFractionDigits: 2 })}`, 'Portfolio Equity']}
-                  labelFormatter={(lbl) => `Replay Bar ${lbl}`}
-                />
-                <ReferenceLine
-                  y={initialCapital}
-                  stroke="#64748b"
-                  strokeDasharray="4 4"
-                  label={{ value: 'Capital Baseline', fill: '#64748b', fontSize: 10, position: 'insideTopLeft' }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="equity"
-                  name="Strategy Equity"
-                  stroke="#10b981"
-                  strokeWidth={2}
-                  fill="url(#equityGradient)"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+        <div className="mt-4">
+          {activeChartTab === 'candles' ? (
+            <TradingViewChart
+              data={candles}
+              fills={tradeFillMarkers}
+              symbol={assetId}
+              timeframe={timeframe}
+              onTimeframeChange={setTimeframe}
+              height={420}
+            />
           ) : (
-            <div className="h-full flex items-center justify-center text-slate-500 font-mono text-xs">
-              Execute backtest to render equity curve...
+            <div className="h-72">
+              {equityChartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={equityChartData} margin={{ top: 10, right: 20, left: 10, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                    <XAxis dataKey="bar" stroke="#64748b" fontSize={10} tickFormatter={(v) => `Bar ${v}`} />
+                    <YAxis
+                      stroke="#64748b"
+                      fontSize={10}
+                      domain={['auto', 'auto']}
+                      tickFormatter={(v) => `$${v.toLocaleString()}`}
+                    />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '6px', fontSize: '11px' }}
+                      formatter={(val: any) => [`$${Number(val).toLocaleString(undefined, { minimumFractionDigits: 2 })}`, 'Portfolio Equity']}
+                      labelFormatter={(lbl) => `Replay Bar ${lbl}`}
+                    />
+                    <ReferenceLine
+                      y={initialCapital}
+                      stroke="#64748b"
+                      strokeDasharray="4 4"
+                      label={{ value: 'Capital Baseline', fill: '#64748b', fontSize: 10, position: 'insideTopLeft' }}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="equity"
+                      name="Strategy Equity"
+                      stroke="#10b981"
+                      strokeWidth={2}
+                      fill="url(#equityGradient)"
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-full flex items-center justify-center text-slate-500 font-mono text-xs">
+                  Execute backtest to render equity curve...
+                </div>
+              )}
             </div>
           )}
         </div>

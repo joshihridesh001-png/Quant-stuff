@@ -19,13 +19,17 @@ import {
   Percent,
   Clock,
   ExternalLink,
+  BarChart2,
 } from 'lucide-react';
 import { quantApi } from '../api/client';
 import {
   BacktestStatusResponse,
   BacktestRunRequest,
   BacktestRunResponse,
+  CandlestickBarDTO,
+  CandlestickSeriesResponse,
 } from '../types/quant';
+import { TradingViewChart } from '../components/TradingViewChart';
 
 const STRATEGIES = [
   { id: 'FracDiff_Swarm', label: 'Composite Swarm Meta-Strategy (RD-DMA & Mirror Descent)' },
@@ -48,6 +52,33 @@ export const BacktestStudioView: React.FC = () => {
   const [activeBacktest, setActiveBacktest] = useState<BacktestStatusResponse | null>(null);
   const [history, setHistory] = useState<BacktestStatusResponse[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // TradingView Canvas & Candlestick State
+  const [chartTab, setChartTab] = useState<'equity' | 'candles'>('equity');
+  const [candlestickTimeframe, setCandlestickTimeframe] = useState<string>('1d');
+  const [candlestickBars, setCandlestickBars] = useState<CandlestickBarDTO[]>([]);
+  const [isLoadingCandles, setIsLoadingCandles] = useState<boolean>(false);
+
+  const primarySymbol = activeBacktest?.symbols?.[0] || 'SPY';
+
+  // Fetch Candlesticks for active backtest primary asset
+  const fetchBacktestCandles = useCallback(async () => {
+    setIsLoadingCandles(true);
+    try {
+      const res = await quantApi.getCandlesticks<CandlestickSeriesResponse>(primarySymbol, candlestickTimeframe, 300);
+      if (res && Array.isArray(res.bars)) {
+        setCandlestickBars(res.bars);
+      }
+    } catch (err) {
+      console.error('Failed to fetch candlesticks for backtest primary asset:', err);
+    } finally {
+      setIsLoadingCandles(false);
+    }
+  }, [primarySymbol, candlestickTimeframe]);
+
+  useEffect(() => {
+    fetchBacktestCandles();
+  }, [fetchBacktestCandles]);
 
   // Fetch recent history
   const fetchHistory = useCallback(async () => {
@@ -372,74 +403,125 @@ export const BacktestStudioView: React.FC = () => {
             </div>
           </div>
 
-          {/* Equity Curve Chart vs Benchmark */}
+          {/* Visual Analytics Canvas: Equity Curve vs. Benchmark OR TradingView 60 FPS Candlestick Canvas */}
           <div className="glass-card p-5 rounded-2xl border border-slate-800">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-bold uppercase tracking-wider text-slate-200 font-mono flex items-center gap-2">
-                <TrendingUp className="w-4 h-4 text-cyan-400" />
-                Cumulative Equity Curve vs. Benchmark
-              </h3>
-              {metrics && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-3">
+              <div className="flex items-center gap-3">
+                <h3 className="text-sm font-bold uppercase tracking-wider text-slate-200 font-mono flex items-center gap-2">
+                  {chartTab === 'equity' ? (
+                    <>
+                      <TrendingUp className="w-4 h-4 text-cyan-400" />
+                      Cumulative Equity Curve vs. Benchmark
+                    </>
+                  ) : (
+                    <>
+                      <BarChart2 className="w-4 h-4 text-cyan-400" />
+                      60 FPS Candlestick Canvas &bull; {primarySymbol}
+                    </>
+                  )}
+                </h3>
+
+                {/* Tab Switcher */}
+                <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800">
+                  <button
+                    onClick={() => setChartTab('equity')}
+                    className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold transition ${
+                      chartTab === 'equity'
+                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Equity Curve
+                  </button>
+                  <button
+                    onClick={() => setChartTab('candles')}
+                    className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold transition ${
+                      chartTab === 'candles'
+                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    60 FPS Candlesticks
+                  </button>
+                </div>
+              </div>
+
+              {chartTab === 'equity' && metrics ? (
                 <div className="text-xs font-mono font-semibold text-slate-400">
                   Initial: <span className="text-slate-200">${metrics.initial_capital.toLocaleString()}</span> &bull; Final:{' '}
                   <span className={metrics.net_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
                     ${Math.round(metrics.final_equity).toLocaleString()}
                   </span>
                 </div>
-              )}
+              ) : chartTab === 'candles' ? (
+                <div className="text-xs font-mono text-slate-400 flex items-center gap-2">
+                  {isLoadingCandles && <span className="text-cyan-400 animate-pulse">Syncing DuckDB lake...</span>}
+                  <span>Primary: <strong className="text-slate-200">{primarySymbol}</strong></span>
+                </div>
+              ) : null}
             </div>
 
-            <div className="h-72 w-full">
-              {equityChartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={equityChartData}>
-                    <defs>
-                      <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#38BDF8" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#38BDF8" stopOpacity={0.0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1E293B" opacity={0.6} />
-                    <XAxis dataKey="bar" stroke="#64748B" tick={{ fontSize: 10, fill: '#64748B' }} />
-                    <YAxis
-                      stroke="#64748B"
-                      tick={{ fontSize: 10, fill: '#64748B' }}
-                      domain={['auto', 'auto']}
-                      tickFormatter={(v) => `$${Math.round(v / 1000)}k`}
-                    />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#090D16', borderColor: '#1E293B', borderRadius: '8px' }}
-                      formatter={(val: any) => [`$${Number(val).toLocaleString()}`, '']}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'monospace' }} />
-                    <Area
-                      type="monotone"
-                      dataKey="strategy"
-                      name={`${activeBacktest?.strategy_type || 'Strategy'} NAV`}
-                      stroke="#38BDF8"
-                      strokeWidth={2}
-                      fillOpacity={1}
-                      fill="url(#eqGrad)"
-                    />
-                    {equityChartData[0]?.benchmark !== null && (
-                      <Line
-                        type="monotone"
-                        dataKey="benchmark"
-                        name="Benchmark (SPY)"
-                        stroke="#94A3B8"
-                        strokeWidth={1.5}
-                        strokeDasharray="4 4"
-                        dot={false}
+            {chartTab === 'equity' ? (
+              <div className="h-72 w-full">
+                {equityChartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={equityChartData}>
+                      <defs>
+                        <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#38BDF8" stopOpacity={0.3} />
+                          <stop offset="95%" stopColor="#38BDF8" stopOpacity={0.0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1E293B" opacity={0.6} />
+                      <XAxis dataKey="bar" stroke="#64748B" tick={{ fontSize: 10, fill: '#64748B' }} />
+                      <YAxis
+                        stroke="#64748B"
+                        tick={{ fontSize: 10, fill: '#64748B' }}
+                        domain={['auto', 'auto']}
+                        tickFormatter={(v) => `$${Math.round(v / 1000)}k`}
                       />
-                    )}
-                  </AreaChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="h-full flex items-center justify-center text-xs font-mono text-slate-500">
-                  Select parameters and click "RUN CFA BACKTEST" to simulate.
-                </div>
-              )}
-            </div>
+                      <Tooltip
+                        contentStyle={{ backgroundColor: '#090D16', borderColor: '#1E293B', borderRadius: '8px' }}
+                        formatter={(val: any) => [`$${Number(val).toLocaleString()}`, '']}
+                      />
+                      <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'monospace' }} />
+                      <Area
+                        type="monotone"
+                        dataKey="strategy"
+                        name={`${activeBacktest?.strategy_type || 'Strategy'} NAV`}
+                        stroke="#38BDF8"
+                        strokeWidth={2}
+                        fillOpacity={1}
+                        fill="url(#eqGrad)"
+                      />
+                      {equityChartData[0]?.benchmark !== null && (
+                        <Line
+                          type="monotone"
+                          dataKey="benchmark"
+                          name="Benchmark (SPY)"
+                          stroke="#94A3B8"
+                          strokeWidth={1.5}
+                          strokeDasharray="4 4"
+                          dot={false}
+                        />
+                      )}
+                    </AreaChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex items-center justify-center text-xs font-mono text-slate-500">
+                    Select parameters and click "RUN CFA BACKTEST" to simulate.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <TradingViewChart
+                data={candlestickBars}
+                symbol={primarySymbol}
+                timeframe={candlestickTimeframe}
+                onTimeframeChange={setCandlestickTimeframe}
+                height={400}
+              />
+            )}
           </div>
 
           {/* Underwater Drawdown Chart */}
