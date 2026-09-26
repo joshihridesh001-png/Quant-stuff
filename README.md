@@ -18,6 +18,7 @@ The system's operational and architectural standards are organized into a tiered
 
 ### 1. Architecture & Design
 - **[`docs/architecture/architecture.md`](./docs/architecture/architecture.md)**: System Architecture & Component Topology — layered domain design, hybrid storage (DuckDB + PostgreSQL), module maps, Alpaca broker gateway, autonomous trading swarm daemon, real-world news prediction engine, and data flow pipelines.
+- **[`docs/architecture/data_flow_diagram.md`](./docs/architecture/data_flow_diagram.md)**: Data Flow Diagrams (DFD Level 0, Level 1, Level 2) — formal decomposition of data movement across ingestion, mathematical models, risk validation, execution routing, and accounting.
 - **[`docs/architecture/design.md`](./docs/architecture/design.md)**: Quantitative & Technical Design Specification — mathematical formulations for decay kernels, fractional diff, triple-barrier labeling, CPCV, DSR, hypergamic mating, RD-DMA, circuit breakers, EVT tail risk, smart order routing, live execution gateways, and autonomous swarm rebalancing loops.
 - **[`docs/architecture/srs.md`](./docs/architecture/srs.md)**: Software Requirements Specification — IEEE Std 830-1998 compliant functional and non-functional engineering requirements.
 
@@ -162,6 +163,83 @@ flowchart TD
 | **5. Quality Gate Audit** | Automated multi-engine static and dynamic verification pipeline. | CI/CD test runners & Linters | `pytest` 100%, `mypy --strict`, `ruff`, `npm build` | **Rule 3:** Zero-tolerance compiler/linter/test deviations. |
 | **6. Simulation & Replay** | Replaying strategies over historical tick/bar data with realistic execution friction and slippage. | DuckDB Data Lake | Bailey & Lopez de Prado DSR > 0.0, FDR $q$-value | Kyle-Obizhaeva market impact, continuous borrow fees. |
 | **7. Live Execution & Ops** | Live deployment to paper/broker gateways with real-time risk supervision. | Production deployment config | Liveness watchdogs & pre-trade checks | `INV-RSK-008`: Emergency mass cancellation (< 50ms SLA). |
+
+---
+
+## Data Flow Architecture (DFD)
+
+The platform enforces a strictly segregated **Data Flow Architecture** decomposing data streams from external market feeds through quantitative feature pipelines, regime detection, pre-trade risk clearance, execution algorithms, and double-entry accounting:
+
+```mermaid
+flowchart TD
+    %% External Entities
+    EE_FEED["Market Data Providers<br/>(Alpaca, Yahoo, Polygon)"]
+    EE_NEWS["News & Macro Providers<br/>(Finnhub, RSS, FRED)"]
+    EE_VENUE["Brokers / Venues<br/>(Alpaca, FIX 4.4 / 5.0)"]
+    EE_USER["Researcher / Browser<br/>(React 19 Workbench)"]
+
+    %% Data Stores
+    subgraph DATA_STORES ["Data Stores"]
+        D1[("D1: DuckDB Parquet Lake")]
+        D2[("D2: PostgreSQL / SQLite Ledger")]
+        D3[("D3: In-Memory L2 Order Book")]
+        D4[("D4: Genotype Chromosomes")]
+        D5[("D5: Risk Audit Trail")]
+    end
+
+    %% Processes
+    subgraph INGESTION ["1. Ingestion & Feature Engineering"]
+        P1["1.0 Ingestion & Monotonicity Normalizer"]
+        P2["2.0 Causal News & Decay Engine"]
+        P3["3.0 Econometric Stationarity & Volatility Rig"]
+    end
+
+    subgraph ALPHA ["2. Alpha Generation & Optimization"]
+        P4["4.0 Bayesian Regime & Jump Classifier"]
+        P5["5.0 Evolutionary Swarm & Pareto Optimizer"]
+        P6["6.0 Convex Portfolio Allocator & Risk Sizing"]
+    end
+
+    subgraph EXECUTION ["3. Risk Clearance & Execution"]
+        P7["7.0 Pre-Trade Risk Firewall & Kill Switch"]
+        P8["8.0 Smart Order Router & Execution Slicers"]
+        P9["9.0 Double-Entry Ledger & TCA Attribution"]
+    end
+
+    %% Data Flows
+    EE_FEED -->|"Raw OHLCV & Ticks"| P1
+    P1 -->|"Clean Chronological Bars"| D1
+    P1 -->|"Real-Time Tick Stream"| D3
+    P1 -->|"Stationary Log-Returns"| P3
+
+    EE_NEWS -->|"Raw Articles & Headlines"| P2
+    P2 -->|"Loughran-McDonald Sentiment & Decay"| P4
+
+    D1 -->|"Historical Price Memory"| P3
+    P3 -->|"FFD Features & Garman-Klass Vol"| P4
+
+    P4 -->|"Posterior Regime Probabilities"| P5
+    P4 -->|"Thermodynamic Ambiguity"| P6
+    D4 <-->|"Load & Persist Chromosomes"| P5
+    P5 -->|"Optimized Multi-Strategy Weights"| P6
+
+    D2 -->|"Cold-Start Positions & Cash Balance"| P6
+    P6 -->|"Target Portfolio Delta Orders"| P7
+
+    P7 -->|"Leaves Reservation & Tripwire Clearance"| P8
+    P7 -->|"Emergency Cancel Sweeps / Lockdown"| EE_VENUE
+    P7 -->|"Audit Violations & Rejection Logs"| D5
+
+    P8 -->|"TWAP / VWAP Sliced Child Orders"| EE_VENUE
+    EE_VENUE -->|"Fill Notifications & Partial Executions"| P8
+    P8 -->|"Executed Fills & Slippage Metrics"| P9
+
+    P9 -->|"Debit / Credit Postings & Tax-Lots"| D2
+    P9 -->|"TCA Attribution & Deflated Sharpe Reports"| EE_USER
+    D3 -->|"Real-Time Canvas Candlesticks & Markers"| EE_USER
+```
+
+For detailed Level 0 Context, Level 1 Decomposition, and Level 2 Microstructural Hot-Path diagrams, consult **[`docs/architecture/data_flow_diagram.md`](./docs/architecture/data_flow_diagram.md)**.
 
 ---
 
